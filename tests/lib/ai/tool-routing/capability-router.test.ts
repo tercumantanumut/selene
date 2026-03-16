@@ -14,7 +14,9 @@ function makeContext(overrides: Partial<RoutingContext> = {}): RoutingContext {
   return {
     userMessage: "",
     modelResponse: "",
-    activeTools: new Set<string>(),
+    // searchTools is always-loaded in practice — include it in activeTools by default
+    // so discover-first path is reachable for deferred tools
+    activeTools: new Set<string>(["searchTools"]),
     allTools: new Set<string>([
       "memorize",
       "webSearch",
@@ -396,6 +398,35 @@ describe("evaluateRoutingDecision", () => {
       );
       expect(result.shouldIntervene).toBe(false);
     });
+
+    it("does not suggest discover-first when searchTools is not active", () => {
+      const result = evaluateRoutingDecision(
+        makeContext({
+          userMessage: "Remember that I prefer dark mode",
+          modelResponse: "",
+          activeTools: new Set([]), // searchTools not active — can't discover
+          allTools: new Set(["memorize", "searchTools"]),
+          deferredMode: true,
+        }),
+      );
+      // memorize is registered and deferred mode is on, but searchTools
+      // is not active so discover-first is impossible
+      expect(result.shouldIntervene).toBe(false);
+    });
+
+    it("does not suggest discover-first when searchTools is disabled via enabledTools", () => {
+      const result = evaluateRoutingDecision(
+        makeContext({
+          userMessage: "Remember that I prefer dark mode",
+          modelResponse: "",
+          activeTools: new Set(["searchTools"]),
+          allTools: new Set(["memorize", "searchTools"]),
+          enabledTools: new Set(["memorize"]), // searchTools not enabled
+          deferredMode: true,
+        }),
+      );
+      expect(result.shouldIntervene).toBe(false);
+    });
   });
 
   // ── Confidence scoring ──
@@ -457,7 +488,7 @@ describe("evaluateRoutingDecision", () => {
       expect(result.shouldIntervene).toBe(false);
     });
 
-    it("does not trigger scheduleTask for 'create a task management app'", () => {
+    it("currently triggers scheduleTask for 'create a task management app' (known false positive)", () => {
       const result = evaluateRoutingDecision(
         makeContext({
           userMessage: "Help me create a task management application",
@@ -465,13 +496,13 @@ describe("evaluateRoutingDecision", () => {
           allTools: new Set(["scheduleTask", "searchTools"]),
         }),
       );
-      // "create a task" with "management application" — the pattern matches
-      // "create a task" but that's inside a larger development request.
-      // This is a known limitation — documented but acceptable for v1.
-      // The threshold should prevent this since single-match proactive = 0.7 ≥ 0.6
-      // Actually this WILL match, which is a false positive the team is aware of.
-      // For now, this test documents the behavior.
-      // If this becomes a problem, refine the pattern to exclude development contexts.
+      // Known limitation: "create a task" pattern matches even inside
+      // "create a task management application". This is a false positive
+      // that the current regex-based approach cannot distinguish.
+      // If this regresses or improves, this test will catch it.
+      // To fix: refine scheduleTask patterns to exclude development contexts.
+      expect(result.shouldIntervene).toBe(true);
+      expect(result.suggestedTool).toBe("scheduleTask");
     });
 
     it("prefers localGrep over webSearch when message mentions code/files", () => {

@@ -185,6 +185,11 @@ export function evaluateRoutingDecision(
   // In this mode, we rely only on intent patterns — acknowledgment scoring is skipped.
   const isProactive = !ctx.modelResponse.trim();
 
+  // Can the agent actually discover deferred tools? Only if searchTools is active.
+  const canDiscoverTools =
+    ctx.activeTools.has("searchTools") &&
+    (!ctx.enabledTools || ctx.enabledTools.has("searchTools"));
+
   let bestMatch: {
     mapping: IntentMapping;
     intentConfidence: number;
@@ -210,7 +215,7 @@ export function evaluateRoutingDecision(
     let mode: "direct" | "discover-first";
     if (isActive) {
       mode = "direct";
-    } else if (isRegistered && ctx.deferredMode) {
+    } else if (isRegistered && ctx.deferredMode && canDiscoverTools) {
       mode = "discover-first";
     } else {
       // Tool not available — skip this mapping, try others
