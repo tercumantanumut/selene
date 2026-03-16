@@ -22,7 +22,7 @@ import {
   MULTI_IMAGE_TOOL_USAGE,
   getChannelFormattingBlock,
 } from "./prompts";
-import { combineBlocks } from "./prompts/shared-blocks";
+import { combineBlocks, getToolExecutionReliabilityBlock } from "./prompts/shared-blocks";
 import type { CacheableSystemBlock } from "./cache/types";
 
 /**
@@ -157,6 +157,13 @@ export function buildCharacterSystemPrompt(
   sections.push(MEDIA_DISPLAY_RULES);
   sections.push(TOOL_USAGE_RULES);
   sections.push(options.toolLoadingMode === "always" ? TOOL_DISCOVERY_ALWAYS : TOOL_DISCOVERY_MINIMAL);
+
+  // Tool execution reliability hint (env-gated)
+  const reliabilityBlock = getToolExecutionReliabilityBlock();
+  if (reliabilityBlock) {
+    sections.push(reliabilityBlock);
+  }
+
   sections.push(MULTI_IMAGE_TOOL_USAGE); // Multi-image guidance for edit/reference tools
 
   // Channel-aware formatting guidance (prevents broken Markdown in chat apps)
@@ -324,6 +331,7 @@ export function buildCacheableCharacterPrompt(
     MEDIA_DISPLAY_RULES,
     TOOL_USAGE_RULES,
     toolLoadingMode === "always" ? TOOL_DISCOVERY_ALWAYS : TOOL_DISCOVERY_MINIMAL,
+    getToolExecutionReliabilityBlock(),
     MULTI_IMAGE_TOOL_USAGE
   );
 

@@ -102,6 +102,11 @@ import {
 } from "./tool-schema-recovery";
 import { tagIntermediateDelegationParts } from "./delegation-scope-tagging";
 import { createThinkTagFilter, shouldFilterThinkTags } from "@/lib/ai/streaming/think-tag-filter";
+import {
+  isCapabilityRoutingEnabled,
+  evaluateRoutingDecision,
+  buildRoutingHint,
+} from "@/lib/ai/tool-routing/capability-router";
 import { detectEmotion } from "@/lib/emotion";
 import {
   isUiChunkCommittable,
@@ -1022,8 +1027,35 @@ export async function POST(req: Request) {
             }
 
             const currentActiveTools = [...activeToolSet];
+
+            // ── Capability routing fallback (env-gated) ──────────────────────
+            // On step 0, proactively detect explicit tool-intent in the user's
+            // message and add a system hint so the model uses the tool instead
+            // of acknowledging in plain text.
+            let capabilityRoutingSystem: string | undefined;
+            if (stepNumber === 0 && isCapabilityRoutingEnabled() && latestUserPromptText) {
+              const routingDecision = evaluateRoutingDecision({
+                userMessage: latestUserPromptText,
+                modelResponse: "", // proactive: no model response yet
+                activeTools: activeToolSet,
+                allTools: new Set(Object.keys(allToolsWithMCP)),
+                enabledTools: enabledTools ? new Set(enabledTools) : undefined,
+                deferredMode: useDeferredLoading,
+              });
+              if (routingDecision.shouldIntervene) {
+                capabilityRoutingSystem = buildRoutingHint(routingDecision) ?? undefined;
+                if (capabilityRoutingSystem) {
+                  console.debug(
+                    `[CHAT API] Capability routing: ${routingDecision.reason} ` +
+                    `(tool=${routingDecision.suggestedTool}, mode=${routingDecision.mode}, ` +
+                    `confidence=${routingDecision.confidence.toFixed(2)})`
+                  );
+                }
+              }
+            }
+
             if (stepNumber === 0) {
-              console.debug(`[CHAT API] Step 0: Starting with ${currentActiveTools.length} active tools (mode: ${useDeferredLoading ? "deferred" : "always-include"})`);
+              console.debug(`[CHAT API] Step 0: Starting with ${currentActiveTools.length} active tools (mode: ${useDeferredLoading ? "deferred" : "always-include"})${capabilityRoutingSystem ? " [capability-routing-active]" : ""}`);
             } else if (useDeferredLoading && discoveredTools.size > previouslyDiscoveredTools.size) {
               const newlyDiscovered = [...discoveredTools].filter(t => !previouslyDiscoveredTools.has(t));
               if (newlyDiscovered.length > 0) {
@@ -1106,6 +1138,14 @@ export async function POST(req: Request) {
               return {
                 activeTools: currentActiveTools as string[],
                 messages: [...stepMessages, injectedUserMessage],
+              };
+            }
+
+            // Include capability routing system hint (step 0 only, env-gated)
+            if (capabilityRoutingSystem) {
+              return {
+                activeTools: currentActiveTools as (keyof typeof allToolsWithMCP)[],
+                system: capabilityRoutingSystem,
               };
             }
 

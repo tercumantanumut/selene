@@ -18,6 +18,7 @@ import {
   TOOL_DISCOVERY_MINIMAL,
   TOOL_DISCOVERY_ALWAYS,
   MULTI_IMAGE_TOOL_USAGE,
+  getToolExecutionReliabilityBlock,
   combineBlocks,
 } from "./shared-blocks";
 import type { CacheableSystemBlock } from "../cache/types";
@@ -93,6 +94,12 @@ export function buildBaseSystemPrompt(options: BaseSystemPromptOptions): string 
   // Add tool discovery if enabled
   if (includeToolDiscovery) {
     sections.push(toolLoadingMode === "always" ? TOOL_DISCOVERY_ALWAYS : TOOL_DISCOVERY_MINIMAL);
+  }
+
+  // Add tool execution reliability hint (env-gated)
+  const reliabilityBlock = getToolExecutionReliabilityBlock();
+  if (reliabilityBlock) {
+    sections.push(reliabilityBlock);
   }
 
   // Add any additional context
@@ -213,9 +220,11 @@ export function buildCacheableSystemPrompt(
 
   // Block 3: Tool discovery (optional, changes with mode)
   if (includeToolDiscovery) {
+    const reliabilityBlock = getToolExecutionReliabilityBlock();
+    const discoveryContent = toolLoadingMode === "always" ? TOOL_DISCOVERY_ALWAYS : TOOL_DISCOVERY_MINIMAL;
     blocks.push({
       role: "system",
-      content: toolLoadingMode === "always" ? TOOL_DISCOVERY_ALWAYS : TOOL_DISCOVERY_MINIMAL,
+      content: reliabilityBlock ? combineBlocks(discoveryContent, reliabilityBlock) : discoveryContent,
     });
   }
 

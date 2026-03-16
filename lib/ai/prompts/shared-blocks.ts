@@ -150,6 +150,32 @@ Image edit/reference tools support **multiple images**. Automatically combine AL
 **Example:** User shares a selfie and a jacket image, says "try this on" → pass BOTH images to \`source_image_urls\``;
 
 /**
+ * Tool Execution Reliability Hint
+ *
+ * Reinforces that tool-backed actions must actually invoke the tool,
+ * not just acknowledge the intent in plain text.
+ * Gated by ENABLE_CAPABILITY_ROUTING_FALLBACK env var.
+ */
+export const TOOL_EXECUTION_RELIABILITY = `## Tool Execution Reliability
+
+When a user requests an action backed by a tool (remember, search, schedule, generate, analyze, etc.):
+- **Always call the tool** — do not acknowledge the action in plain text as if it happened.
+- If the tool is not currently loaded, use \`searchTools\` to discover and enable it first.
+- If the tool is loaded, call it directly.
+- Never say "I've remembered/scheduled/searched" without actually invoking the corresponding tool.`;
+
+/**
+ * Get the tool execution reliability block if the feature is enabled.
+ * Returns empty string when the env flag is off to avoid any prompt changes.
+ */
+export function getToolExecutionReliabilityBlock(): string {
+  if (process.env.ENABLE_CAPABILITY_ROUTING_FALLBACK !== "true") {
+    return "";
+  }
+  return TOOL_EXECUTION_RELIABILITY;
+}
+
+/**
  * Combine multiple shared blocks into a single string
  */
 export function combineBlocks(...blocks: string[]): string {
