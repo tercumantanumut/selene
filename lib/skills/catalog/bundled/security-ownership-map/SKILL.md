@@ -25,9 +25,10 @@ pip install networkx
 1. Scope the repo and time window (optional `--since/--until`).
 2. Decide sensitivity rules (use defaults or provide a CSV config).
 3. Build the ownership map with `${SELENE_SKILL_ROOT}/scripts/run_ownership_map.py` (co-change graph is on by default; use `--cochange-max-files` to ignore supernode commits).
-4. Communities are computed by default; graphml output is optional (`--graphml`).
-5. Query the outputs with `${SELENE_SKILL_ROOT}/scripts/query_ownership.py` for bounded JSON slices.
-6. Persist and visualize (see `${SELENE_SKILL_ROOT}/references/neo4j-import.md`).
+4. **Validate output**: verify `ownership-map-out/` contains expected files (`people.csv`, `files.csv`, `edges.csv`, `summary.json`). Check row counts are non-zero with `wc -l ownership-map-out/*.csv`.
+5. Communities are computed by default; graphml output is optional (`--graphml`).
+6. Query the outputs with `${SELENE_SKILL_ROOT}/scripts/query_ownership.py` for bounded JSON slices.
+7. Persist and visualize (see `${SELENE_SKILL_ROOT}/references/neo4j-import.md`).
 
 By default, the co-change graph ignores common “glue” files (lockfiles, `.github/*`, editor config) so clusters reflect actual code movement instead of shared infra edits. Override with `--cochange-exclude` or `--no-default-cochange-excludes`. Dependabot commits are excluded by default; override with `--no-default-author-excludes` or add patterns via `--author-exclude-regex`.
 

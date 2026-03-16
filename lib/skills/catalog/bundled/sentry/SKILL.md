@@ -85,23 +85,9 @@ python3 "$SENTRY_API" \
   abcdef1234567890
 ```
 
-## API requirements
+## Validation
 
-Always use these endpoints (GET only):
-
-- List issues: `/api/0/projects/{org_slug}/{project_slug}/issues/`
-- Issue detail: `/api/0/issues/{issue_id}/`
-- Events for issue: `/api/0/issues/{issue_id}/events/`
-- Event detail: `/api/0/projects/{org_slug}/{project_slug}/events/{event_id}/`
-
-## Inputs and defaults
-
-- `org_slug`, `project_slug`: default to `{your-org}`/`{your-project}` (avoid non-prod orgs).
-- `time_range`: default `24h` (pass as `statsPeriod`).
-- `environment`: default `prod`.
-- `limit`: default 20, max 50 (paginate until limit reached).
-- `search_query`: optional `query` parameter.
-- `issue_short_id`: resolve via list-issues query first.
+After resolving a short ID to an issue ID, verify the returned ID is non-empty before querying issue details or events.
 
 ## Output formatting rules
 
@@ -111,11 +97,16 @@ Always use these endpoints (GET only):
 - Redact PII in output (emails, IPs). Do not print raw stack traces.
 - Never echo auth tokens.
 
-## Golden test inputs
+## Reference
 
-- Org: `{your-org}`
-- Project: `{your-project}`
-- Issue short ID: `{ABC-123}`
+<details>
+<summary>API endpoints and defaults</summary>
 
-Example prompt: “List the top 10 open issues for prod in the last 24h.”
-Expected: ordered list with titles, short IDs, counts, last seen.
+Endpoints (GET only):
+- List issues: `/api/0/projects/{org_slug}/{project_slug}/issues/`
+- Issue detail: `/api/0/issues/{issue_id}/`
+- Events for issue: `/api/0/issues/{issue_id}/events/`
+- Event detail: `/api/0/projects/{org_slug}/{project_slug}/events/{event_id}/`
+
+Defaults: `org_slug`/`project_slug` from env vars, `time_range` 24h, `environment` prod, `limit` 20 (max 50).
+</details>

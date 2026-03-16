@@ -1,6 +1,6 @@
 ---
 name: swiftui-pro
-description: Comprehensively reviews SwiftUI code for best practices on modern APIs, maintainability, and performance. Use when reading, writing, or reviewing SwiftUI projects.
+description: "Review SwiftUI code for deprecated APIs, optimal view composition, data flow correctness, navigation patterns, accessibility compliance, and performance. Use when reading, writing, or reviewing SwiftUI projects, Swift UI views, iOS app interfaces, @State/@Binding/@Observable usage, or declarative UI code targeting Apple platforms."
 license: MIT
 metadata:
   author: Paul Hudson

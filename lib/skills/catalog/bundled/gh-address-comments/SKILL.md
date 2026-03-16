@@ -1,6 +1,6 @@
 ---
 name: gh-address-comments
-description: Help address review/issue comments on the open GitHub PR for the current branch using gh CLI; verify gh auth first and prompt the user to authenticate if not logged in.
+description: "Address review and issue comments on the open GitHub PR for the current branch using gh CLI. Use when the user wants to respond to PR feedback, resolve reviewer comments, handle GitHub review discussions, or fix issues raised in pull request reviews. Verifies gh auth first and prompts the user to authenticate if not logged in."
 metadata:
   short-description: Address comments in a GitHub PR review
 ---
@@ -20,6 +20,11 @@ Prereq: ensure `gh` is authenticated (for example, run `gh auth login` once), th
 
 ## 3) If user chooses comments
 - Apply fixes for the selected comments
+
+## 4) Verify fixes
+- Run relevant tests or checks to confirm fixes were applied correctly.
+- Use `git diff` to review staged changes before committing.
+- If committing, use a descriptive commit message referencing the PR comments addressed.
 
 Notes:
 - If gh hits auth/rate issues mid-run, prompt the user to re-authenticate with `gh auth login`, then retry.
