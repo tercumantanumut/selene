@@ -1152,10 +1152,10 @@ export async function POST(req: Request) {
               const existingSystem = systemPromptValue;
               let augmentedSystem: typeof existingSystem;
               if (Array.isArray(existingSystem)) {
-                // Cached-blocks format: append routing hint as a new text block
+                // Cached-blocks format: append routing hint as a new system block
                 augmentedSystem = [
                   ...existingSystem,
-                  { type: "text" as const, text: capabilityRoutingSystem },
+                  { role: "system" as const, content: capabilityRoutingSystem },
                 ];
               } else if (typeof existingSystem === "string") {
                 augmentedSystem = existingSystem + "\n\n" + capabilityRoutingSystem;
