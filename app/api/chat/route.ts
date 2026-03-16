@@ -1034,23 +1034,27 @@ export async function POST(req: Request) {
             // of acknowledging in plain text.
             let capabilityRoutingSystem: string | undefined;
             if (stepNumber === 0 && isCapabilityRoutingEnabled() && latestUserPromptText) {
-              const routingDecision = evaluateRoutingDecision({
-                userMessage: latestUserPromptText,
-                modelResponse: "", // proactive: no model response yet
-                activeTools: activeToolSet,
-                allTools: new Set(Object.keys(allToolsWithMCP)),
-                enabledTools: enabledTools ? new Set(enabledTools) : undefined,
-                deferredMode: useDeferredLoading,
-              });
-              if (routingDecision.shouldIntervene) {
-                capabilityRoutingSystem = buildRoutingHint(routingDecision) ?? undefined;
-                if (capabilityRoutingSystem) {
-                  console.debug(
-                    `[CHAT API] Capability routing: ${routingDecision.reason} ` +
-                    `(tool=${routingDecision.suggestedTool}, mode=${routingDecision.mode}, ` +
-                    `confidence=${routingDecision.confidence.toFixed(2)})`
-                  );
+              try {
+                const routingDecision = evaluateRoutingDecision({
+                  userMessage: latestUserPromptText,
+                  modelResponse: "", // proactive: no model response yet
+                  activeTools: activeToolSet,
+                  allTools: new Set(Object.keys(allToolsWithMCP)),
+                  enabledTools: enabledTools ? new Set(enabledTools) : undefined,
+                  deferredMode: useDeferredLoading,
+                });
+                if (routingDecision.shouldIntervene) {
+                  capabilityRoutingSystem = buildRoutingHint(routingDecision) ?? undefined;
+                  if (capabilityRoutingSystem) {
+                    console.debug(
+                      `[CHAT API] Capability routing: ${routingDecision.reason} ` +
+                      `(tool=${routingDecision.suggestedTool}, mode=${routingDecision.mode}, ` +
+                      `confidence=${routingDecision.confidence.toFixed(2)})`
+                    );
+                  }
                 }
+              } catch (routingError) {
+                console.warn("[CHAT API] Capability routing evaluation failed:", routingError);
               }
             }
 
@@ -1141,11 +1145,27 @@ export async function POST(req: Request) {
               };
             }
 
-            // Include capability routing system hint (step 0 only, env-gated)
+            // Include capability routing system hint (step 0 only, env-gated).
+            // Append the hint to the existing system prompt — do NOT replace it,
+            // or the model loses its character identity and all behavioral instructions.
             if (capabilityRoutingSystem) {
+              const existingSystem = systemPromptValue;
+              let augmentedSystem: typeof existingSystem;
+              if (Array.isArray(existingSystem)) {
+                // Cached-blocks format: append routing hint as a new text block
+                augmentedSystem = [
+                  ...existingSystem,
+                  { type: "text" as const, text: capabilityRoutingSystem },
+                ];
+              } else if (typeof existingSystem === "string") {
+                augmentedSystem = existingSystem + "\n\n" + capabilityRoutingSystem;
+              } else {
+                // No system prompt — use routing hint standalone
+                augmentedSystem = capabilityRoutingSystem;
+              }
               return {
                 activeTools: currentActiveTools as (keyof typeof allToolsWithMCP)[],
-                system: capabilityRoutingSystem,
+                system: augmentedSystem,
               };
             }
 

@@ -83,8 +83,10 @@ export const DEFAULT_INTENT_MAPPINGS: IntentMapping[] = [
   {
     toolName: "webSearch",
     intentPatterns: [
-      /\b(?:search|look up|google|find|check)\s+(?:the web|online|internet|for)\b/i,
-      /\bsearch\s+for\b/i,
+      // Explicit web-context search: "search the web", "look up online", "google for"
+      /\b(?:search|look up|google|find|check)\s+(?:the web|online|internet)\b/i,
+      // "search for X" without code/file context (avoid matching grep-like requests)
+      /\bsearch\s+for\b(?!.*\b(?:code|files?|codebase|project|repo)\b)/i,
       /\bwhat(?:'s| is)\s+(?:the latest|current|new)\b/i,
     ],
     acknowledgmentPatterns: [
@@ -168,15 +170,20 @@ export function evaluateRoutingDecision(
     reason: "no-match",
   };
 
-  // Skip empty inputs
-  if (!ctx.userMessage.trim() || !ctx.modelResponse.trim()) {
+  // Skip empty user message
+  const userMessage = ctx.userMessage.trim();
+  if (!userMessage) {
     return noIntervention;
   }
 
   // Skip if message is very short (likely casual, not an action request)
-  if (ctx.userMessage.trim().length < 8) {
+  if (userMessage.length < 8) {
     return noIntervention;
   }
+
+  // Proactive mode: modelResponse is empty (called before model runs).
+  // In this mode, we rely only on intent patterns — acknowledgment scoring is skipped.
+  const isProactive = !ctx.modelResponse.trim();
 
   let bestMatch: {
     mapping: IntentMapping;
@@ -188,7 +195,7 @@ export function evaluateRoutingDecision(
   for (const mapping of mappings) {
     // Check if user message matches intent patterns
     const intentMatch = mapping.intentPatterns.some((pattern) =>
-      pattern.test(ctx.userMessage),
+      pattern.test(userMessage),
     );
     if (!intentMatch) continue;
 
@@ -210,20 +217,23 @@ export function evaluateRoutingDecision(
       continue;
     }
 
-    // Base intent confidence from pattern match
-    let intentConfidence = 0.6;
+    // Base intent confidence from pattern match.
+    // In proactive mode (no model response yet), we start slightly higher
+    // because intent match is the only signal and must clear the threshold alone.
+    let intentConfidence = isProactive ? 0.7 : 0.6;
 
     // Boost confidence if multiple patterns match
     const matchCount = mapping.intentPatterns.filter((p) =>
-      p.test(ctx.userMessage),
+      p.test(userMessage),
     ).length;
     if (matchCount > 1) {
       intentConfidence = Math.min(intentConfidence + 0.15, 0.95);
     }
 
     // Check if model response contains acknowledgment without tool execution
+    // (skipped in proactive mode — no model response to check)
     let ackConfidence = 0;
-    if (mapping.acknowledgmentPatterns.length > 0) {
+    if (!isProactive && mapping.acknowledgmentPatterns.length > 0) {
       const ackMatch = mapping.acknowledgmentPatterns.some((pattern) =>
         pattern.test(ctx.modelResponse),
       );
@@ -235,7 +245,11 @@ export function evaluateRoutingDecision(
     const totalConfidence = Math.min(intentConfidence + ackConfidence, 1.0);
 
     if (totalConfidence >= mapping.confidenceThreshold) {
-      if (!bestMatch || totalConfidence > bestMatch.intentConfidence + bestMatch.ackConfidence) {
+      // Compare using clamped totals consistently
+      const bestMatchTotal = bestMatch
+        ? Math.min(bestMatch.intentConfidence + bestMatch.ackConfidence, 1.0)
+        : -1;
+      if (!bestMatch || totalConfidence > bestMatchTotal) {
         bestMatch = {
           mapping,
           intentConfidence,

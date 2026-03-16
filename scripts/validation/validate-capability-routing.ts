@@ -4,10 +4,14 @@
  * Validates:
  * 1. Env flag defaults to off
  * 2. Router module is importable and stateless
- * 3. Router produces correct decisions for known intents
- * 4. Router produces no-intervention for ambiguous inputs
- * 5. Prompt hint is only included when flag is on
- * 6. No process-global state in the router
+ * 3. Known intent matching (reactive mode — with model response)
+ * 4. Proactive mode (empty model response — the actual production path)
+ * 5. No intervention for ambiguous messages
+ * 6. Prompt hint is only included when flag is on
+ * 7. buildRoutingHint output correctness
+ * 8. Mapping metadata validity
+ * 9. enabledTools filtering
+ * 10. No regex global/sticky flags (concurrent safety)
  *
  * Usage: npx tsx scripts/validation/validate-capability-routing.ts
  */
@@ -51,11 +55,12 @@ function makeContext(overrides: Partial<RoutingContext> = {}): RoutingContext {
   };
 }
 
+try {
+
 // ─── Test 1: Env flag ────────────────────────────────────────────────────────
 
 console.log("\n1. Env flag behavior:");
 
-// Save and clear
 const savedEnv = process.env.ENABLE_CAPABILITY_ROUTING_FALLBACK;
 delete process.env.ENABLE_CAPABILITY_ROUTING_FALLBACK;
 
@@ -112,9 +117,9 @@ assert(
   "Same input produces identical result (no accumulated state)"
 );
 
-// ─── Test 3: Known intent matching ──────────────────────────────────────────
+// ─── Test 3: Known intent matching (reactive) ───────────────────────────────
 
-console.log("\n3. Known intent matching:");
+console.log("\n3. Known intent matching (reactive mode):");
 
 const intents: Array<{ message: string; response: string; expectedTool: string }> = [
   { message: "Remember that I prefer TypeScript strict mode", response: "I've remembered that.", expectedTool: "memorize" },
@@ -137,9 +142,46 @@ for (const { message, response, expectedTool } of intents) {
   );
 }
 
-// ─── Test 4: No intervention for ambiguous messages ─────────────────────────
+// ─── Test 4: Proactive mode (empty modelResponse) ──────────────────────────
 
-console.log("\n4. No intervention for ambiguous messages:");
+console.log("\n4. Proactive mode (empty modelResponse — production path):");
+
+const proactiveIntents: Array<{ message: string; expectedTool: string }> = [
+  { message: "Remember that I prefer dark mode in all editors", expectedTool: "memorize" },
+  { message: "Search the web for the latest React 19 features", expectedTool: "webSearch" },
+  { message: "Grep for useState in the codebase", expectedTool: "localGrep" },
+  { message: "Remind me to deploy the app tomorrow at 9am", expectedTool: "scheduleTask" },
+];
+
+for (const { message, expectedTool } of proactiveIntents) {
+  const result = evaluateRoutingDecision(
+    makeContext({
+      userMessage: message,
+      modelResponse: "", // proactive: no model response yet
+      allTools: new Set([expectedTool, "searchTools"]),
+    })
+  );
+  assert(
+    result.shouldIntervene === true && result.suggestedTool === expectedTool,
+    `Proactive: "${message.slice(0, 40)}..." → ${expectedTool}`
+  );
+}
+
+// Verify proactive mode doesn't trigger for ambiguous messages
+const proactiveAmbiguous = evaluateRoutingDecision(
+  makeContext({
+    userMessage: "What do you think about this approach?",
+    modelResponse: "",
+  })
+);
+assert(
+  proactiveAmbiguous.shouldIntervene === false,
+  "Proactive: ambiguous message → no intervention"
+);
+
+// ─── Test 5: No intervention for ambiguous messages ─────────────────────────
+
+console.log("\n5. No intervention for ambiguous messages:");
 
 const ambiguous = [
   { message: "Hello", response: "Hi there!" },
@@ -158,9 +200,9 @@ for (const { message, response } of ambiguous) {
   );
 }
 
-// ─── Test 5: Prompt hint gating ─────────────────────────────────────────────
+// ─── Test 6: Prompt hint gating ─────────────────────────────────────────────
 
-console.log("\n5. Prompt hint env gating:");
+console.log("\n6. Prompt hint env gating:");
 
 const savedEnv2 = process.env.ENABLE_CAPABILITY_ROUTING_FALLBACK;
 
@@ -182,9 +224,9 @@ if (savedEnv2 === undefined) {
   process.env.ENABLE_CAPABILITY_ROUTING_FALLBACK = savedEnv2;
 }
 
-// ─── Test 6: buildRoutingHint ───────────────────────────────────────────────
+// ─── Test 7: buildRoutingHint ───────────────────────────────────────────────
 
-console.log("\n6. buildRoutingHint:");
+console.log("\n7. buildRoutingHint:");
 
 assert(
   buildRoutingHint({ shouldIntervene: false, suggestedTool: null, confidence: 0, mode: "none", reason: "no-match" }) === null,
@@ -203,9 +245,9 @@ assert(
   "Discover-first mode hint mentions searchTools"
 );
 
-// ─── Test 7: Mapping metadata validity ──────────────────────────────────────
+// ─── Test 8: Mapping metadata validity ──────────────────────────────────────
 
-console.log("\n7. Mapping metadata validity:");
+console.log("\n8. Mapping metadata validity:");
 
 assert(
   DEFAULT_INTENT_MAPPINGS.length >= 5,
@@ -223,10 +265,60 @@ for (const mapping of DEFAULT_INTENT_MAPPINGS) {
   );
 }
 
+// ─── Test 9: enabledTools filtering ─────────────────────────────────────────
+
+console.log("\n9. enabledTools filtering:");
+
+const enabledResult = evaluateRoutingDecision(
+  makeContext({
+    userMessage: "Remember that I prefer dark mode",
+    modelResponse: "",
+    allTools: new Set(["memorize", "searchTools"]),
+    enabledTools: new Set(["searchTools"]), // memorize not enabled
+  })
+);
+assert(
+  enabledResult.shouldIntervene === false,
+  "No intervention when tool not in enabledTools"
+);
+
+const enabledResult2 = evaluateRoutingDecision(
+  makeContext({
+    userMessage: "Remember that I prefer dark mode",
+    modelResponse: "",
+    allTools: new Set(["memorize", "searchTools"]),
+    enabledTools: new Set(["memorize", "searchTools"]),
+  })
+);
+assert(
+  enabledResult2.shouldIntervene === true,
+  "Intervenes when tool is in enabledTools"
+);
+
+// ─── Test 10: Regex safety ──────────────────────────────────────────────────
+
+console.log("\n10. Regex safety (no global/sticky flags):");
+
+let regexSafe = true;
+for (const mapping of DEFAULT_INTENT_MAPPINGS) {
+  for (const p of [...mapping.intentPatterns, ...mapping.acknowledgmentPatterns]) {
+    if (p.global || p.sticky) {
+      regexSafe = false;
+      break;
+    }
+  }
+}
+assert(regexSafe, "No patterns use global or sticky flags");
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log(`\n${"─".repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
   process.exit(1);
+}
+
+} catch (err) {
+  console.error("\n✗ Validation script crashed:", err);
+  process.exit(2);
 }
