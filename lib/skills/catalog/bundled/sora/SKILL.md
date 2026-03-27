@@ -142,12 +142,12 @@ Use these modules when the request is for a specific artifact. They provide targ
 - Troubleshooting: `${SELENE_SKILL_ROOT}/references/troubleshooting.md`
 - Network/sandbox tips: `${SELENE_SKILL_ROOT}/references/codex-network.md`
 
-## Reference map
-- **`${SELENE_SKILL_ROOT}/references/cli.md`**: how to run create/poll/remix/download/batch via `${SELENE_SKILL_ROOT}/scripts/sora.py`.
-- **`${SELENE_SKILL_ROOT}/references/video-api.md`**: API-level knobs (models, sizes, duration, variants, status).
-- **`${SELENE_SKILL_ROOT}/references/prompting.md`**: prompt structure and iteration guidance.
-- **`${SELENE_SKILL_ROOT}/references/sample-prompts.md`**: copy/paste prompt recipes (examples only; no extra theory).
-- **`${SELENE_SKILL_ROOT}/references/cinematic-shots.md`**: templates for filmic shots.
-- **`${SELENE_SKILL_ROOT}/references/social-ads.md`**: templates for short social ad beats.
-- **`${SELENE_SKILL_ROOT}/references/troubleshooting.md`**: common errors and fixes.
-- **`${SELENE_SKILL_ROOT}/references/codex-network.md`**: network/approval troubleshooting.
+## Quick CLI examples
+
+```bash
+# Create a video
+python3 "${SELENE_SKILL_ROOT}/scripts/sora.py" create --prompt "a slow orbit around a matte black camera" --size 1280x720 --seconds 4
+
+# Poll and download
+python3 "${SELENE_SKILL_ROOT}/scripts/sora.py" poll <video-id> && python3 "${SELENE_SKILL_ROOT}/scripts/sora.py" download <video-id> --output ./output/
+```

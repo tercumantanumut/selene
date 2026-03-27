@@ -1,6 +1,6 @@
 ---
 name: "develop-web-game"
-description: "Use when Codex is building or iterating on a web game (HTML/JS) and needs a reliable development + testing loop: implement small changes, run a Playwright-based test script with short input bursts and intentional pauses, inspect screenshots/text, and review console errors with render_game_to_text."
+description: "Build and iterate on web games (HTML/JS/canvas) with a reliable develop-test loop using Playwright. Use when creating a browser game, canvas game, HTML5 game, or game prototype — implements small changes, runs automated play-testing with screenshots and text state inspection, and reviews console errors via render_game_to_text."
 ---
 
 

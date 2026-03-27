@@ -1,6 +1,6 @@
 ---
 name: "doc"
-description: "Use when the task involves reading, creating, or editing `.docx` documents, especially when formatting or layout fidelity matters; prefer `python-docx` plus the bundled `${SELENE_SKILL_ROOT}/scripts/render_docx.py` for visual checks."
+description: "Read, create, edit, and visually validate .docx Word documents with python-docx and the bundled render_docx.py script. Use when the task involves Word documents, .docx files, Microsoft Word formatting, document layout, tables, headers, styles, or converting documents to PDF/PNG for visual review."
 ---
 
 
@@ -27,26 +27,14 @@ description: "Use when the task involves reading, creating, or editing `.docx` d
 - Keep filenames stable and descriptive.
 
 ## Dependencies (install if missing)
-Prefer `uv` for dependency management.
 
-Python packages:
-```
-uv pip install python-docx pdf2image
-```
-If `uv` is unavailable:
-```
-python3 -m pip install python-docx pdf2image
-```
-System tools (for rendering):
-```
-# macOS (Homebrew)
-brew install libreoffice poppler
-
-# Ubuntu/Debian
-sudo apt-get install -y libreoffice poppler-utils
+```bash
+uv pip install python-docx pdf2image  # or: python3 -m pip install python-docx pdf2image
+# macOS: brew install libreoffice poppler
+# Linux: sudo apt-get install -y libreoffice poppler-utils
 ```
 
-If installation isn't possible in this environment, tell the user which dependency is missing and how to install it locally.
+If a dependency is missing, tell the user which one and how to install it.
 
 ## Environment
 No required environment variables.

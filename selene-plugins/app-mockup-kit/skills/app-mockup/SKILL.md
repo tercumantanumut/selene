@@ -1,11 +1,7 @@
 ---
 name: "app-mockup"
 description: "Create deterministic browser, tablet, laptop, and phone mockups from real screenshots via the local TypeScript renderer in this plugin. Use for marketing visuals, store screenshots, and framed UI previews without ML image generation."
-allowed-tools:
-  - executeCommand
-  - readFile
-  - writeFile
-  - chromiumWorkspace
+allowed-tools: "executeCommand, readFile, writeFile, chromiumWorkspace"
 ---
 
 # App Mockup

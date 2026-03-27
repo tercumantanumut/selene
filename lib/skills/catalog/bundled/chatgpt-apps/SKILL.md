@@ -1,6 +1,6 @@
 ---
 name: chatgpt-apps
-description: Build, scaffold, refactor, and troubleshoot ChatGPT Apps SDK applications that combine an MCP server and widget UI. Use when Codex needs to design tools, register UI resources, wire the MCP Apps bridge or ChatGPT compatibility APIs, apply Apps SDK metadata or CSP or domain settings, or produce a docs-aligned project scaffold. Prefer a docs-first workflow by invoking the openai-docs skill or OpenAI developer docs MCP tools before generating code.
+description: "Build, scaffold, refactor, and troubleshoot ChatGPT Apps SDK applications that combine an MCP server and widget UI. Use when creating a ChatGPT app, building a ChatGPT plugin, developing an OpenAI app, or when needing to design tools, register UI resources, wire the MCP Apps bridge, apply Apps SDK metadata or CSP or domain settings, or produce a docs-aligned project scaffold. Prefer a docs-first workflow by invoking the openai-docs skill or OpenAI developer docs MCP tools before generating code."
 ---
 
 # ChatGPT Apps
@@ -46,12 +46,7 @@ If `$openai-docs` is unavailable, use:
 - `mcp__openaiDeveloperDocs__search_openai_docs`
 - `mcp__openaiDeveloperDocs__fetch_openai_doc`
 
-Read `${SELENE_SKILL_ROOT}/references/apps-sdk-docs-workflow.md` for suggested doc queries and a compact checklist.
-Read `${SELENE_SKILL_ROOT}/references/app-archetypes.md` to classify the request into a small number of supported app shapes before choosing examples or scaffolds.
-Read `${SELENE_SKILL_ROOT}/references/repo-contract-and-validation.md` when generating or reviewing a repo so the output stays inside a stable “working app” contract.
-Read `${SELENE_SKILL_ROOT}/references/search-fetch-standard.md` when the app is connector-like, data-only, sync-oriented, or meant to work well with company knowledge or deep research.
-Read `${SELENE_SKILL_ROOT}/references/upstream-example-workflow.md` when starting a greenfield app or when deciding whether to adapt an upstream example or use the local fallback scaffold.
-Read `${SELENE_SKILL_ROOT}/references/window-openai-patterns.md` when the task needs ChatGPT-specific widget behavior or when translating repo examples that use wrapper-specific `app.*` helpers.
+Consult the reference files listed at the end of this skill as needed during the workflow.
 
 ## Prompt Guidance
 
