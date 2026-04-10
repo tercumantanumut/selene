@@ -166,7 +166,7 @@
     "lru-cache": "^11.2.4",
     "lucide-react": "^0.468.0",
     "luxon": "^3.7.2",
-    "mathjs": "^15.1.0",
+    "mathjs": "^15.2.0",
     "mime-types": "^3.0.2",
     "nanoid": "^5.0.9",
     "next": "^16.2.3",
