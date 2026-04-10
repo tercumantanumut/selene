@@ -170,7 +170,7 @@
     "mime-types": "^3.0.2",
     "nanoid": "^5.0.9",
     "next": "^16.2.3",
-    "next-intl": "^4.6.1",
+    "next-intl": "^4.9.1",
     "node-edge-tts": "^1.2.10",
     "onnxruntime-node": "^1.24.3",
     "pdf-parse": "^2.4.5",
