@@ -1186,7 +1186,13 @@
       "processing": "İşleniyor..."
     },
     "delegations": {
-      "activeDelegations": "{count, plural, one {# aktif delege} other {# aktif delege}}"
+      "activeDelegations": "{count, plural, one {# aktif delege} other {# aktif delege}}",
+      "taskUnavailable": "Gorev ayrintilari mevcut degil",
+      "openInBrowserTabs": "Sekmelerde ac",
+      "openInSidebar": "Kenar cubugunda ac",
+      "openDelegationSession": "{agent} oturumunu ac",
+      "openDelegationSessionRich": "{agent} ac: {task} ({destination})",
+      "triggerAriaLabel": "{count, plural, one {# aktif delege, detaylari goster} other {# aktif delege, detaylari goster}}"
     },
     "skillImportOverlay": {
       "uploading": "Yükleniyor…",

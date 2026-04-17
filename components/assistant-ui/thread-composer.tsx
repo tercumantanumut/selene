@@ -59,6 +59,7 @@ import { VoiceWaveform } from "@/components/voice/voice-waveform";
 import { VoiceActions } from "@/components/voice/voice-actions";
 import { useGlobalVoiceHotkey } from "@/lib/hooks/use-global-hotkey";
 import { getElectronAPI } from "@/lib/electron/types";
+import type { ChatWorkspaceMode } from "@/lib/chat/workspace-mode";
 import { useScreenCapture } from "@/lib/hooks/use-screen-capture";
 import { useUnifiedCapture } from "@/lib/hooks/use-unified-capture";
 import { useCaptureSession } from "@/lib/hooks/use-capture-session";
@@ -141,6 +142,8 @@ export const Composer: FC<{
   isProcessingInBackground?: boolean;
   sessionId?: string;
   activeRunId?: string | null;
+  workspaceMode?: ChatWorkspaceMode;
+  onOpenDelegationSession?: (sessionId: string, delegateAgentId: string) => void | Promise<void>;
   sttEnabled?: boolean;
   voicePostProcessing?: boolean;
   voiceActionsEnabled?: boolean;
@@ -167,6 +170,8 @@ export const Composer: FC<{
   isProcessingInBackground = false,
   sessionId,
   activeRunId,
+  workspaceMode = "sidebar",
+  onOpenDelegationSession,
   sttEnabled = false,
   voicePostProcessing = true,
   voiceActionsEnabled = true,
@@ -1894,7 +1899,11 @@ export const Composer: FC<{
         {sessionId && <ModelSelector sessionId={sessionId} status={contextStatus} />}
       </div>
 
-      <ActiveDelegationsIndicator characterId={character?.id ?? null} />
+      <ActiveDelegationsIndicator
+        characterId={character?.id ?? null}
+        workspaceMode={workspaceMode}
+        onOpenSession={onOpenDelegationSession}
+      />
     </div>
   );
 };

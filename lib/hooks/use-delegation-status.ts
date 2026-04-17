@@ -38,7 +38,7 @@ export function useDelegationStatus(characterId: string | null): DelegationStatu
           sessionId: t.sessionId ?? "",
           delegateAgentId: t.characterId ?? "",
           delegateAgent: (meta?.characterName as string) ?? "Agent",
-          task: "",
+          task: (meta?.delegationTask as string) ?? "",
           running: t.status === "running",
           elapsed: Date.now() - new Date(t.startedAt).getTime(),
         };

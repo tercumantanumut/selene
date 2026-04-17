@@ -723,6 +723,33 @@ export default function ChatInterface({
         }
     }, [character.id, sm.switchSession]);
 
+    const handleOpenDelegationSession = useCallback(async (targetSessionId: string, targetCharacterId: string) => {
+        if (!targetSessionId || !targetCharacterId) {
+            return;
+        }
+
+        if (workspaceRenderMode === "browser-tabs") {
+            useChatWorkspaceStore.getState().openSession({
+                sessionId: targetSessionId,
+                characterId: targetCharacterId,
+            });
+        }
+
+        const success = await sm.switchSession(targetSessionId, { characterId: targetCharacterId });
+        if (success) {
+            if (workspaceRenderMode === "browser-tabs") {
+                useChatWorkspaceStore.getState().setActiveSession(targetSessionId);
+            }
+            return;
+        }
+
+        if (workspaceRenderMode === "browser-tabs") {
+            useChatWorkspaceStore.getState().markUnavailable(targetSessionId, true);
+        }
+
+        router.push(buildChatSessionUrl(targetCharacterId, targetSessionId));
+    }, [router, sm.switchSession, workspaceRenderMode]);
+
     const handleBrowserTabDeleteSession = useCallback(
         async (sessionToDeleteId: string) => {
             useChatWorkspaceStore.getState().removeSession(sessionToDeleteId);
@@ -1706,6 +1733,8 @@ export default function ChatInterface({
             sessionId={sessionId}
             activeRunId={bg.processingRunId}
             isWorkspaceContext={Boolean(currentWorkspaceInfo)}
+            workspaceMode={workspaceRenderMode}
+            onOpenDelegationSession={handleOpenDelegationSession}
             onCancelBackgroundRun={bg.handleCancelBackgroundRun}
             isCancellingBackgroundRun={bg.isCancellingBackgroundRun}
             canCancelBackgroundRun={Boolean(bg.processingRunId)}

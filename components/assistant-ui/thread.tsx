@@ -45,6 +45,9 @@ import { Composer } from "./thread-composer";
 import { BrowserBackdrop } from "./browser-backdrop";
 import { useTheme } from "@/components/theme/theme-provider";
 import { useChatTransportError } from "@/components/chat-provider";
+import type { ChatWorkspaceMode } from "@/lib/chat/workspace-mode";
+
+type OpenDelegationSessionHandler = (sessionId: string, delegateAgentId: string) => void | Promise<void>;
 
 interface ThreadProps {
   onSessionActivity?: (message: { id?: string; role: "user" | "assistant" }) => void;
@@ -60,6 +63,8 @@ interface ThreadProps {
   onLivePromptInjected?: () => void | Promise<void | boolean>;
   onPostCancel?: () => void;
   isWorkspaceContext?: boolean;
+  workspaceMode?: ChatWorkspaceMode;
+  onOpenDelegationSession?: OpenDelegationSessionHandler;
 }
 
 export const Thread: FC<ThreadProps> = ({
@@ -75,6 +80,8 @@ export const Thread: FC<ThreadProps> = ({
   isZombieBackgroundRun = false,
   onLivePromptInjected,
   onPostCancel,
+  workspaceMode = "sidebar",
+  onOpenDelegationSession,
 }) => {
   const router = useRouter();
   const { character } = useCharacter();
@@ -393,6 +400,8 @@ export const Thread: FC<ThreadProps> = ({
               isProcessingInBackground={isProcessingInBackground}
               sessionId={sessionId}
               activeRunId={activeRunId}
+              workspaceMode={workspaceMode}
+              onOpenDelegationSession={onOpenDelegationSession}
               sttEnabled={voiceUiSettings.sttEnabled}
               voicePostProcessing={voiceUiSettings.voicePostProcessing}
               voiceActionsEnabled={voiceUiSettings.voiceActionsEnabled}

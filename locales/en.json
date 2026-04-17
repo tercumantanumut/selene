@@ -1150,7 +1150,13 @@
       "processing": "Processing..."
     },
     "delegations": {
-      "activeDelegations": "{count, plural, one {# active delegation} other {# active delegations}}"
+      "activeDelegations": "{count, plural, one {# active delegation} other {# active delegations}}",
+      "taskUnavailable": "Task details unavailable",
+      "openInBrowserTabs": "Open in tabs",
+      "openInSidebar": "Open in sidebar",
+      "openDelegationSession": "Open {agent} session",
+      "openDelegationSessionRich": "Open {agent}: {task} ({destination})",
+      "triggerAriaLabel": "{count, plural, one {# active delegation, show details} other {# active delegations, show details}}"
     },
     "skillImportOverlay": {
       "uploading": "Uploading…",

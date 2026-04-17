@@ -296,6 +296,7 @@ async function handleStart(
       workflowId: membership.workflow.id,
       characterId: resolution.candidate.agentId,
       characterName: resolution.candidate.agentName,
+      delegationTask: task,
       rootSessionId,
     },
   });

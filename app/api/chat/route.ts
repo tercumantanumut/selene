@@ -498,7 +498,13 @@ export async function POST(req: Request) {
         ? {
             ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
             ...(isChannelSource ? { suppressFromUI: true, taskSource: "channel" } : {}),
-            ...(isDelegation ? { isDelegation: true, parentAgentId: sessionMetadata.parentAgentId, workflowId: sessionMetadata.workflowId, characterName: sessionMetadata.characterName } : {}),
+            ...(isDelegation ? {
+              isDelegation: true,
+              parentAgentId: sessionMetadata.parentAgentId,
+              workflowId: sessionMetadata.workflowId,
+              characterName: sessionMetadata.characterName,
+              delegationTask: sessionMetadata.delegationTask,
+            } : {}),
           }
         : undefined,
     };
