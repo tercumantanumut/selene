@@ -30,6 +30,7 @@ import {
   buildCanonicalAssistantContentFromSteps,
   mergeCanonicalAssistantContent,
   countCanonicalTruncationMarkers,
+  stubEphemeralToolResults,
 } from "./canonical-content";
 import { estimateMessageTokens } from "@/lib/utils";
 import {
@@ -184,10 +185,16 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
       relevantSteps,
       text
     );
-    const content = mergeCanonicalAssistantContent(
+    const mergedContent = mergeCanonicalAssistantContent(
       ctx.streamingState?.parts,
       stepContent
     );
+    // Rewrite ephemeral tool-results into compact stubs BEFORE persistence.
+    // The model has already seen the full result in the current streaming
+    // turn — stubbing the stored copy prevents replay bloat across subsequent
+    // turns (e.g. Ghost OS screenshots, large AX trees). The current turn's
+    // in-memory result is unaffected.
+    const content = stubEphemeralToolResults(mergedContent);
     const canonicalTruncationCount = countCanonicalTruncationMarkers(content);
     if (canonicalTruncationCount > 0) {
       console.error(
@@ -499,10 +506,13 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
       const stepContent = buildCanonicalAssistantContentFromSteps(
         steps as StepLike[] | undefined
       );
-      const content = mergeCanonicalAssistantContent(
+      const mergedContent = mergeCanonicalAssistantContent(
         ctx.streamingState?.parts,
         stepContent
       );
+      // See note at the normal-completion write site — stubbing ephemeral
+      // tool-results here keeps interrupted-turn DB rows small too.
+      const content = stubEphemeralToolResults(mergedContent);
       const canonicalTruncationCount =
         countCanonicalTruncationMarkers(content);
       if (canonicalTruncationCount > 0) {

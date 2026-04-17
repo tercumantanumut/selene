@@ -1,5 +1,6 @@
 import type { DBContentPart, DBToolCallPart, DBToolResultPart } from "@/lib/messages/converter";
 import { normalizeToolResultOutput } from "@/lib/ai/tool-result-utils";
+import { ToolRegistry } from "@/lib/ai/tool-registry/registry";
 import { normalizeToolCallInput } from "./tool-call-utils";
 import { cloneContentParts } from "./streaming-state";
 import { sanitizeAssistantOutputText } from "./content-sanitizer";
@@ -380,6 +381,215 @@ export function mergeCanonicalAssistantContent(
   }
 
   return consolidateAdjacentTextParts(reconcileDbToolCallResultPairs(base));
+}
+
+/**
+ * Sentinel key used inside a stubbed tool-result's `result` payload so replay
+ * code (and debugging) can tell the difference between a real result and an
+ * ephemeral-history stub.
+ */
+export const EPHEMERAL_STUB_MARKER = "ephemeralStub";
+
+interface MediaRef {
+  url: string;
+  mimeType?: string;
+}
+
+type EphemeralLookup = (toolName: string) => boolean;
+
+function defaultEphemeralLookup(toolName: string): boolean {
+  if (!toolName) return false;
+  try {
+    const registered = ToolRegistry.getInstance().get(toolName);
+    return registered?.metadata.ephemeralResults === true;
+  } catch {
+    // Registry may not be initialised in test contexts — treat as non-ephemeral.
+    return false;
+  }
+}
+
+function pushMediaRef(collected: MediaRef[], seen: Map<string, MediaRef>, ref: MediaRef) {
+  if (!ref.url || typeof ref.url !== "string") return;
+  const existing = seen.get(ref.url);
+  if (!existing) {
+    seen.set(ref.url, ref);
+    collected.push(ref);
+    return;
+  }
+  // Upgrade the existing entry in-place if we've now learned a richer mimeType
+  // (e.g. `images[]` is seen first without a mimeType, but `content[]` carries one).
+  if (!existing.mimeType && ref.mimeType) {
+    existing.mimeType = ref.mimeType;
+  }
+}
+
+function collectMediaRefs(
+  value: unknown,
+  collected: MediaRef[],
+  seenUrls: Map<string, MediaRef>,
+  seenObjects: WeakSet<object>,
+  depth = 0,
+): void {
+  if (depth > 8) return;
+  if (value === null || value === undefined) return;
+
+  if (typeof value === "string") {
+    // Only capture recognised hosted / media references — never raw URL strings
+    // stashed in random fields, to avoid false positives.
+    if (value.startsWith("/api/media/")) {
+      pushMediaRef(collected, seenUrls, { url: value });
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectMediaRefs(item, collected, seenUrls, seenObjects, depth + 1);
+    }
+    return;
+  }
+
+  if (typeof value === "object") {
+    if (seenObjects.has(value)) return;
+    seenObjects.add(value);
+    const obj = value as Record<string, unknown>;
+
+    // Recognise explicit media shapes produced by formatMCPToolResult /
+    // Selene's media tools: { url, mimeType }, { type: "image", url, mimeType }, etc.
+    const url = typeof obj.url === "string" ? obj.url : undefined;
+    if (url && (url.startsWith("/api/media/") || url.startsWith("http"))) {
+      const mimeType =
+        typeof obj.mimeType === "string"
+          ? obj.mimeType
+          : typeof obj.mediaType === "string"
+            ? obj.mediaType
+            : typeof obj.contentType === "string"
+              ? obj.contentType
+              : undefined;
+      pushMediaRef(collected, seenUrls, { url, mimeType });
+    }
+
+    for (const val of Object.values(obj)) {
+      collectMediaRefs(val, collected, seenUrls, seenObjects, depth + 1);
+    }
+  }
+}
+
+function getString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Build the compact stub stored in persistent history for an ephemeral
+ * tool-result. The model has already seen the full result in the current
+ * streaming turn — on replay it only needs to know the tool ran, the final
+ * status, and any media refs (so later tool calls can pass the URL along).
+ */
+function makeEphemeralStubResult(
+  toolName: string,
+  original: unknown,
+): Record<string, unknown> {
+  const mediaRefs: MediaRef[] = [];
+  collectMediaRefs(
+    original,
+    mediaRefs,
+    new Map<string, MediaRef>(),
+    new WeakSet<object>(),
+  );
+
+  let status: string = "success";
+  let originalSummary: string | undefined;
+  let errorMessage: string | undefined;
+
+  if (original && typeof original === "object" && !Array.isArray(original)) {
+    const obj = original as Record<string, unknown>;
+    const rawStatus = getString(obj.status);
+    if (rawStatus) status = rawStatus.toLowerCase();
+    originalSummary = getString(obj.summary);
+    errorMessage = getString(obj.error);
+  }
+
+  const summary =
+    originalSummary ??
+    (errorMessage
+      ? `${toolName} failed (ephemeral — full result omitted from replay history)`
+      : mediaRefs.length > 0
+        ? `${toolName} returned ${mediaRefs.length} media ref(s) (ephemeral — full result omitted from replay history)`
+        : `${toolName} completed (ephemeral — full result omitted from replay history)`);
+
+  const stub: Record<string, unknown> = {
+    status,
+    summary,
+    [EPHEMERAL_STUB_MARKER]: true,
+    toolName,
+  };
+  if (mediaRefs.length > 0) stub.mediaRefs = mediaRefs;
+  if (errorMessage) stub.error = errorMessage;
+  return stub;
+}
+
+/**
+ * Rewrite tool-result parts for tools flagged `ephemeralResults: true`
+ * into compact stubs before persistence. The stub preserves status + any
+ * hosted media URLs so replay context stays lean while subsequent tool
+ * calls can still reference the produced media.
+ *
+ * Called at the canonical-write boundary (stream-callbacks.ts) — AFTER the
+ * current turn has streamed (so the model saw the full result once) and
+ * BEFORE the row hits the messages table.
+ */
+export function stubEphemeralToolResults(
+  parts: DBContentPart[],
+  ephemeralLookup: EphemeralLookup = defaultEphemeralLookup,
+): DBContentPart[] {
+  let anyStubbed = false;
+  const rewritten: DBContentPart[] = [];
+  for (const part of parts) {
+    if (part.type !== "tool-result") {
+      rewritten.push(part);
+      continue;
+    }
+
+    const toolName = part.toolName || "tool";
+    if (!ephemeralLookup(toolName)) {
+      rewritten.push(part);
+      continue;
+    }
+
+    // Avoid double-stubbing if this part was already stubbed (e.g. replayed
+    // through a secondary persist path).
+    const existingResult = part.result as Record<string, unknown> | undefined;
+    if (
+      existingResult &&
+      typeof existingResult === "object" &&
+      !Array.isArray(existingResult) &&
+      existingResult[EPHEMERAL_STUB_MARKER] === true
+    ) {
+      rewritten.push(part);
+      continue;
+    }
+
+    anyStubbed = true;
+    const stub = makeEphemeralStubResult(toolName, part.result ?? part.output);
+    rewritten.push({
+      ...part,
+      result: stub,
+      // Drop legacy `output` field so stubs aren't half-rewritten on rows that
+      // used the older shape.
+      output: undefined,
+      status: typeof stub.status === "string" ? stub.status : part.status,
+    });
+  }
+
+  if (anyStubbed) {
+    console.log(
+      `[CHAT API] Ephemeral stub applied to tool-result(s) before persistence (ephemeralResults metadata honored).`,
+    );
+  }
+
+  return rewritten;
 }
 
 export function countCanonicalTruncationMarkers(parts: DBContentPart[]): number {
