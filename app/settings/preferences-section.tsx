@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { useTranslations, useLocale } from "next-intl";
-import { locales, localeCookieName, type Locale } from "@/i18n/config";
+import { locales, type Locale } from "@/i18n/config";
 import { useTheme } from "@/components/theme/theme-provider";
 import { THEME_PRESETS } from "@/lib/personalization/theme-presets";
 import { WALLPAPERS, WALLPAPER_CATEGORIES, type BackgroundConfig } from "@/lib/personalization/wallpapers";
@@ -79,16 +80,38 @@ function NoneOptionButton({
 
 export function PreferencesSection({ formState, updateField }: PreferencesSectionProps) {
   const t = useTranslations("settings");
+  const router = useRouter();
   const currentLocale = useLocale() as Locale;
   const { themePreset, setThemePreset, homepageBackground, setHomepageBackground, chatBackground, setChatBackground } = useTheme();
   const [bgTab, setBgTab] = useState<"homepage" | "chat">("homepage");
   const [bgMediaType, setBgMediaType] = useState<"images" | "videos">("images");
   const [wallpaperCategory, setWallpaperCategory] = useState<string>("all");
   const [videoCategory, setVideoCategory] = useState<string>("all");
+  const [isLocaleSwitching, startLocaleTransition] = useTransition();
 
   const handleLocaleChange = (newLocale: Locale) => {
-    document.cookie = `${localeCookieName}=${newLocale}; path=/; max-age=31536000`;
-    window.location.reload();
+    if (newLocale === currentLocale) return;
+    startLocaleTransition(async () => {
+      try {
+        const response = await fetch("/api/locale", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ locale: newLocale }),
+          // Same-origin + no-cache so the Set-Cookie header is applied immediately.
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          console.error("[locale] Failed to update locale", await response.text());
+          return;
+        }
+        // Re-render server components with the new locale — no full page reload,
+        // which avoids Electron/Chrome protocol-upgrade edge cases.
+        router.refresh();
+      } catch (error) {
+        console.error("[locale] Network error while updating locale", error);
+      }
+    });
   };
 
   const activeBg = bgTab === "homepage" ? homepageBackground : chatBackground;
@@ -405,12 +428,16 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
         <label className="mb-2 block font-mono text-sm text-terminal-muted">{t("preferences.language.label")}</label>
         <div className="space-y-3">
           {locales.map((locale) => (
-            <label key={locale} className="flex items-center gap-3">
+            <label
+              key={locale}
+              className={`flex items-center gap-3 ${isLocaleSwitching ? "opacity-60" : ""}`}
+            >
               <input
                 type="radio"
                 name="language"
                 value={locale}
                 checked={currentLocale === locale}
+                disabled={isLocaleSwitching}
                 onChange={() => handleLocaleChange(locale)}
                 className="size-4 accent-terminal-green"
               />
