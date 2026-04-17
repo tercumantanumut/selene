@@ -235,6 +235,20 @@ export class WhatsAppConnector implements ChannelConnector {
   }
 
   // fallow-ignore-next-line unused-class-member
+  async acknowledgeQueued(peerId: string, externalMessageId: string): Promise<void> {
+    if (!this.sock) return;
+    // WhatsApp's native "read receipt" is the most user-visible passive ack
+    // available over baileys — a follow-up text message would spam the chat
+    // and presence=composing looks misleading (no assistant reply yet).
+    try {
+      const key = { remoteJid: peerId, id: externalMessageId, fromMe: false };
+      await this.sock.readMessages([key]);
+    } catch (error) {
+      console.warn("[WhatsApp] acknowledgeQueued (readMessages) failed:", error);
+    }
+  }
+
+  // fallow-ignore-next-line unused-class-member
   getQrCode(): string | null {
     return null;
   }

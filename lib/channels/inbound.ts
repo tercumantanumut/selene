@@ -485,6 +485,22 @@ async function processInboundMessage(message: ChannelInboundMessage): Promise<vo
           // another AI response when messages reload.
           await persistInboundMessage(sessionId, message, contentParts, { livePromptInjected: true });
 
+          // Best-effort user-visible ack on the originating channel so the
+          // sender sees their message was accepted even though the next
+          // assistant turn hasn't rendered yet (the live-prompt is queued
+          // for the in-flight stream's next step). Fire-and-forget; we
+          // never block the inbound pipeline on this.
+          try {
+            const manager = getChannelManager();
+            void manager.acknowledgeQueued(
+              message.connectionId,
+              message.peerId,
+              message.messageId,
+            );
+          } catch (ackError) {
+            console.warn("[Channels] acknowledgeQueued dispatch failed:", ackError);
+          }
+
           console.log("[Channels] Message injected into active stream via live prompt queue");
           taskRegistry.updateStatus(runId, "succeeded", {
             durationMs: Date.now() - new Date(startedAt).getTime(),

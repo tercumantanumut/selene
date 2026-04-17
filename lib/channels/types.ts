@@ -116,6 +116,20 @@ export interface ChannelConnector {
   getQrCode?(): string | null;
   sendTyping?(peerId: string): Promise<void>;
   markAsRead?(peerId: string, messageId: string): Promise<void>;
+  /**
+   * Lightweight user-visible ack fired when an inbound message is *queued*
+   * for mid-stream live-prompt injection (because an active run is still
+   * streaming). This lets the user see "got it, it'll land next" without
+   * waiting for the chat UI to re-render.
+   *
+   * Implementations should be idempotent + best-effort: swallow transport
+   * errors, never retry. Per-channel expectations:
+   *   - Telegram: emoji reaction on the inbound message (setMessageReaction).
+   *   - WhatsApp: readMessages() (piggybacks on the existing read receipt).
+   *   - Slack:    chat.postEphemeral in-thread confirmation.
+   *   - Discord:  message.react() on the inbound message.
+   */
+  acknowledgeQueued?(peerId: string, externalMessageId: string): Promise<void>;
   sendInteractiveQuestion?(payload: InteractiveQuestionPayload): Promise<ChannelSendResult>;
   setInteractiveAnswerHandler?(handler: (data: InteractiveAnswerData) => void): void;
 }

@@ -204,6 +204,22 @@ export class DiscordConnector implements ChannelConnector {
   }
 
   // fallow-ignore-next-line unused-class-member
+  async acknowledgeQueued(peerId: string, externalMessageId: string): Promise<void> {
+    try {
+      const channel = await this.client.channels.fetch(peerId);
+      if (!channel || !("messages" in channel)) return;
+      const textChannel = channel as TextChannel | DMChannel;
+      const msg = await textChannel.messages.fetch(externalMessageId);
+      if (msg) {
+        await msg.react("👀");
+      }
+    } catch (error) {
+      // Missing permission or message deleted — ack is best-effort.
+      console.warn("[Discord] acknowledgeQueued (react) failed:", error);
+    }
+  }
+
+  // fallow-ignore-next-line unused-class-member
   async sendInteractiveQuestion(payload: InteractiveQuestionPayload): Promise<ChannelSendResult> {
     const channel = await this.client.channels.fetch(payload.peerId);
     if (!channel || !("send" in channel)) {

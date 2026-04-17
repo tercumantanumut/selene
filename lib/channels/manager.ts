@@ -199,6 +199,24 @@ class ChannelManager {
     }
   }
 
+  /**
+   * Best-effort ack that an inbound message has been *queued* for mid-stream
+   * live-prompt injection (an active run is still streaming so the message
+   * won't visibly render until the next step). Swallows transport errors;
+   * callers should NOT await-and-throw — the ack is UX polish, not critical
+   * state. See `ChannelConnector.acknowledgeQueued` jsdoc for per-channel
+   * semantics.
+   */
+  async acknowledgeQueued(connectionId: string, peerId: string, externalMessageId: string): Promise<void> {
+    const connector = this.connectors.get(connectionId);
+    if (!connector || !connector.acknowledgeQueued) return;
+    try {
+      await connector.acknowledgeQueued(peerId, externalMessageId);
+    } catch (error) {
+      console.warn("[ChannelManager] acknowledgeQueued failed:", error);
+    }
+  }
+
   getConnector(connectionId: string): ChannelConnector | undefined {
     return this.connectors.get(connectionId);
   }

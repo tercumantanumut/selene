@@ -291,6 +291,22 @@ export class TelegramConnector implements ChannelConnector {
   }
 
   // fallow-ignore-next-line unused-class-member
+  async acknowledgeQueued(peerId: string, externalMessageId: string): Promise<void> {
+    if (!this.bot || this.status !== "connected") return;
+    const chatId = Number(peerId);
+    const messageId = Number(externalMessageId);
+    if (!Number.isFinite(chatId) || !Number.isFinite(messageId)) return;
+    try {
+      await this.bot.api.setMessageReaction(chatId, messageId, [
+        { type: "emoji", emoji: "👀" },
+      ]);
+    } catch (error) {
+      // Some bots / chats disallow reactions — downgrade silently.
+      console.warn("[Telegram] setMessageReaction failed:", error);
+    }
+  }
+
+  // fallow-ignore-next-line unused-class-member
   setInteractiveAnswerHandler(handler: (data: InteractiveAnswerData) => void): void {
     this.interactiveAnswerHandler = handler;
   }

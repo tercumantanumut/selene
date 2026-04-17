@@ -177,6 +177,23 @@ export class SlackConnector implements ChannelConnector {
   }
 
   // fallow-ignore-next-line unused-class-member
+  async acknowledgeQueued(peerId: string, externalMessageId: string): Promise<void> {
+    // Use a reaction rather than an ephemeral message: reactions are silent,
+    // persistent, and don't add a chat line that we'd then have to clean up
+    // when the real assistant reply lands.
+    try {
+      await this.app.client.reactions.add({
+        channel: peerId,
+        timestamp: externalMessageId,
+        name: "eyes",
+      });
+    } catch (error) {
+      // already_reacted and invalid_name are both safe to ignore.
+      console.warn("[Slack] reactions.add failed:", error);
+    }
+  }
+
+  // fallow-ignore-next-line unused-class-member
   setInteractiveAnswerHandler(handler: (data: InteractiveAnswerData) => void): void {
     this.interactiveAnswerHandler = handler;
   }
