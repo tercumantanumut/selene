@@ -50,6 +50,7 @@ import {
   buildMissingSdkPassthroughOutput,
   normalizeSdkPassthroughOutput,
 } from "./sdk-passthrough-normalizer";
+import { sanitizeToolResultForBase64, attachMediaRefs } from "@/lib/media/base64-extract";
 import {
   normalizeWebSearchQuery,
   getWebSearchSourceCount,
@@ -495,15 +496,24 @@ export async function buildToolsForRequest(
                 abortSignal,
               });
               if (resolved) {
+                // Strip any base64 image/document envelopes (Anthropic shape)
+                // emitted by SDK-native built-ins like Read before the payload
+                // reaches the AI SDK executor. This protects the current turn's
+                // model-facing context, not just persisted history.
+                const { sanitized, mediaRefs } = await sanitizeToolResultForBase64(
+                  resolved.output,
+                  { sessionId, role: "generated" }
+                );
                 const normalized = normalizeSdkPassthroughOutput(
                   resolved.toolName || registeredToolName,
-                  resolved.output,
+                  sanitized,
                   args
                 );
+                const withMediaRefs = attachMediaRefs(normalized, mediaRefs);
                 if (largeInputMetadata) {
-                  return { ...normalized, ...largeInputMetadata };
+                  return { ...withMediaRefs, ...largeInputMetadata };
                 }
-                return normalized;
+                return withMediaRefs;
               }
               console.warn(
                 `[CHAT API] SDK passthrough wait ended without result: ${toolCallId} tool=${registeredToolName}`
