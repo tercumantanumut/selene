@@ -17,6 +17,35 @@ import { hasFilesystemPathArg, resolveMCPConfig } from "./mcp-config-resolver";
 // Re-export resolveMCPConfig so existing callers importing from client-manager still work
 export { resolveMCPConfig } from "./mcp-config-resolver";
 
+/**
+ * Lifecycle events for MCP servers — consumed by electron main to surface
+ * sidecar state to the Ghost OS settings UI (spawn → handshake → crash, etc.).
+ *
+ * These are intentionally framework-agnostic: emit in lib/mcp, bridge to IPC
+ * in electron/ipc-ghost-os-handlers.ts.
+ */
+export type MCPLifecycleEventType =
+    | "spawned"
+    | "handshake"
+    | "disconnected"
+    | "crashed"
+    | "permission-error";
+
+export interface MCPLifecycleEvent {
+    type: MCPLifecycleEventType;
+    serverName: string;
+    detail?: string;
+    error?: string;
+    pid?: number;
+    exitCode?: number | null;
+    /** Epoch ms */
+    timestamp: number;
+}
+
+/** Signature the screen-recording error pattern used by ghost-os tools */
+export const SCREEN_PERMISSION_ERROR_RE =
+    /screen\s*recording|screen\s*capture\s*permission|not\s+authorized\s+(?:to|for)\s+screen|cgdisplaycreate|kcgerror|permission\s+not\s+granted/i;
+
 
 /**
  * Singleton manager for MCP client connections
@@ -34,7 +63,13 @@ class MCPClientManager {
     private transports: Map<string, StdioClientTransport | SSEClientTransport> = new Map();
     private characterMcpServers: Map<string, string[]> = new Map(); // Track which servers belong to which character
     private serverCharacterContext: Map<string, string | undefined> = new Map(); // Track characterId used for each server connection
-    
+    /**
+     * Last-known resolved config per server. Needed by `reconnect(serverName)`
+     * so the UI can ask for a restart without having to re-resolve the entire
+     * character's MCP config — the common case after a silent sidecar hang.
+     */
+    private serverConfigs: Map<string, ResolvedMCPServer> = new Map();
+
     /** Track servers currently being connected to prevent race conditions */
     private connectingServers: Map<string, Promise<MCPServerStatus>> = new Map();
 
@@ -55,6 +90,16 @@ class MCPClientManager {
         timeoutId: NodeJS.Timeout;
     } | null = null;
 
+    /**
+     * Per-server lifecycle-event subscribers.
+     * Used by electron main to bridge spawn/crash/handshake events to IPC.
+     * Keyed by serverName; "*" subscribers receive events for every server.
+     */
+    private lifecycleSubscribers: Map<
+        string,
+        Set<(event: MCPLifecycleEvent) => void>
+    > = new Map();
+
     private constructor() {
         // Register folder change listener for auto-reconnection
         onFolderChange(async (characterId, event) => {
@@ -71,6 +116,57 @@ class MCPClientManager {
             globalForMCP.mcpClientManager = new MCPClientManager();
         }
         return globalForMCP.mcpClientManager;
+    }
+
+    /**
+     * Subscribe to lifecycle events for a server (or "*" for all servers).
+     * Returns an unsubscribe function.
+     *
+     * This is a pure in-memory event bus; no IPC or EventEmitter dependency.
+     * Electron main uses it to forward ghost-os sidecar state to the settings UI.
+     */
+    subscribeLifecycle(
+        serverName: string,
+        callback: (event: MCPLifecycleEvent) => void,
+    ): () => void {
+        let set = this.lifecycleSubscribers.get(serverName);
+        if (!set) {
+            set = new Set();
+            this.lifecycleSubscribers.set(serverName, set);
+        }
+        set.add(callback);
+        return () => {
+            set?.delete(callback);
+            if (set && set.size === 0) {
+                this.lifecycleSubscribers.delete(serverName);
+            }
+        };
+    }
+
+    private emitLifecycle(event: Omit<MCPLifecycleEvent, "timestamp">): void {
+        const fullEvent: MCPLifecycleEvent = { ...event, timestamp: Date.now() };
+        // Fan out to subscribers for this specific server
+        const specific = this.lifecycleSubscribers.get(event.serverName);
+        if (specific) {
+            for (const cb of specific) {
+                try {
+                    cb(fullEvent);
+                } catch (err) {
+                    console.warn(`[MCP] lifecycle subscriber threw for ${event.serverName}:`, err);
+                }
+            }
+        }
+        // Fan out to wildcard subscribers
+        const wildcard = this.lifecycleSubscribers.get("*");
+        if (wildcard) {
+            for (const cb of wildcard) {
+                try {
+                    cb(fullEvent);
+                } catch (err) {
+                    console.warn(`[MCP] wildcard lifecycle subscriber threw:`, err);
+                }
+            }
+        }
     }
 
     /**
@@ -155,6 +251,11 @@ class MCPClientManager {
                     command: config.command,
                     args: config.args || [],
                     env: config.env,
+                    // Pass the logical server name so the transport can open a
+                    // stable per-sidecar stderr log at
+                    // ELECTRON_USER_DATA_PATH/logs/mcp/<serverName>-stderr.log
+                    // instead of dropping errors into /dev/null under Electron.
+                    serverName,
                 });
             } else {
                 // HTTP/SSE transport
@@ -194,9 +295,81 @@ class MCPClientManager {
                 capabilities: {},
             });
 
+            // ------------------------------------------------------------------
+            // Hook transport lifecycle BEFORE connect().
+            //
+            // Previously the manager never listened to `transport.onclose`, so
+            // when a sidecar crashed or was killed externally its Client would
+            // mark itself disconnected internally but `this.clients` still held
+            // a reference. `isConnected(serverName)` returned true and the next
+            // `executeTool` call would throw "Not connected" from deep inside
+            // the SDK — with no way to recover short of a full app restart.
+            //
+            // Hooking onclose here evicts the stale entries the moment the
+            // transport dies, so the UI's Reconnect button (and any future
+            // auto-respawn policy) works against a clean slate.
+            //
+            // We attach BEFORE connect() so the handler also catches immediate
+            // close events during handshake.
+            // ------------------------------------------------------------------
+            transport.onclose = () => {
+                console.warn(`[MCP] Transport closed for ${serverName}`);
+                // Only clear state if this transport is still the registered
+                // one for this serverName — a rapid disconnect/reconnect cycle
+                // may have already replaced it, in which case the stale close
+                // event must not wipe the fresh connection.
+                if (this.transports.get(serverName) === transport) {
+                    this.clients.delete(serverName);
+                    this.transports.delete(serverName);
+                    this.tools.delete(serverName);
+                    this.serverCharacterContext.delete(serverName);
+                    const previousStatus = this.status.get(serverName);
+                    this.status.set(serverName, {
+                        serverName,
+                        connected: false,
+                        lastConnected: previousStatus?.lastConnected,
+                        lastError: previousStatus?.lastError,
+                        toolCount: 0,
+                        tools: [],
+                    });
+                    this.emitLifecycle({ type: "disconnected", serverName });
+                }
+            };
+
+            transport.onerror = (err: Error) => {
+                console.error(`[MCP] Transport error for ${serverName}:`, err);
+                this.emitLifecycle({
+                    type: "crashed",
+                    serverName,
+                    error: err instanceof Error ? err.message : String(err),
+                });
+            };
+
             try {
                 await client.connect(transport);
+
+                // Emit "spawned" — process is running and initialize handshake succeeded.
+                // For stdio, pid is available after transport.start(); SSE has no pid.
+                const spawnedPid =
+                    transport instanceof StdioClientTransport
+                        ? (transport.pid ?? undefined)
+                        : undefined;
+                this.emitLifecycle({
+                    type: "spawned",
+                    serverName,
+                    pid: spawnedPid ?? undefined,
+                    detail: config.type === "stdio"
+                        ? `${config.command ?? ""} ${(config.args ?? []).join(" ")}`.trim()
+                        : config.url,
+                });
             } catch (error: any) {
+                // Emit "crashed" — spawn or initialize failed.
+                this.emitLifecycle({
+                    type: "crashed",
+                    serverName,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+
                 // Check for ENOENT specifically (command not found)
                 if (error?.code === "ENOENT" || error?.message?.includes("ENOENT")) {
                     const command = config.command || "npx";
@@ -236,11 +409,23 @@ class MCPClientManager {
                 serverName,
             }));
 
+            // Emit "handshake" — tools/list succeeded. This is the first signal that
+            // end-to-end JSON-RPC works over the stdio pipes.
+            this.emitLifecycle({
+                type: "handshake",
+                serverName,
+                detail: `${discoveredTools.length} tools`,
+            });
+
             // Store client, transport, tools, and context
             this.clients.set(serverName, client);
             this.transports.set(serverName, transport);
             this.tools.set(serverName, discoveredTools);
             this.serverCharacterContext.set(serverName, characterId);
+            // Remember the resolved config so `reconnect(serverName)` can
+            // re-spawn this server without re-resolving the whole character
+            // config (the UI's Reconnect button calls us with just a name).
+            this.serverConfigs.set(serverName, config);
 
             const status: MCPServerStatus = {
                 serverName,
@@ -275,6 +460,7 @@ class MCPClientManager {
     async disconnect(serverName: string): Promise<void> {
         const client = this.clients.get(serverName);
         const transport = this.transports.get(serverName);
+        const wasConnected = !!(client || transport);
 
         if (client) {
             try {
@@ -297,6 +483,11 @@ class MCPClientManager {
         this.serverCharacterContext.delete(serverName);
         this.tools.delete(serverName);
         this.status.delete(serverName);
+        this.serverConfigs.delete(serverName);
+
+        if (wasConnected) {
+            this.emitLifecycle({ type: "disconnected", serverName });
+        }
 
         // Clean up character tracking
         for (const [characterId, servers] of this.characterMcpServers.entries()) {
@@ -308,6 +499,41 @@ class MCPClientManager {
                 }
             }
         }
+    }
+
+    /**
+     * Reconnect a single MCP server — the recovery path for a hung or
+     * crashed sidecar. Uses the last-known resolved config stored during
+     * {@link connect}; does NOT re-resolve the character's MCP config
+     * (which would require a settings/characters lookup the UI doesn't
+     * have easy access to).
+     *
+     * Returns null if we have no remembered config for this server — in
+     * that case the caller must fall back to a full `connect()` with a
+     * freshly resolved config (for example, via `loadMCPToolsForCharacter`).
+     */
+    async reconnect(serverName: string): Promise<MCPServerStatus | null> {
+        const config = this.serverConfigs.get(serverName);
+        if (!config) {
+            console.warn(
+                `[MCP] reconnect(${serverName}) called but no remembered config — ` +
+                `the server may have never been connected in this session.`
+            );
+            return null;
+        }
+        const characterId = this.serverCharacterContext.get(serverName);
+        console.log(`[MCP] Reconnecting ${serverName} (characterId=${characterId ?? "none"})`);
+
+        // Full disconnect so we start from a clean slate — this is the whole
+        // point of the UI button: the client may be registered but wedged.
+        await this.disconnect(serverName);
+
+        // `disconnect` clears `serverConfigs`. Restore before `connect()` runs
+        // so a rapid second call (double-click on the button) can still find
+        // the config. `connect()` will overwrite it on success anyway.
+        this.serverConfigs.set(serverName, config);
+
+        return this.connect(serverName, config, characterId);
     }
 
     /**
@@ -475,7 +701,42 @@ class MCPClientManager {
                 }),
                 timeoutPromise,
             ]);
+
+            // MCP servers may return errors inside a structured tool result
+            // (e.g. { isError: true, content: [{ text: "...screen recording..." }] })
+            // rather than throwing. Probe the result for screen-permission signals so
+            // the Ghost OS wizard can surface a clear "stale permission" remediation
+            // even when the tool call technically "succeeded" at the JSON-RPC layer.
+            try {
+                const resultObj = result as { isError?: boolean; content?: Array<{ text?: string }> } | undefined;
+                if (resultObj?.isError && Array.isArray(resultObj.content)) {
+                    const text = resultObj.content.map((c) => c?.text ?? "").join("\n");
+                    if (text && SCREEN_PERMISSION_ERROR_RE.test(text)) {
+                        this.emitLifecycle({
+                            type: "permission-error",
+                            serverName,
+                            error: text.trim().slice(0, 500),
+                            detail: toolName,
+                        });
+                    }
+                }
+            } catch {
+                // Non-fatal — permission probing must never break a successful call.
+            }
+
             return result;
+        } catch (error) {
+            // Detect screen-recording errors thrown from the tool call itself.
+            const message = error instanceof Error ? error.message : String(error);
+            if (SCREEN_PERMISSION_ERROR_RE.test(message)) {
+                this.emitLifecycle({
+                    type: "permission-error",
+                    serverName,
+                    error: message.slice(0, 500),
+                    detail: toolName,
+                });
+            }
+            throw error;
         } finally {
             // Clear timeout to prevent timer leaks
             if (timeoutId !== undefined) {
@@ -600,6 +861,7 @@ class MCPClientManager {
         this.tools.clear();
         this.status.clear();
         this.transports.clear();
+        this.serverConfigs.clear();
 
         console.log("[MCP] All servers disconnected and state cleared");
     }

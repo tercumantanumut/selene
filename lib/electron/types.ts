@@ -200,6 +200,76 @@ interface ElectronPermissionsAPI {
   onScreenPermissionRequired: (callback: () => void) => (() => void) | undefined;
 }
 
+/**
+ * Ghost OS wizard stages — mirrored from lib/ghost-os/preflight.ts.
+ * Kept as a string union (not an import) so renderer code doesn't pull the
+ * main-process module transitively.
+ */
+export type GhostOsPreflightStage =
+  | "binary_located"
+  | "permission_preflight"
+  | "sidecar_spawn"
+  | "mcp_handshake"
+  | "first_tool_ping"
+  | "complete";
+
+export type GhostOsStageStatus = "running" | "ok" | "failed" | "skipped";
+
+export interface GhostOsSetupProgressEvent {
+  /** "preflight" = runPreflight stream; "setup" = runSetup stream */
+  kind: "preflight" | "setup";
+  stage: GhostOsPreflightStage;
+  status: GhostOsStageStatus;
+  detail?: string;
+  error?: string;
+  /** Epoch ms */
+  timestamp: number;
+}
+
+export type GhostOsPermissionVerdict =
+  | { kind: "granted" }
+  | { kind: "denied"; reason: "never-granted" | "user-denied" }
+  | { kind: "tcc_stale"; message: string }
+  | { kind: "wrong-responsible-process"; detectedParent: string }
+  | { kind: "unknown"; error: string }
+  | { kind: "non-darwin" }
+  | { kind: "not-probed" };
+
+export interface GhostOsPreflightResult {
+  binaryFound: boolean;
+  binaryPath?: string;
+  binaryVersion?: string;
+  permission: GhostOsPermissionVerdict;
+  sidecarSpawn: { ok: boolean; error?: string; pid?: number };
+  mcpHandshake: {
+    ok: boolean;
+    error?: string;
+    protocolVersion?: string;
+    serverName?: string;
+  };
+  toolPing: { ok: boolean; error?: string; toolCount?: number };
+  overallOk: boolean;
+  durationMs: number;
+  summary: string;
+}
+
+export type GhostOsSidecarLifecycleEventType =
+  | "spawned"
+  | "handshake"
+  | "disconnected"
+  | "crashed"
+  | "permission-error";
+
+export interface GhostOsSidecarLifecycleEvent {
+  type: GhostOsSidecarLifecycleEventType;
+  serverName: string;
+  detail?: string;
+  error?: string;
+  pid?: number;
+  exitCode?: number | null;
+  timestamp: number;
+}
+
 interface ElectronGhostOsAPI {
   getStatus: () => Promise<{
     installed: boolean;
@@ -221,6 +291,52 @@ interface ElectronGhostOsAPI {
     success: boolean;
     error?: string;
   }>;
+
+  /**
+   * Run the full Ghost OS preflight probe. Streams progress via
+   * onSetupProgress with `kind: "preflight"`. Returns the final
+   * PreflightResult (permission verdict, handshake, tool ping).
+   */
+  runPreflight: () => Promise<GhostOsPreflightResult>;
+
+  /** Abort an in-flight preflight run. */
+  cancelPreflight: () => Promise<{ cancelled: boolean }>;
+
+  /** Deep-link to System Settings → Privacy → Screen Recording. macOS only. */
+  openScreenRecordingSettings: () => Promise<{ success: boolean; error?: string }>;
+
+  /** Quit + relaunch Selene so the kernel re-reads TCC grants. */
+  relaunchApp: () => Promise<{ scheduled: boolean }>;
+
+  /**
+   * Restart ONLY the ghost-os MCP sidecar, without quitting Selene.
+   * Recovery path for silent stdio hangs — see
+   * docs/bug-reports/2026-04-17-ghost-os-mcp-stdio-hang.md.
+   */
+  reconnectSidecar: () => Promise<{ success: boolean; error?: string }>;
+
+  /**
+   * Subscribe this WebContents to sidecar lifecycle events.
+   * Events are delivered via onSidecarLifecycle.
+   */
+  subscribeLifecycle: () => Promise<{ subscribed: boolean; error?: string }>;
+
+  /**
+   * Listen for streaming setup / preflight progress events.
+   * Returns an unsubscribe function.
+   */
+  onSetupProgress: (
+    callback: (event: GhostOsSetupProgressEvent) => void,
+  ) => () => void;
+
+  /**
+   * Listen for sidecar lifecycle events emitted by MCPClientManager.
+   * Renderer must call subscribeLifecycle() once before these events arrive.
+   * Returns an unsubscribe function.
+   */
+  onSidecarLifecycle: (
+    callback: (event: GhostOsSidecarLifecycleEvent) => void,
+  ) => () => void;
 }
 
 export interface ElectronAPI {

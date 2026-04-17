@@ -17,7 +17,85 @@ type StdioServerParameters = {
     stderr?: IOType | Stream | number;
     cwd?: string;
     windowsHide?: boolean;
+    /**
+     * Logical server name (e.g. "ghostos", "filesystem"). Used as a stable
+     * identifier for the stderr log file when running under Electron/prod
+     * where stderr would otherwise be dropped to /dev/null. Optional — if
+     * omitted the transport falls back to a command-derived label so older
+     * callers still get a log they can open.
+     */
+    serverName?: string;
 };
+
+/**
+ * Cap per-sidecar stderr log at 5 MB. Older content is kept in <name>.1 so
+ * a postmortem still has recent context after rotation.
+ */
+const STDERR_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * How long `send()` will wait for the child's stdin pipe to drain before
+ * escalating. If the child has stopped reading its stdin (classic stdio
+ * deadlock: child blocked on a full stdout pipe → stops consuming stdin →
+ * parent never gets a "drain" event), the parent would otherwise wait
+ * forever. 15s is long enough to ride out legitimate bursts but short
+ * enough that a wedged sidecar gets surfaced before the user gives up.
+ */
+const STDIO_WRITE_TIMEOUT_MS = 15_000;
+
+function sanitizeServerNameForLog(raw: string): string {
+    // Keep the path-safe subset; everything else collapses to "_".
+    return raw.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 64) || "mcp";
+}
+
+function getStderrLogPath(serverName: string): string {
+    const baseDir = process.env.ELECTRON_USER_DATA_PATH || os.tmpdir();
+    return path.join(baseDir, "logs", "mcp", `${sanitizeServerNameForLog(serverName)}-stderr.log`);
+}
+
+/**
+ * Open (and if needed rotate) the stderr log file for this sidecar, returning
+ * a file descriptor suitable for use as the child's stdio[2]. Returns null
+ * if the file cannot be opened — callers should fall back to "ignore" in
+ * that case so a logging failure never prevents the sidecar from starting.
+ */
+function openStderrLogFd(serverName: string): number | null {
+    try {
+        const logPath = getStderrLogPath(serverName);
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+
+        // Rotate if the current log exceeds our cap.
+        try {
+            const stats = fs.statSync(logPath);
+            if (stats.size > STDERR_LOG_MAX_BYTES) {
+                const rotatedPath = `${logPath}.1`;
+                try {
+                    fs.unlinkSync(rotatedPath);
+                } catch {
+                    // prior .1 may not exist; fine.
+                }
+                fs.renameSync(logPath, rotatedPath);
+            }
+        } catch {
+            // Log didn't exist yet — nothing to rotate.
+        }
+
+        const fd = fs.openSync(logPath, "a");
+        const header =
+            `\n=== [MCP ${serverName}] session start ${new Date().toISOString()} ` +
+            `parentPid=${process.pid} ===\n`;
+        try {
+            fs.writeSync(fd, header);
+        } catch {
+            // Non-fatal — header is a nicety, not a requirement.
+        }
+        return fd;
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[MCP] Failed to open stderr log for ${serverName}: ${message}`);
+        return null;
+    }
+}
 
 const DEFAULT_INHERITED_ENV_VARS = process.platform === "win32"
     ? [
@@ -481,6 +559,12 @@ export class StdioClientTransport implements Transport {
     private _readBuffer = new ReadBuffer();
     private _serverParams: StdioServerParameters;
     private _stderrStream: PassThrough | null = null;
+    /** File descriptor for the persistent stderr log, when one was opened. */
+    private _stderrLogFd: number | null = null;
+    /** Absolute path of the persistent stderr log, for diagnostics/UI. */
+    private _stderrLogPath: string | null = null;
+    /** Guard that prevents processReadBuffer from queueing itself twice. */
+    private _processScheduled = false;
     onclose?: () => void;
     onerror?: (error: Error) => void;
     onmessage?: (message: JSONRPCMessage) => void;
@@ -508,22 +592,40 @@ export class StdioClientTransport implements Transport {
             const isProduction = isProductionBuild();
             const isElectron = isElectronEnvironment();
 
-            // In production builds OR Electron environments, ALWAYS use 'ignore' for stderr
-            // This prevents:
-            // - Terminal windows in production (Windows and macOS)
-            // - EBADF errors in Electron (where stdio descriptors may be invalid)
-            // In Electron, we MUST avoid 'inherit' because stdio descriptors may not be valid,
-            // even in development mode, leading to spawn EBADF errors
+            // In production/Electron we must NOT use "inherit" (EBADF) or a PassThrough
+            // (avoid console-window flashing on Windows). Previously this branch returned
+            // `"ignore"`, which dropped every sidecar error message — including the ones
+            // we need to diagnose deadlocks and screen-capture failures — into /dev/null.
+            //
+            // Instead, open a rotating file log in ELECTRON_USER_DATA_PATH/logs/mcp/
+            // and hand its file descriptor to the child as stdio[2]. A file-descriptor
+            // stdio target is safe under Electron's utilityProcess (unlike "inherit") and
+            // still hides any console window (unlike Electron-as-node running with
+            // ELECTRON_RUN_AS_NODE=1). If opening the log fails for any reason we fall
+            // back to "ignore" so logging can never prevent the sidecar from starting.
+            const serverLogName = this._serverParams.serverName
+                ?? path.basename(this._serverParams.command).replace(/\.(cmd|exe|bat)$/i, "");
             const stderrConfig: IOType | Stream | number = (() => {
                 if (isProduction || isElectron) {
-                    // Use 'ignore' to avoid invalid descriptor issues
+                    const fd = openStderrLogFd(serverLogName);
+                    if (fd !== null) {
+                        this._stderrLogFd = fd;
+                        this._stderrLogPath = getStderrLogPath(serverLogName);
+                        return fd;
+                    }
+                    // Couldn't open the log — keep behavior backwards-compatible.
                     return "ignore";
                 }
                 // Non-Electron dev: Allow user-specified stderr or default to 'pipe'
                 return this._serverParams.stderr ?? "pipe";
             })();
 
-            const stderrLabel = typeof stderrConfig === "string" ? stderrConfig : "stream";
+            const stderrLabel =
+                typeof stderrConfig === "string"
+                    ? stderrConfig
+                    : typeof stderrConfig === "number"
+                        ? `fd(${this._stderrLogPath ?? stderrConfig})`
+                        : "stream";
             console.log(`[MCP] Spawn config: platform=${process.platform}, isProduction=${isProduction}, isElectron=${isElectron}, stderr=${stderrLabel}`);
 
             const spawnOptions: any = {
@@ -620,7 +722,7 @@ export class StdioClientTransport implements Transport {
             });
             child.stdout?.on("data", (chunk: Buffer) => {
                 this._readBuffer.append(chunk);
-                this.processReadBuffer();
+                this.scheduleProcessReadBuffer();
             });
             child.stdout?.on("error", (error: Error) => {
                 this.onerror?.(error);
@@ -643,17 +745,66 @@ export class StdioClientTransport implements Transport {
         return this._process?.pid ?? null;
     }
 
-    private processReadBuffer(): void {
-        while (true) {
+    /**
+     * Absolute path of the stderr log file, if a file log was opened for this
+     * sidecar. Useful for surfacing in the UI (e.g. a "View log" button) and
+     * for pointing users at postmortem data after a hang.
+     */
+    get stderrLogPath(): string | null {
+        return this._stderrLogPath;
+    }
+
+    /**
+     * Schedule a drain of the read buffer. Uses a `setImmediate`-based step
+     * loop so each message yields back to the event loop before the next one
+     * is dispatched. The old implementation drained the entire buffer in a
+     * tight `while (true)` loop, which could starve outbound stdin writes,
+     * timers, and `"close"` events during a burst of large messages
+     * (e.g. retina screenshots) and cause the classic writer-blocks-on-
+     * full-pipe deadlock described in docs/bug-reports/2026-04-17-*.md.
+     *
+     * Idempotent: multiple chunk arrivals coalesce to a single drain loop.
+     */
+    private scheduleProcessReadBuffer(): void {
+        if (this._processScheduled) {
+            return;
+        }
+        this._processScheduled = true;
+        setImmediate(() => this.drainReadBufferStep());
+    }
+
+    private drainReadBufferStep(): void {
+        let message: JSONRPCMessage | null = null;
+        try {
+            message = this._readBuffer.readMessage();
+        } catch (error) {
+            this.onerror?.(error as Error);
+        }
+
+        if (message === null) {
+            this._processScheduled = false;
+            return;
+        }
+
+        try {
+            this.onmessage?.(message);
+        } catch (error) {
+            this.onerror?.(error as Error);
+        }
+
+        // Yield to the event loop before the next message so stdin writes,
+        // the stdin "drain" event, and process "close" can fire in between.
+        setImmediate(() => this.drainReadBufferStep());
+    }
+
+    private closeStderrLogFd(): void {
+        if (this._stderrLogFd !== null) {
             try {
-                const message = this._readBuffer.readMessage();
-                if (message === null) {
-                    break;
-                }
-                this.onmessage?.(message);
-            } catch (error) {
-                this.onerror?.(error as Error);
+                fs.closeSync(this._stderrLogFd);
+            } catch {
+                // best-effort — the child owns a duplicate fd
             }
+            this._stderrLogFd = null;
         }
     }
 
@@ -689,19 +840,110 @@ export class StdioClientTransport implements Transport {
             }
         }
         this._readBuffer.clear();
+        this.closeStderrLogFd();
     }
 
     // fallow-ignore-next-line unused-class-member
-    send(message: JSONRPCMessage, _options?: TransportSendOptions): Promise<void> {
-        return new Promise(resolve => {
-            if (!this._process?.stdin) {
-                throw new Error("Not connected");
+    send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const stdin = this._process?.stdin;
+            if (!stdin) {
+                reject(new Error("Not connected"));
+                return;
             }
+
             const json = serializeMessage(message);
-            if (this._process.stdin.write(json)) {
+
+            // ----- deadlock escape hatch -------------------------------------
+            // If the child has stopped consuming stdin (classic stdio deadlock),
+            // `stdin.write()` returns false and the "drain" event will never
+            // fire. Previously this Promise hung forever. Now we bound it:
+            //
+            //  - If the timer fires we raise an error, escalate by killing the
+            //    child so MCPClientManager's transport.onclose handler can evict
+            //    the stale client and optionally respawn, and reject the Promise
+            //    so the caller (client.callTool / client.listTools) stops waiting.
+            //
+            //  - We also honour the AbortSignal the MCP SDK may pass in
+            //    `TransportSendOptions` — the old implementation ignored it,
+            //    which made per-call cancellation impossible.
+            // ------------------------------------------------------------------
+            let settled = false;
+            // The MCP SDK's TransportSendOptions doesn't expose `signal` in this
+            // revision, but newer SDK versions add it. Read through a cast so
+            // we honour it when present without pinning to a newer SDK.
+            const signal = (options as { signal?: AbortSignal } | undefined)?.signal;
+
+            const onAbort = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(new Error("Aborted"));
+            };
+
+            const onTimeout = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                const err = new Error(
+                    `MCP stdio write timed out after ${STDIO_WRITE_TIMEOUT_MS}ms — ` +
+                    `sidecar is not consuming stdin (likely deadlocked on its stdout pipe)`
+                );
+                try {
+                    this.onerror?.(err);
+                } catch {
+                    // subscriber threw; don't mask the timeout
+                }
+                // Escalate: kill the child so "close" fires and the manager
+                // can clean up / auto-respawn. SIGKILL because the child is
+                // wedged and won't respond to SIGTERM.
+                try {
+                    this._process?.kill("SIGKILL");
+                } catch {
+                    // process may already be gone
+                }
+                reject(err);
+            };
+
+            const timer = setTimeout(onTimeout, STDIO_WRITE_TIMEOUT_MS);
+
+            const cleanup = () => {
+                clearTimeout(timer);
+                if (signal) {
+                    signal.removeEventListener("abort", onAbort);
+                }
+            };
+
+            if (signal) {
+                if (signal.aborted) {
+                    cleanup();
+                    settled = true;
+                    reject(new Error("Aborted"));
+                    return;
+                }
+                signal.addEventListener("abort", onAbort, { once: true });
+            }
+
+            const settleOk = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
                 resolve();
+            };
+
+            let writeReturned = false;
+            try {
+                writeReturned = stdin.write(json);
+            } catch (error) {
+                cleanup();
+                settled = true;
+                reject(error as Error);
+                return;
+            }
+            if (writeReturned) {
+                settleOk();
             } else {
-                this._process.stdin.once("drain", resolve);
+                stdin.once("drain", settleOk);
             }
         });
     }

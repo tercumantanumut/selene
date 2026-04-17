@@ -210,6 +210,91 @@ const electronAPI = {
     }> => {
       return ipcRenderer.invoke("ghostos:downloadVisionModel");
     },
+
+    // -----------------------------------------------------------------------
+    // Wizard preflight (new) — streams per-stage progress over
+    // "ghostos:setupProgress", returns a PreflightResult with permission
+    // verdict (incl. tcc_stale), handshake, and first-tool ping.
+    // -----------------------------------------------------------------------
+    runPreflight: (): Promise<unknown> => {
+      return ipcRenderer.invoke("ghostos:runPreflight");
+    },
+    cancelPreflight: (): Promise<{ cancelled: boolean }> => {
+      return ipcRenderer.invoke("ghostos:cancelPreflight");
+    },
+
+    /** Deep-link to System Settings → Privacy → Screen Recording. macOS only. */
+    openScreenRecordingSettings: (): Promise<{ success: boolean; error?: string }> => {
+      return ipcRenderer.invoke("ghostos:openScreenRecordingSettings");
+    },
+
+    /** Quit + relaunch Selene so the kernel re-reads TCC grants. */
+    relaunchApp: (): Promise<{ scheduled: boolean }> => {
+      return ipcRenderer.invoke("ghostos:relaunchApp");
+    },
+
+    /**
+     * Restart ONLY the ghost-os MCP sidecar (kill + respawn the child
+     * process), without quitting the whole app. Recovery path for silent
+     * stdio hangs — see docs/bug-reports/2026-04-17-ghost-os-mcp-stdio-hang.md.
+     */
+    reconnectSidecar: (): Promise<{ success: boolean; error?: string }> => {
+      return ipcRenderer.invoke("ghostos:reconnectSidecar");
+    },
+
+    /**
+     * Subscribe this WebContents to sidecar lifecycle events
+     * (spawned / handshake / crashed / permission-error / disconnected).
+     * Events arrive on the "ghostos:sidecarLifecycle" channel via onSidecarLifecycle.
+     */
+    subscribeLifecycle: (): Promise<{ subscribed: boolean; error?: string }> => {
+      return ipcRenderer.invoke("ghostos:subscribeLifecycle");
+    },
+
+    /**
+     * Listen for streaming setup / preflight progress.
+     * Each event: { kind: "preflight" | "setup", stage, status, detail?, error?, timestamp }
+     */
+    onSetupProgress: (
+      callback: (event: {
+        kind: "preflight" | "setup";
+        stage: string;
+        status: "running" | "ok" | "failed" | "skipped";
+        detail?: string;
+        error?: string;
+        timestamp: number;
+      }) => void,
+    ): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof callback>[0]) =>
+        callback(payload);
+      ipcRenderer.on("ghostos:setupProgress", handler);
+      return () => {
+        ipcRenderer.removeListener("ghostos:setupProgress", handler);
+      };
+    },
+
+    /**
+     * Listen for sidecar lifecycle events emitted by the MCPClientManager.
+     * Renderer must call subscribeLifecycle() once before these events arrive.
+     */
+    onSidecarLifecycle: (
+      callback: (event: {
+        type: "spawned" | "handshake" | "disconnected" | "crashed" | "permission-error";
+        serverName: string;
+        detail?: string;
+        error?: string;
+        pid?: number;
+        exitCode?: number | null;
+        timestamp: number;
+      }) => void,
+    ): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: Parameters<typeof callback>[0]) =>
+        callback(payload);
+      ipcRenderer.on("ghostos:sidecarLifecycle", handler);
+      return () => {
+        ipcRenderer.removeListener("ghostos:sidecarLifecycle", handler);
+      };
+    },
   },
 
   // Browser session window operations
@@ -629,6 +714,12 @@ const electronAPI = {
         "ghostos:getStatus",
         "ghostos:runSetup",
         "ghostos:downloadVisionModel",
+        "ghostos:runPreflight",
+        "ghostos:cancelPreflight",
+        "ghostos:openScreenRecordingSettings",
+        "ghostos:relaunchApp",
+        "ghostos:reconnectSidecar",
+        "ghostos:subscribeLifecycle",
       ];
       if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, ...args);
@@ -637,13 +728,13 @@ const electronAPI = {
     },
     on: (channel: string, callback: (...args: unknown[]) => void): void => {
       // Whitelist of allowed channels
-      const validChannels = ["window:maximized-changed", "window:visibility-changed", "window:fullscreen-changed", "model:downloadProgress", "model:redownloadProgress", "logs:entry", "logs:critical", "comfyui:installProgress", "voice-hotkey:triggered", "screen-capture:captured", "unified-capture:triggered", "overlay:toggle-recording", "overlay:session-updated", "overlay:compose-inject", "overlay:add-screenshot", "permission:screen-required"];
+      const validChannels = ["window:maximized-changed", "window:visibility-changed", "window:fullscreen-changed", "model:downloadProgress", "model:redownloadProgress", "logs:entry", "logs:critical", "comfyui:installProgress", "voice-hotkey:triggered", "screen-capture:captured", "unified-capture:triggered", "overlay:toggle-recording", "overlay:session-updated", "overlay:compose-inject", "overlay:add-screenshot", "permission:screen-required", "ghostos:setupProgress", "ghostos:sidecarLifecycle"];
       if (validChannels.includes(channel)) {
         ipcRenderer.on(channel, (_event, ...args) => callback(...args));
       }
     },
     removeAllListeners: (channel: string): void => {
-      const validChannels = ["window:maximized-changed", "window:visibility-changed", "window:fullscreen-changed", "model:downloadProgress", "model:redownloadProgress", "logs:entry", "logs:critical", "comfyui:installProgress", "voice-hotkey:triggered", "screen-capture:captured", "unified-capture:triggered", "overlay:toggle-recording", "overlay:session-updated", "overlay:compose-inject", "overlay:add-screenshot", "permission:screen-required"];
+      const validChannels = ["window:maximized-changed", "window:visibility-changed", "window:fullscreen-changed", "model:downloadProgress", "model:redownloadProgress", "logs:entry", "logs:critical", "comfyui:installProgress", "voice-hotkey:triggered", "screen-capture:captured", "unified-capture:triggered", "overlay:toggle-recording", "overlay:session-updated", "overlay:compose-inject", "overlay:add-screenshot", "permission:screen-required", "ghostos:setupProgress", "ghostos:sidecarLifecycle"];
       if (validChannels.includes(channel)) {
         ipcRenderer.removeAllListeners(channel);
       }
