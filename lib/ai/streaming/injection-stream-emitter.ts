@@ -1,0 +1,124 @@
+/**
+ * Mid-Stream User-Message Injection — Wire Protocol Emitter
+ *
+ * Emits a typed `data-*` custom data part on the active AI SDK v5
+ * UIMessageStream writer so the client transport can splice a new user
+ * message into the assistant-ui thread mid-stream.
+ *
+ * Contract defined in the Phase 3 design doc (see branch
+ * `fix/mid-stream-injection-render`, docs/mid-stream-injection-design.md).
+ *
+ * Why a data part and not a second `start` chunk:
+ *   AI SDK v5's UIMessageStream assumes one message per response —
+ *   `generateMessageId` is scoped per-stream and `useChat`'s reducer appends
+ *   deltas to the streaming assistant message id. A second `start` would be
+ *   treated as a new assistant message. Typed `data-*` parts are the
+ *   SDK-sanctioned out-of-band channel; see
+ *   https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol and
+ *   https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage#data-parts .
+ */
+
+/** Stable AI SDK v5 data-part type identifier. */
+export const INJECTED_USER_MESSAGE_CHUNK_TYPE = "data-injected-user-message" as const;
+
+/** Origin label for the injection. */
+export type InjectedUserMessageSource =
+  | "web"
+  | "telegram"
+  | "whatsapp"
+  | "slack"
+  | "discord"
+  | "delegation"
+  | "workflow"
+  | "other";
+
+export interface SyntheticToolResultDescriptor {
+  /** Tool-call id on the pre-injection assistant row that had no matching result. */
+  toolCallId: string;
+  /** Tool name — informational, so clients can render "cancelled" chips. */
+  toolName: string;
+}
+
+/**
+ * Payload carried by the `data-injected-user-message` data part. This is the
+ * full surface the client transport needs to:
+ *   1) Splice a user UIMessage into `chat.messages` with a stable id.
+ *   2) Dedupe on retransmit (idempotent on `messageId`).
+ *   3) Render correct ordering relative to the in-flight assistant message.
+ *   4) Surface origin / stop-intent hints.
+ *   5) Optionally mark orphaned tool-call chips on the prior assistant row.
+ */
+export interface InjectedUserMessageData {
+  /** Stable DB row id of the persisted user message — used as UIMessage.id on the client. */
+  messageId: string;
+  /** Session id the injection belongs to (defensive cross-session ignore). */
+  sessionId: string;
+  /** Monotonic ordering index assigned by the server allocator. */
+  orderingIndex: number;
+  /** Always `"user"` — explicit so client code branches safely. */
+  role: "user";
+  /** Flattened, sanitized text content. */
+  text: string;
+  /** ISO 8601 timestamp of the DB row creation. */
+  createdAt: string;
+  /** Origin channel. */
+  source: InjectedUserMessageSource;
+  /** True iff the injection requested a clean abort of the current stream. */
+  stopIntent: boolean;
+  /**
+   * Present when the message-shaping shim synthesized `tool_result`s for
+   * orphan `tool_use` ids on the pre-injection assistant row, so the UI can
+   * render "cancelled by new user message" hints.
+   */
+  syntheticToolResults?: SyntheticToolResultDescriptor[];
+}
+
+/**
+ * Input shape for the emitter. `role` is stamped by the emitter itself
+ * (always `"user"` for injected user messages) so callers never have to
+ * repeat it.
+ */
+export type InjectedUserMessagePayload = Omit<InjectedUserMessageData, "role">;
+
+/**
+ * Minimal writer shape we depend on. The real AI SDK v5
+ * `UIMessageStreamWriter<ChatUIMessage>` exposes `.write(chunk)`; we stay
+ * loose here so the emitter is trivially unit-testable with a recording
+ * double.
+ */
+export interface InjectionStreamWriter {
+  write: (chunk: unknown) => void;
+}
+
+/**
+ * Write an injected-user-message data part to the active UIMessageStream.
+ *
+ * Called from:
+ *   - `app/api/chat/route.ts` inside `prepareStep` (non-Claude-Code) AFTER
+ *     the DB row is committed and BEFORE the post-injection assistant
+ *     content resumes.
+ *   - `lib/ai/providers/claudecode-provider.ts` inside the `onQueueMessages`
+ *     callback in `pumpLivePromptQueue`.
+ *
+ * The `transient: false` flag keeps the frame in the message `parts[]` for
+ * debugging and reconnect-idempotency. The client transport intercepts
+ * before `useChat`'s reducer sees it, so the frame never becomes visible
+ * content — the rendered output is a separate synthesized user UIMessage.
+ */
+export function emitInjectedUserMessageChunk(
+  writer: InjectionStreamWriter,
+  payload: InjectedUserMessagePayload,
+): void {
+  // Stamp `role: "user"` here so the wire frame is self-describing even
+  // though callers never have to pass it — the role is invariant for this
+  // chunk type by construction.
+  const data: InjectedUserMessageData = { ...payload, role: "user" };
+  writer.write({
+    type: INJECTED_USER_MESSAGE_CHUNK_TYPE,
+    // AI SDK v5 requires a stable `id` on data parts for dedupe across
+    // reconnects. Using the DB messageId guarantees idempotence.
+    id: payload.messageId,
+    data,
+    transient: false,
+  });
+}

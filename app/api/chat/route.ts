@@ -69,6 +69,16 @@ import { getEnabledPluginsForAgent, getInstalledPlugins, loadPluginHooks } from 
 import { getWorkflowByAgentId } from "@/lib/agents/workflows";
 import { getWorkflowResources } from "@/lib/agents/workflow-resource-context";
 import { INTERNAL_API_SECRET } from "@/lib/config/internal-api-secret";
+import {
+  handleInjectedPromptsCC,
+  handleInjectedPromptsNonCC,
+  type InjectionStreamingState,
+} from "@/lib/ai/streaming/injection-handler";
+import type { InjectionStreamWriter } from "@/lib/ai/streaming/injection-stream-emitter";
+import {
+  findOrphanToolCalls,
+  buildSyntheticModelToolResults,
+} from "@/lib/ai/providers/message-shaping";
 
 // ── Extracted utility modules ─────────────────────────────────────────────────
 import {
@@ -772,6 +782,18 @@ export async function POST(req: Request) {
     // This preserves real tool output in streaming + DB instead of placeholder stubs.
     sdkToolResultBridge = createSdkToolResultBridge();
 
+    // Mutable ref wiring mid-stream injection (fired from `prepareStep` on
+    // the non-CC path and `onQueueMessages` on the Claude Code path) to the
+    // outer UIMessageChunk controller, which is created later inside the
+    // ReadableStream `start()` closure. By the time either injection site
+    // actually fires, the pump has set this ref to a live writer backed by
+    // `emitChunk`. This is what lets both paths push a
+    // `data-injected-user-message` chunk onto the wire without restructuring
+    // the entire buffering/retry/disconnect pipeline.
+    const injectionWriterRef: { current: InjectionStreamWriter | null } = {
+      current: null,
+    };
+
     const mcpCtx: SeleneMcpContext = {
       userId: dbUser.id,
       sessionId,
@@ -811,39 +833,38 @@ export async function POST(req: Request) {
         return async (entries) => {
           if (entries.length === 0) return;
 
-          if (_state && _sync) {
-            await _sync(true);
-            if (_state.messageId) {
-              const preId = _state.messageId;
-              void updateMessage(preId, { metadata: { livePromptInjected: true } }).catch(() => {});
-            }
-            _state.messageId = undefined;
-            _state.parts = [];
-            _state.toolCallParts = new Map();
-            _state.loggedIncompleteToolCalls = new Set();
-            _state.lastBroadcastAt = 0;
-            _state.lastBroadcastSignature = "";
-            _state.pendingBroadcast = false;
-            _state.isCreating = false;
-            assistantMessageId = crypto.randomUUID();
-            // Claude Code runs entirely inside streamText step 0, so any injected
-            // follow-up content must ignore canonical step reconciliation.
-            _state.stepOffset = 1;
-          }
+          // Capture orphan tool-calls before seal (handler wipes state.parts).
+          const orphanToolCalls = _state
+            ? findOrphanToolCalls(
+                _state.parts as unknown as Array<{
+                  type?: string;
+                  toolCallId?: string;
+                  toolName?: string;
+                }>,
+              )
+            : [];
 
-          for (const entry of entries) {
-            try {
-              const orderingIndex = await nextOrderingIndex(sessionId);
-              await createMessage({
-                sessionId,
-                role: "user",
-                content: [{ type: "text", text: entry.content }],
-                orderingIndex,
-                metadata: { livePromptInjected: true },
-              });
-            } catch (dbError) {
-              console.warn("[CHAT API] Failed to persist injected Claude Code user message:", dbError);
-            }
+          // Shared seal + persist + emit-frame path. `handleInjectedPromptsCC`
+          // writes one `data-injected-user-message` chunk per entry onto the
+          // active UIMessageStream writer (via injectionWriterRef), so the
+          // client can render the user turn mid-stream instead of waiting
+          // for a full reload-on-finish.
+          await handleInjectedPromptsCC({
+            sessionId,
+            prompts: entries,
+            streamingState:
+              _state as unknown as InjectionStreamingState | null,
+            syncStreamingMessage: _sync ?? null,
+            writer: injectionWriterRef.current,
+            orphanToolCalls,
+          });
+
+          if (_state && _sync) {
+            assistantMessageId = crypto.randomUUID();
+            // Claude Code runs entirely inside streamText step 0, so any
+            // injected follow-up content must ignore canonical step
+            // reconciliation.
+            _state.stepOffset = 1;
           }
         };
       })(),
@@ -1203,66 +1224,47 @@ export async function POST(req: Request) {
                 `[CHAT API] Step ${stepNumber}: Injecting ${pendingPrompts.length} live prompt(s) (stopIntent=${stopRequested})`
               );
 
-              if (stopRequested) {
-                // Graceful stop: disable tools + inject system-level stop instruction.
-                // We don't hard-abort here — this lets the model acknowledge the stop request
-                // before the run ends naturally at the next step boundary.
-                return {
-                  activeTools: [] as string[],
-                  system: buildStopSystemMessage(pendingPrompts),
-                };
-              }
+              // Compute orphan tool-calls BEFORE sealing — sealPreInjectionAssistant
+              // wipes state.parts, so we must capture them first so the metadata
+              // tag and the synthetic shim have the right ids.
+              const orphanToolCalls = streamingState
+                ? findOrphanToolCalls(streamingState.parts as unknown as Array<{ type?: string; toolCallId?: string; toolName?: string }>)
+                : [];
 
-              // Split the streaming assistant message at the injection boundary so the
-              // user's message is stored between the pre-injection and post-injection
-              // assistant content rather than after the entire run.
+              // Seal + persist + emit data-injected-user-message chunks via the
+              // shared handler. It tags the sealed assistant row with
+              // livePromptInjected (and orphanToolCalls, when any), allocates
+              // fresh ordering indices after the seal (edit/reload truncation
+              // invariant), and writes one wire frame per persisted row so the
+              // client can splice the user message into the thread mid-stream.
+              const injectionResult = await handleInjectedPromptsNonCC({
+                sessionId,
+                prompts: pendingPrompts,
+                streamingState: streamingState as unknown as InjectionStreamingState | null,
+                syncStreamingMessage: syncStreamingMessage ?? null,
+                writer: injectionWriterRef.current,
+                orphanToolCalls,
+                stepNumber,
+              });
+
+              // Rotate assistant UUID + set stepOffset only if the handler
+              // actually resealed state (background mode might have pre-split
+              // the row; reusing the same id would collapse the continuation).
               if (syncStreamingMessage && streamingState) {
-                // Flush current assistant content to DB before splitting.
-                await syncStreamingMessage(true);
-                // Tag the pre-injection assistant message so deleteMessagesNotIn
-                // protects it on the next request (it was created server-side and
-                // is unknown to the frontend).
-                if (streamingState.messageId) {
-                  const preId = streamingState.messageId;
-                  void updateMessage(preId, { metadata: { livePromptInjected: true } }).catch(() => {});
-                }
-                // Reset streaming state so post-injection content starts a new DB record.
-                streamingState.messageId = undefined;
-                streamingState.parts = [];
-                streamingState.toolCallParts = new Map();
-                streamingState.loggedIncompleteToolCalls = new Set();
-                streamingState.lastBroadcastAt = 0;
-                streamingState.lastBroadcastSignature = "";
-                streamingState.pendingBroadcast = false;
-                streamingState.isCreating = false;
-                // Rotate the assistant UUID so the post-injection segment does not
-                // collide with the already-persisted pre-injection assistant row.
-                // Background mode persists the pre-split row mid-run, so reusing
-                // the same ID would collapse the continuation segment.
                 assistantMessageId = crypto.randomUUID();
                 streamingState.stepOffset = stepNumber;
               }
 
-              // Persist each injected user message with the correct ordering index
-              // (allocated after the now-sealed pre-injection assistant message).
-              for (const prompt of pendingPrompts) {
-                try {
-                  const orderingIndex = await nextOrderingIndex(sessionId);
-                  const promptCustom: Record<string, unknown> = {};
-                  if (prompt.metadata?.inspectContext) promptCustom.inspectContext = prompt.metadata.inspectContext;
-                  const injected = await createMessage({
-                    sessionId,
-                    role: "user",
-                    content: [{ type: "text", text: prompt.content }],
-                    orderingIndex,
-                    metadata: {
-                      livePromptInjected: true,
-                      ...(Object.keys(promptCustom).length > 0 ? { custom: promptCustom } : {}),
-                    },
-                  });
-                } catch (dbError) {
-                  console.warn("[CHAT API] Failed to persist injected user message:", dbError);
-                }
+              if (stopRequested || injectionResult.abort) {
+                // Graceful stop: disable tools + inject system-level stop instruction
+                // so the model acknowledges the user's abort request before the
+                // turn ends naturally. Persistence + wire-frame emit already
+                // happened above via the handler, so the injected user message
+                // will render in the UI regardless of this graceful-stop path.
+                return {
+                  activeTools: [] as string[],
+                  system: buildStopSystemMessage(pendingPrompts),
+                };
               }
 
               // Inject as real user messages — correct conversation semantics vs system hacks.
@@ -1271,9 +1273,28 @@ export async function POST(req: Request) {
                 role: "user",
                 content: buildUserInjectionContent(pendingPrompts),
               };
+
+              // When the sealed pre-injection assistant row left orphan tool_use
+              // ids behind, prepend synthetic tool_result parts so the provider
+              // doesn't 400 on "tool_use without tool_result". The shape mirrors
+              // what `splitToolResultsFromAssistantMessages` synthesizes on later
+              // DB rehydration, so replay stays stable across edit/reload.
+              const syntheticShim: ModelMessage[] =
+                orphanToolCalls.length > 0
+                  ? [
+                      {
+                        role: "tool",
+                        content: buildSyntheticModelToolResults(
+                          orphanToolCalls,
+                          "Cancelled — user interjected with a new message",
+                        ),
+                      } as unknown as ModelMessage,
+                    ]
+                  : [];
+
               return {
                 activeTools: currentActiveTools as string[],
-                messages: [...stepMessages, injectedUserMessage],
+                messages: [...stepMessages, ...syntheticShim, injectedUserMessage],
               };
             }
 
@@ -1306,45 +1327,45 @@ export async function POST(req: Request) {
                     `[CHAT API] Step ${stepNumber}: Injecting ${delegationPrompts.length} delegation result(s) after blocking wait`
                   );
 
-                  // Split the streaming assistant message at the injection boundary
+                  // Same seal-and-split flow as the primary injection branch —
+                  // delegation results are modeled as injected user messages so
+                  // they share the mid-stream wire protocol.
+                  const orphanToolCalls = streamingState
+                    ? findOrphanToolCalls(streamingState.parts as unknown as Array<{ type?: string; toolCallId?: string; toolName?: string }>)
+                    : [];
+
+                  await handleInjectedPromptsNonCC({
+                    sessionId,
+                    prompts: delegationPrompts,
+                    streamingState: streamingState as unknown as InjectionStreamingState | null,
+                    syncStreamingMessage: syncStreamingMessage ?? null,
+                    writer: injectionWriterRef.current,
+                    orphanToolCalls,
+                    stepNumber,
+                  });
+
                   if (syncStreamingMessage && streamingState) {
-                    await syncStreamingMessage(true);
-                    if (streamingState.messageId) {
-                      const preId = streamingState.messageId;
-                      void updateMessage(preId, { metadata: { livePromptInjected: true } }).catch(() => {});
-                    }
-                    streamingState.messageId = undefined;
-                    streamingState.parts = [];
-                    streamingState.toolCallParts = new Map();
-                    streamingState.loggedIncompleteToolCalls = new Set();
-                    streamingState.lastBroadcastAt = 0;
-                    streamingState.lastBroadcastSignature = "";
-                    streamingState.pendingBroadcast = false;
-                    streamingState.isCreating = false;
                     assistantMessageId = crypto.randomUUID();
                     streamingState.stepOffset = stepNumber;
-                  }
-
-                  // Persist each injected delegation result
-                  for (const prompt of delegationPrompts) {
-                    try {
-                      const orderingIndex = await nextOrderingIndex(sessionId);
-                      await createMessage({
-                        sessionId,
-                        role: "user",
-                        content: [{ type: "text", text: prompt.content }],
-                        orderingIndex,
-                        metadata: { livePromptInjected: true },
-                      });
-                    } catch (dbError) {
-                      console.warn("[CHAT API] Failed to persist injected delegation result:", dbError);
-                    }
                   }
 
                   const injectedUserMessage: UserModelMessage = {
                     role: "user",
                     content: buildUserInjectionContent(delegationPrompts),
                   };
+
+                  const syntheticShim: ModelMessage[] =
+                    orphanToolCalls.length > 0
+                      ? [
+                          {
+                            role: "tool",
+                            content: buildSyntheticModelToolResults(
+                              orphanToolCalls,
+                              "Cancelled — delegation result arrived while tool call was in flight",
+                            ),
+                          } as unknown as ModelMessage,
+                        ]
+                      : [];
 
                   // If more delegations are still running, force the model to
                   // call a tool (even a no-op) so the loop continues to the next
@@ -1354,7 +1375,7 @@ export async function POST(req: Request) {
                   const stillHasRunning = hasRunningDelegationsForSession(characterId, sessionId);
                   const result: Record<string, unknown> = {
                     activeTools: currentActiveTools as string[],
-                    messages: [...stepMessages, injectedUserMessage],
+                    messages: [...stepMessages, ...syntheticShim, injectedUserMessage],
                   };
                   if (stillHasRunning) {
                     result.toolChoice = "required" as const;
@@ -1662,6 +1683,22 @@ export async function POST(req: Request) {
             // Non-disconnect error — stop the pump.
             closed = true;
           }
+        };
+
+        // Bind the injection writer ref to the outer controller. `prepareStep`
+        // (scheduled inside streamText) uses this ref to emit
+        // `data-injected-user-message` chunks onto the wire mid-stream. By the
+        // time prepareStep fires, the pump has already started reading, so the
+        // ref is always populated when needed.
+        injectionWriterRef.current = {
+          write(chunk: unknown) {
+            // Buffer alongside normal chunks — if the client hasn't committed
+            // to the UI stream yet, the main pump already handles buffering
+            // via `bufferedChunks`; for injection frames we bypass that because
+            // the data-* chunk is idempotent (id = DB row id) and the client
+            // transport dedupes on re-delivery.
+            emitChunk(chunk as UIMessageChunk);
+          },
         };
 
         const closeStream = () => {
