@@ -45,6 +45,10 @@ import {
   isImageAttachment,
 } from "@/lib/documents/file-types";
 import { INTERACTIVE_TOOL_NAME_SET } from "@/lib/interactive-tools/constants";
+import {
+  INJECTED_USER_MESSAGE_CHUNK_TYPE,
+  type InjectedUserMessageData,
+} from "@/lib/ai/streaming/injection-stream-emitter";
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -196,6 +200,18 @@ const ChatTransportErrorContext = createContext<{
 }>({ error: null, clearError: () => {} });
 const ChatSetMessagesContext = createContext<((updater: UIMessage[] | ((messages: UIMessage[]) => UIMessage[])) => void) | null>(null);
 
+/**
+ * Live `useChat` status. Consumed by `onLivePromptInjected` so the
+ * force-reload (`reloadSessionMessages({ force: true })`) only fires when
+ * the stream is idle — mid-stream, the transport interceptor has already
+ * spliced the injected user UIMessage in place and a hard reload would
+ * destroy the in-flight assistant message.
+ *
+ * See `components/chat/chat-interface.tsx` ~1743.
+ */
+export type ChatLifecycleStatus = "submitted" | "streaming" | "ready" | "error";
+const ChatStatusContext = createContext<ChatLifecycleStatus>("ready");
+
 export function useChatSessionId() {
   return useContext(ChatSessionIdContext);
 }
@@ -210,6 +226,10 @@ export function useChatSetMessages() {
     throw new Error("useChatSetMessages must be used within ChatProvider");
   }
   return value;
+}
+
+export function useChatLifecycleStatus(): ChatLifecycleStatus {
+  return useContext(ChatStatusContext);
 }
 
 function useDynamicChatTransport<T extends AssistantChatTransport<UIMessage>>(transport: T): T {
@@ -270,6 +290,16 @@ export function sanitizeMessagesForInit(messages: UIMessage[]): UIMessage[] {
     });
 
     const sanitizedParts = msg.parts.filter((part: any) => {
+      // Defense-in-depth: `data-injected-user-message` is a transient wire
+      // event consumed by `BufferedAssistantChatTransport`'s chunk-intercept
+      // (see :transform handler below). It must never reach the reducer and
+      // should NEVER appear on a persisted UIMessage. Strip defensively so a
+      // stale replay / DB-rehydrated row can't accidentally render an
+      // injected-user-message frame as visible content.
+      if (part.type === INJECTED_USER_MESSAGE_CHUNK_TYPE) {
+        return false;
+      }
+
       if (part.type?.startsWith("tool-") && part.toolCallId) {
         const toolCallId = part.toolCallId;
         const key = `${msg.id}:${toolCallId}`;
@@ -545,7 +575,101 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
   } satisfies CreateUIMessage<UIMessage> as CreateUIMessage<UI_MESSAGE>;
 };
 
+/**
+ * Chat helpers that the transport needs access to in order to intercept
+ * out-of-band mid-stream events (currently: `data-injected-user-message`
+ * data parts emitted when a user message is injected while an assistant
+ * stream is live).
+ *
+ * We keep this shape narrow on purpose — widening it later should be a
+ * conscious decision rather than an accidental coupling of transport
+ * internals to `useChat` internals.
+ */
+interface TransportChatHelpers {
+  setMessages: (updater: UIMessage[] | ((prev: UIMessage[]) => UIMessage[])) => void;
+}
+
 class BufferedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
+  /**
+   * Reference to the active `useChat` helpers. The provider sets this in an
+   * effect after `useChat()` resolves, so by the time any response stream
+   * reaches `processResponseStream` the ref is populated. We keep it on the
+   * instance instead of closing over it so re-renders of the provider don't
+   * create new transports — `chat.setMessages` is stable for the lifetime of
+   * the hook, so a single ref assignment is sufficient.
+   */
+  private chatHelpers: TransportChatHelpers | null = null;
+
+  /**
+   * Deduplication set: we receive the same `data-injected-user-message`
+   * chunk potentially twice (live stream + reconnect re-delivery). Since
+   * the chunk `id` equals the DB messageId, we can idempotently track which
+   * ids we've already spliced into `chat.messages`.
+   */
+  private injectedMessageIds: Set<string> = new Set();
+
+  setChatHelpers(helpers: TransportChatHelpers | null): void {
+    this.chatHelpers = helpers;
+  }
+
+  /**
+   * Splice an injected user UIMessage into `chat.messages` immediately
+   * BEFORE the in-flight assistant message (always the last item during a
+   * live stream). This preserves the assistant-message identity that the
+   * AI SDK reducer appends deltas to, while making the injected user turn
+   * visible to the thread renderer.
+   *
+   * Idempotent on `messageId` — safe to call multiple times on reconnect.
+   */
+  private spliceInjectedUserMessage(data: InjectedUserMessageData): void {
+    if (!data || typeof data.messageId !== "string" || data.messageId.length === 0) {
+      return;
+    }
+    if (this.injectedMessageIds.has(data.messageId)) {
+      return;
+    }
+    this.injectedMessageIds.add(data.messageId);
+
+    const helpers = this.chatHelpers;
+    if (!helpers) return;
+
+    const injectedMessage: UIMessage = {
+      id: data.messageId,
+      role: "user",
+      parts: [{ type: "text", text: data.text ?? "" }],
+      metadata: {
+        livePromptInjected: true,
+        orderingIndex: data.orderingIndex,
+        sessionId: data.sessionId,
+        source: data.source,
+        stopIntent: data.stopIntent,
+        createdAt: data.createdAt,
+        ...(data.syntheticToolResults && data.syntheticToolResults.length > 0
+          ? { syntheticToolResults: data.syntheticToolResults }
+          : {}),
+      },
+    } as UIMessage;
+
+    helpers.setMessages((prev) => {
+      // Second-chance dedupe on array contents (set tracking is instance-
+      // scoped and a transport swap across renders would lose it).
+      if (prev.some((m) => m.id === data.messageId)) return prev;
+
+      if (prev.length === 0) return [injectedMessage];
+
+      const lastIdx = prev.length - 1;
+      const tail = prev[lastIdx];
+      // Insert BEFORE the last message (the in-flight assistant) so the
+      // reducer keeps appending deltas to the same assistant identity.
+      // If the last message isn't an assistant (edge case: pre-step-0), we
+      // still splice before it for consistent ordering.
+      void tail;
+      const next = prev.slice();
+      next.splice(lastIdx, 0, injectedMessage);
+      return next;
+    });
+  }
+
   private wrapStreamWithRecovery(
     source: ReadableStream<UIMessageChunk>,
   ): ReadableStream<UIMessageChunk> {
@@ -752,6 +876,24 @@ class BufferedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
     const transformed = baseStream.pipeThrough(
       new TransformStream<UIMessageChunk, UIMessageChunk>({
         transform: (chunk, controller) => {
+          // Mid-stream user-message injection protocol. Swallow the chunk so
+          // the AI SDK's useChat reducer never appends it to the in-flight
+          // assistant message; splice a synthesized user UIMessage into
+          // `chat.messages` instead. Idempotent on `data.messageId` so a
+          // reconnect re-delivery doesn't double-render the row.
+          if (chunk.type === INJECTED_USER_MESSAGE_CHUNK_TYPE) {
+            const raw = (chunk as unknown as { data?: InjectedUserMessageData })
+              .data;
+            if (raw) {
+              // Flush any pending text-delta BEFORE the splice so the
+              // rendered timeline stays [text-so-far][user-inject][…]
+              // instead of [partial-before-inject][user-inject][finish-partial].
+              flushBuffer(controller);
+              this.spliceInjectedUserMessage(raw);
+            }
+            return; // swallow — do NOT enqueue
+          }
+
           if (chunk.type === "text-delta") {
             const textChunk = chunk as UIMessageChunk & { id: string; delta: string };
             if (lastTextId && textChunk.id !== lastTextId) {
@@ -1210,6 +1352,21 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     }
   }, [transport, runtime]);
 
+  // Give the transport a handle on `chat.setMessages` so it can splice an
+  // injected user UIMessage into the thread when a
+  // `data-injected-user-message` chunk arrives mid-stream. See
+  // `BufferedAssistantChatTransport.spliceInjectedUserMessage`.
+  useEffect(() => {
+    if (transport instanceof BufferedAssistantChatTransport) {
+      transport.setChatHelpers({ setMessages: chat.setMessages });
+    }
+    return () => {
+      if (transport instanceof BufferedAssistantChatTransport) {
+        transport.setChatHelpers(null);
+      }
+    };
+  }, [transport, chat.setMessages]);
+
   useEffect(() => {
     chatStatusRef.current = chat.status;
   }, [chat.status]);
@@ -1264,11 +1421,13 @@ export const ChatProvider: FC<ChatProviderProps> = ({
         <ChatSessionIdContext.Provider value={sessionId}>
           <ChatTransportErrorContext.Provider value={{ error: transportError, clearError: clearTransportError }}>
             <ChatSetMessagesContext.Provider value={chat.setMessages}>
-              <VoiceProvider>
-                <DeepResearchProvider sessionId={sessionId}>
-                  {children}
-                </DeepResearchProvider>
-              </VoiceProvider>
+              <ChatStatusContext.Provider value={chat.status as ChatLifecycleStatus}>
+                <VoiceProvider>
+                  <DeepResearchProvider sessionId={sessionId}>
+                    {children}
+                  </DeepResearchProvider>
+                </VoiceProvider>
+              </ChatStatusContext.Provider>
             </ChatSetMessagesContext.Provider>
           </ChatTransportErrorContext.Provider>
         </ChatSessionIdContext.Provider>

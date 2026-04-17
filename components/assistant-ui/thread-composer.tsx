@@ -33,6 +33,7 @@ import {
   type InspectMessageContext,
 } from "@/lib/design/workspace/inspect-context";
 import { useCharacter } from "./character-context";
+import { useChatLifecycleStatus } from "@/components/chat-provider";
 import { useOptionalDeepResearch } from "./deep-research-context";
 import { DeepResearchPanel } from "./deep-research-panel";
 import { animate } from "animejs";
@@ -301,6 +302,11 @@ export const Composer: FC<{
 
   const { character } = useCharacter();
   const isRunning = useThread((t) => t.isRunning);
+  // Authoritative AI SDK stream lifecycle status. Assistant-ui's `isRunning`
+  // is derived but can lag by a frame or two around abort/resume transitions;
+  // the raw AI SDK status is the source of truth for gating destructive
+  // reconciliation (e.g. force-reload after injection).
+  const chatLifecycleStatus = useChatLifecycleStatus();
   const threadRuntime = useThreadRuntime();
   const attachmentCount = useThreadComposer((c) => c.attachments.length);
   const t = useTranslations("assistantUi");
@@ -1344,6 +1350,22 @@ export const Composer: FC<{
   // are converted to "fallback" so the replayable mechanism sends them as a new run.
   useEffect(() => {
     if (isQueueBlocked) return;
+    // Defense-in-depth: the AI SDK's own status must be "ready" or "error"
+    // before we trigger a force-reload. `isRunning` (→ `isQueueBlocked`) is a
+    // derived value inside assistant-ui and can briefly be false during the
+    // transition between in-flight steps when the transport is still
+    // streaming (e.g. post-injection, before the next step emits chunks).
+    // Force-reloading in that window tears down ChatProvider and kills the
+    // SSE connection — exactly the mid-stream render regression this fix
+    // exists to prevent. The chunk-intercept in BufferedAssistantChatTransport
+    // already renders the injected row inline, so we can safely defer the
+    // reconcile to the natural post-run settle.
+    if (
+      chatLifecycleStatus === "streaming" ||
+      chatLifecycleStatus === "submitted"
+    ) {
+      return;
+    }
     const hasInjected = queuedMessages.some(m => m.status === "injected-live");
     if (hasInjected && onLivePromptInjected) {
       void Promise.resolve(onLivePromptInjected()).then((result) => {
@@ -1377,7 +1399,7 @@ export const Composer: FC<{
       return next.length === prev.length ? prev : next;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isQueueBlocked, queuedMessages, onLivePromptInjected]);
+  }, [isQueueBlocked, queuedMessages, onLivePromptInjected, chatLifecycleStatus]);
 
   // Auto-grow textarea
   const adjustTextareaHeight = useCallback(() => {

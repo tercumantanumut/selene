@@ -112,6 +112,17 @@ function mcpAwareToolMap(map: Record<string, FC<any>>): Record<string, FC<any>> 
   });
 }
 
+/**
+ * No-op render for the mid-stream live-prompt injection wire event. The
+ * primary swallow happens inside `BufferedAssistantChatTransport`'s chunk
+ * intercept (see `components/chat-provider.tsx`). This fallback exists in
+ * case a stray frame ever reaches the reducer — it renders nothing instead
+ * of emitting the core's "no renderer registered" console warning. The
+ * actual injected user row is dispatched through `setMessages` as its own
+ * UIMessage, never as a part inside another row.
+ */
+const InjectedUserMessagePartNoop: FC = () => null;
+
 // Static tool map — all values are stable component references, no render-time closures.
 // Hoisted to module scope to avoid rebuilding the Proxy on every render.
 const TOOL_BY_NAME_MAP = mcpAwareToolMap({
@@ -634,6 +645,19 @@ export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = fa
               tools: {
                 by_name: TOOL_BY_NAME_MAP,
                 Fallback: ToolFallback,
+              },
+              // Defensive no-op for the mid-stream live-prompt injection frame.
+              // The transport-level chunk-intercept already swallows these
+              // before they reach the reducer (see BufferedAssistantChatTransport
+              // in components/chat-provider.tsx), and sanitizeMessagesForInit
+              // filters any that slipped into persisted rows. This third layer
+              // renders nothing if one still shows up at runtime — the
+              // injected message is always rendered as a separate user
+              // UIMessage via setMessages, never as a part inside another row.
+              data: {
+                by_name: {
+                  "injected-user-message": InjectedUserMessagePartNoop,
+                },
               },
             }}
           />
