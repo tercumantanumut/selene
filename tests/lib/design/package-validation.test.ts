@@ -120,19 +120,19 @@ describe("validatePackageSpec", () => {
 // ---------------------------------------------------------------------------
 
 describe("sandbox isolation", () => {
-  it("SANDBOX_DIR uses .selene-workspace directory", () => {
-    expect(SANDBOX_DIR).toContain(".selene-workspace");
+  it("SANDBOX_DIR uses selene-workspace directory", () => {
+    expect(SANDBOX_DIR).toContain("selene-workspace");
     expect(SANDBOX_DIR).not.toContain("node_modules");
   });
 
   it("SANDBOX_NODE_MODULES is inside the sandbox", () => {
-    expect(SANDBOX_NODE_MODULES).toContain(".selene-workspace");
-    expect(SANDBOX_NODE_MODULES).toMatch(/\.selene-workspace[/\\]node_modules$/);
+    expect(SANDBOX_NODE_MODULES).toContain("selene-workspace");
+    expect(SANDBOX_NODE_MODULES).toMatch(/selene-workspace[/\\]node_modules$/);
   });
 
   it("SANDBOX_PACKAGE_JSON is inside the sandbox", () => {
-    expect(SANDBOX_PACKAGE_JSON).toContain(".selene-workspace");
-    expect(SANDBOX_PACKAGE_JSON).toMatch(/\.selene-workspace[/\\]package\.json$/);
+    expect(SANDBOX_PACKAGE_JSON).toContain("selene-workspace");
+    expect(SANDBOX_PACKAGE_JSON).toMatch(/selene-workspace[/\\]package\.json$/);
   });
 });
 

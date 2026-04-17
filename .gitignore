@@ -60,6 +60,9 @@ binaries/
 # Local development data (SQLite, media, settings)
 .local-data/
 
+# Design workspace sandbox (dev fallback when LOCAL_DATA_PATH is unset)
+selene-workspace/
+
 # Local embedding models (keep README)
 models/**
 !models/README.md

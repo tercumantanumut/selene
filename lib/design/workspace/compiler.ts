@@ -250,7 +250,7 @@ function buildIssueSuggestion(
 
     const couldResolveMatch = message.match(/["'`](.+?)["'`]/);
     if (couldResolveMatch?.[1]) {
-      return `Verify that ${couldResolveMatch[1]} is installed in .selene-workspace/package.json.`;
+      return `Verify that ${couldResolveMatch[1]} is installed in selene-workspace/package.json.`;
     }
   }
 
@@ -606,7 +606,7 @@ function createMissingDependencyIssues(
   return dependencyCheck.missingPackages.map((packageName) => ({
     type: "dependency",
     message: `Cannot resolve workspace package \"${packageName}\".`,
-    suggestion: `Install ${packageName} in .selene-workspace/package.json or allow automatic recovery to install it.`,
+    suggestion: `Install ${packageName} in selene-workspace/package.json or allow automatic recovery to install it.`,
   }));
 }
 

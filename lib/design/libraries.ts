@@ -10,7 +10,7 @@
  * which packages are actually installed.
  *
  * Runtime-installed packages are stored in an isolated sandbox directory
- * (.selene-workspace/) with its own package.json and node_modules, so they
+ * (selene-workspace/) with its own package.json and node_modules, so they
  * never mutate the main app's dependency graph.
  */
 
@@ -233,8 +233,27 @@ export const DESIGN_LIBRARIES: DesignLibrary[] = [
 // Sandbox directory
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the parent directory for the design workspace sandbox.
+ *
+ * In packaged Electron builds the project root lives inside the read-only
+ * app bundle (`…/Selene.app/Contents/Resources/standalone/`), so creating
+ * `selene-workspace/` there fails with ENOENT/EROFS. Electron's main
+ * process sets `LOCAL_DATA_PATH` to a user-writable directory
+ * (e.g. `~/Library/Application Support/selene/data`) — use that when
+ * available. Otherwise (Next dev, tests, headless server runs) fall back
+ * to the project root, which is writable in those contexts.
+ */
+function resolveSandboxRoot(): string {
+  const electronDataPath = process.env.LOCAL_DATA_PATH;
+  if (electronDataPath && electronDataPath.trim().length > 0) {
+    return electronDataPath;
+  }
+  return getProjectRoot();
+}
+
 /** Isolated sandbox directory for design workspace npm installs. */
-export const SANDBOX_DIR = resolve(getProjectRoot(), ".selene-workspace");
+export const SANDBOX_DIR = resolve(resolveSandboxRoot(), "selene-workspace");
 export const SANDBOX_NODE_MODULES = resolve(SANDBOX_DIR, "node_modules");
 export const SANDBOX_PACKAGE_JSON = resolve(SANDBOX_DIR, "package.json");
 
