@@ -38,6 +38,7 @@ import { createSendMessageToChannelTool } from "../tools/channel-tools";
 import { createDelegateToSubagentTool } from "../tools/delegate-to-subagent-tool";
 import { createCompactSessionTool } from "../tools/compact-session-tool";
 import { createSearchSessionsTool } from "../tools/search-sessions-tool";
+import { createGhostOsPreflightTool } from "../tools/ghost-os-preflight-tool";
 import { registerCollaborationTools } from "./register-collaboration-tools";
 import { registerImageAndVideoTools } from "./register-image-video-tools";
 
@@ -647,6 +648,63 @@ Each product needs: id, name, imageUrl (required), price, sourceUrl (purchase li
             products,
           };
         },
+      })
+  );
+
+  // ============================================================
+  // DIAGNOSTIC TOOLS - Deferred (discovered via searchTools)
+  // ============================================================
+
+  // Ghost OS Preflight - diagnose the MCP sidecar end-to-end
+  registry.register(
+    "ghostOsPreflight",
+    {
+      displayName: "Ghost OS Preflight",
+      category: "utility",
+      keywords: [
+        "ghost",
+        "ghostos",
+        "ghost os",
+        "mcp",
+        "sidecar",
+        "preflight",
+        "diagnose",
+        "diagnostic",
+        "setup",
+        "wizard",
+        "handshake",
+        "permission",
+        "screen recording",
+        "tcc",
+        "stale",
+        "macos",
+        "screen capture",
+        "desktop control",
+        "troubleshoot",
+      ],
+      shortDescription:
+        "Diagnose Ghost OS MCP sidecar: binary lookup → spawn → initialize → tools/list, with remediation advice",
+      fullInstructions: `## Ghost OS Preflight
+
+End-to-end diagnostic for the Ghost OS MCP sidecar. Runs these stages and returns a structured verdict plus an \`advice\` array of remediation steps.
+
+**Stages:**
+1. \`binary_located\` — resolve \`ghost\` binary from PATH / Homebrew
+2. \`permission_preflight\` — macOS Screen Recording check (server context: always \`not-probed\`; use desktop wizard for real verdict)
+3. \`sidecar_spawn\` — \`ghost mcp\` child process starts and gets a PID
+4. \`mcp_handshake\` — JSON-RPC 2.0 \`initialize\` succeeds
+5. \`first_tool_ping\` — \`tools/list\` returns ≥1 tool
+6. \`complete\` — overall OK verdict
+
+**Use when:** user reports Ghost OS / screen-sharing / \`ghost mcp\` issues, sidecar won't start, or tools aren't discoverable. Returns concrete per-stage errors so you can propose a fix instead of guessing.
+
+**Note:** This server-side tool cannot read macOS TCC state. For verdicts like \`tcc_stale\` (cosmetic toggle in System Settings), direct the user to the Ghost OS setup wizard in Settings.`,
+      loading: { deferLoading: true },
+      requiresSession: false,
+    } satisfies ToolMetadata,
+    ({ sessionId }) =>
+      createGhostOsPreflightTool({
+        sessionId: sessionId || undefined,
       })
   );
 
