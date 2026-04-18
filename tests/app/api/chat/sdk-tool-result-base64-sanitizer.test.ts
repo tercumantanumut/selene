@@ -372,6 +372,40 @@ describe("sanitizeToolResultForBase64 — SDK built-in tool results", () => {
       expect(mediaRefs).toHaveLength(0);
     }
   });
+
+  // Regression for cdb6db17 — before the fix the cycle branch in
+  // `walkValue()` returned the object reference unchanged, which allowed
+  // raw base64 to leak back out via the self-referential edge. The fix
+  // replaces cycles with a safe placeholder object. This test pins that
+  // behavior so the cycle guard never regresses to the leaky fallback.
+  it("replaces cyclic refs with a safe placeholder object", async () => {
+    // Use a proper Anthropic envelope so the sanitizer actually persists
+    // the base64 payload through the matchBase64Envelope path — that way
+    // the only remaining source of long base64 in the output would be a
+    // leaky cycle fallback.
+    const a: Record<string, unknown> = {
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/png",
+            data: fakeBase64(1_000),
+          },
+        },
+      ],
+    };
+    a.self = a;
+
+    const { sanitized } = await sanitizeToolResultForBase64(a, {
+      sessionId: "test-session",
+    });
+
+    expect((sanitized as Record<string, unknown>).self).toEqual({
+      _circular: BASE64_REMOVED_PLACEHOLDER,
+    });
+    expect(countLongBase64Runs(JSON.stringify(sanitized))).toBe(0);
+  });
 });
 
 describe("attachMediaRefs", () => {
