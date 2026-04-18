@@ -79,7 +79,7 @@ describe("buildUserInjectionContent", () => {
     expect(result).toContain("[Mid-run instruction");
   });
 
-  it("formats delegation completion entries as an observe-and-integrate instruction", () => {
+  it("formats delegation completion entries as an auto-delivered integrate instruction", () => {
     const result = buildUserInjectionContent([
       {
         id: "deleg-complete-del-1",
@@ -94,13 +94,14 @@ describe("buildUserInjectionContent", () => {
       },
     ]);
 
-    expect(result).toContain("Delegation completion notice");
-    expect(result).toContain('Immediately call delegateToSubagent action="observe" delegationId="del-1"');
-    expect(result).toContain("integrate the sub-agent's actual result");
+    expect(result).toContain("[Delegation result delivered — integrate this into your response]");
+    expect(result).toContain('[Delegation Complete] del-1 ("Explore") has finished.');
+    expect(result).toContain("synthesize a final response");
+    expect(result).not.toContain('Immediately call delegateToSubagent action="observe"');
     expect(result).not.toContain("Please acknowledge and incorporate");
   });
 
-  it("preserves structured delegation instructions for multiple simultaneous completions", () => {
+  it("preserves auto-delivered integrate instructions for multiple simultaneous completions", () => {
     const result = buildUserInjectionContent([
       {
         id: "deleg-complete-del-1",
@@ -126,10 +127,13 @@ describe("buildUserInjectionContent", () => {
       },
     ]);
 
-    expect(result).toContain('Immediately call delegateToSubagent action="observe" delegationId="del-1"');
-    expect(result).toContain('Immediately call delegateToSubagent action="observe" delegationId="del-2"');
+    expect(result).toContain('[Delegation Complete] del-1 ("Explore") has finished.');
+    expect(result).toContain('[Delegation Complete] del-2 ("Reviewer") has finished.');
+    expect(result).not.toContain('Immediately call delegateToSubagent action="observe"');
     expect(result).not.toContain("Please acknowledge and incorporate");
-    expect(result).toContain("Delegation completion notice");
+    // Each entry carries its own "delivered" header
+    const deliveredCount = (result.match(/Delegation result delivered/g) ?? []).length;
+    expect(deliveredCount).toBe(2);
   });
 });
 
