@@ -2898,7 +2898,8 @@
       "language": {
         "label": "Language",
         "en": "English",
-        "tr": "Türkçe"
+        "tr": "Türkçe",
+        "updateError": "Failed to update language. Please try again."
       },
       "toolLoading": {
         "label": "How tools are loaded",

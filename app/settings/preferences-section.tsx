@@ -92,6 +92,11 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
   const handleLocaleChange = (newLocale: Locale) => {
     if (newLocale === currentLocale) return;
     startLocaleTransition(async () => {
+      // Surface failures to the user via an alert — silently swallowing the
+      // error left the radio visually reverted with no explanation, which
+      // looks like the click "did nothing." The `t()` key is defined on
+      // both en.json and tr.json under `settings.preferences.language`.
+      const errorMessage = t("preferences.language.updateError");
       try {
         const response = await fetch("/api/locale", {
           method: "POST",
@@ -103,6 +108,7 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
         });
         if (!response.ok) {
           console.error("[locale] Failed to update locale", await response.text());
+          window.alert(errorMessage);
           return;
         }
         // Re-render server components with the new locale — no full page reload,
@@ -110,6 +116,7 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
         router.refresh();
       } catch (error) {
         console.error("[locale] Network error while updating locale", error);
+        window.alert(errorMessage);
       }
     });
   };

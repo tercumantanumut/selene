@@ -2723,7 +2723,8 @@
       "language": {
         "label": "Dil",
         "en": "English",
-        "tr": "Türkçe"
+        "tr": "Türkçe",
+        "updateError": "Dil güncellenemedi. Lütfen tekrar deneyin."
       },
       "toolLoading": {
         "label": "Araç Yükleme Modu",
