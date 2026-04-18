@@ -76,7 +76,15 @@ function resolveBundledNodeVersion() {
     const explicit = process.env.BUNDLED_NODE_VERSION;
     if (explicit) {
         const cleaned = explicit.replace(/^v/, '').trim();
-        if (!/^\d+\.\d+\.\d+$/.test(cleaned)) {
+        // Accept full SemVer 2.0.0 — the prerelease/build-metadata grammar
+        // matters because Node ships ad-hoc tags like `24.0.0-nightly20240501`
+        // and `24.14.1+rc1` for early-adopter testing, and rejecting those
+        // would have forced anyone on a nightly to manually patch this script.
+        // Grammar: MAJOR.MINOR.PATCH(-PRERELEASE)?(+BUILD)?
+        //   PRERELEASE = dot-sep identifiers of [0-9A-Za-z-]
+        //   BUILD      = dot-sep identifiers of [0-9A-Za-z-]
+        const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+        if (!SEMVER_RE.test(cleaned)) {
             console.warn(`  Warning: BUNDLED_NODE_VERSION="${explicit}" is not a valid semver; using pinned ${BUNDLED_NODE_VERSION}`);
             return BUNDLED_NODE_VERSION;
         }
