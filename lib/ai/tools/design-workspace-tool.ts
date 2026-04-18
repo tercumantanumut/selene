@@ -67,14 +67,6 @@ interface DesignWorkspaceToolOptions {
   inspectContext?: InspectMessageContext | null;
 }
 
-export function getCachedComponent(_sessionId: string, _componentId: string): string | undefined {
-  return undefined;
-}
-
-export function resolveComponentCode(_sessionId: string, code: string): string | null {
-  return code.startsWith("cached:") ? null : code;
-}
-
 interface DesignWorkspaceInput {
   action: "open" | "generate" | "edit" | "patch" | "readSource" | "list" | "status" | "close" | "install";
 

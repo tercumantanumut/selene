@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 // Mock heavy dependencies that would fail in test environment
 vi.mock("@/lib/db/sqlite-client", () => ({
@@ -68,83 +68,6 @@ vi.mock("@/lib/storage/local-storage", () => ({
 vi.mock("@/lib/ai/tool-registry/logging", () => ({
   withToolLogging: vi.fn((fn: unknown) => fn),
 }));
-
-// Now import the exported cache utilities
-import { getCachedComponent, resolveComponentCode } from "../design-workspace-tool";
-
-// Access the internal cache via globalThis for test setup
-function getCache(): Map<string, string> {
-  const g = globalThis as Record<string, unknown>;
-  if (!g.__designComponentCache) {
-    g.__designComponentCache = new Map<string, string>();
-  }
-  return g.__designComponentCache as Map<string, string>;
-}
-
-function clearCache(): void {
-  getCache().clear();
-}
-
-function seedCache(sessionId: string, componentId: string, code: string): void {
-  const cache = getCache();
-  const key = `${sessionId}:${componentId}`;
-  cache.set(key, code);
-}
-
-describe("Design Workspace Tool — Cache Utilities", () => {
-  beforeEach(() => {
-    clearCache();
-  });
-
-  describe("getCachedComponent", () => {
-    it("returns undefined for missing component", () => {
-      expect(getCachedComponent("sess-1", "comp-1")).toBeUndefined();
-    });
-
-    it("returns cached code for existing component", () => {
-      seedCache("sess-1", "comp-1", "export default function App() { return <div>Hello</div> }");
-      expect(getCachedComponent("sess-1", "comp-1")).toBe(
-        "export default function App() { return <div>Hello</div> }",
-      );
-    });
-
-    it("isolates components by session", () => {
-      seedCache("sess-1", "comp-1", "code-from-session-1");
-      seedCache("sess-2", "comp-1", "code-from-session-2");
-      expect(getCachedComponent("sess-1", "comp-1")).toBe("code-from-session-1");
-      expect(getCachedComponent("sess-2", "comp-1")).toBe("code-from-session-2");
-    });
-
-    it("promotes accessed entry to end (LRU refresh)", () => {
-      seedCache("s", "a", "code-a");
-      seedCache("s", "b", "code-b");
-      seedCache("s", "c", "code-c");
-
-      // Access "a" to move it to the end
-      getCachedComponent("s", "a");
-
-      const keys = [...getCache().keys()];
-      expect(keys[keys.length - 1]).toBe("s:a");
-    });
-  });
-
-  describe("resolveComponentCode", () => {
-    it("returns plain code as-is", () => {
-      expect(resolveComponentCode("sess-1", "const x = 1;")).toBe("const x = 1;");
-    });
-
-    it('resolves "cached:" prefix from cache', () => {
-      seedCache("sess-1", "my-comp", "export default () => <p>Hi</p>");
-      expect(resolveComponentCode("sess-1", "cached:my-comp")).toBe(
-        "export default () => <p>Hi</p>",
-      );
-    });
-
-    it('returns null for missing "cached:" reference', () => {
-      expect(resolveComponentCode("sess-1", "cached:nonexistent")).toBeNull();
-    });
-  });
-});
 
 describe("Design Workspace Tool — New Action Contracts", () => {
   describe("readSource action contract", () => {
