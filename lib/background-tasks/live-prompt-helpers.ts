@@ -52,8 +52,12 @@ const STOP_INTENT_PATTERNS = [
 // pumpLivePromptQueue routes the redirect through buildStopSystemMessage
 // ([STOP REQUESTED BY USER] ... Do not start any new tasks or tool calls),
 // producing a phantom stop the user never asked for.
+// `let's` / `let\u2019s` (smart-quote) and `let s` (no apostrophe) are all
+// valid colloquial pivots — match all three by treating the apostrophe as
+// optional and accepting either ASCII (') or RIGHT SINGLE QUOTATION MARK
+// (\u2019, the character iOS/macOS auto-substitute when users type ').
 const REDIRECT_MARKERS =
-  /\b(instead|let'?s|rather|switch\s+to|change\s+to|do\s+this\s+instead|actually\s+(?:do|check|search|use|try|look))\b/i;
+  /\b(instead|let[\u2019']?s|rather|switch\s+to|change\s+to|do\s+this\s+instead|actually\s+(?:do|check|search|use|try|look))\b/i;
 
 /** Returns true if the message content signals the user wants to stop the current run. */
 export function hasStopIntent(content: string): boolean {
