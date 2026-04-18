@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations, useLocale } from "next-intl";
+import { toast } from "sonner";
 import { locales, type Locale } from "@/i18n/config";
 import { useTheme } from "@/components/theme/theme-provider";
 import { THEME_PRESETS } from "@/lib/personalization/theme-presets";
@@ -92,10 +93,12 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
   const handleLocaleChange = (newLocale: Locale) => {
     if (newLocale === currentLocale) return;
     startLocaleTransition(async () => {
-      // Surface failures to the user via an alert — silently swallowing the
+      // Surface failures to the user via a toast — silently swallowing the
       // error left the radio visually reverted with no explanation, which
-      // looks like the click "did nothing." The `t()` key is defined on
-      // both en.json and tr.json under `settings.preferences.language`.
+      // looks like the click "did nothing." Use sonner (the app-wide toast
+      // system) rather than window.alert, which is too harsh for Electron.
+      // The `t()` key is defined on both en.json and tr.json under
+      // `settings.preferences.language`.
       const errorMessage = t("preferences.language.updateError");
       try {
         const response = await fetch("/api/locale", {
@@ -108,7 +111,7 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
         });
         if (!response.ok) {
           console.error("[locale] Failed to update locale", await response.text());
-          window.alert(errorMessage);
+          toast.error(errorMessage);
           return;
         }
         // Re-render server components with the new locale — no full page reload,
@@ -116,7 +119,7 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
         router.refresh();
       } catch (error) {
         console.error("[locale] Network error while updating locale", error);
-        window.alert(errorMessage);
+        toast.error(errorMessage);
       }
     });
   };
