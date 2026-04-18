@@ -85,6 +85,20 @@ export interface HandleInjectedPromptsArgs {
    * Caller computes this from the in-flight messages.
    */
   orphanToolCalls?: SyntheticToolResultDescriptor[];
+  /**
+   * Pre-generated assistant message id for the post-injection assistant row.
+   * The caller generates this BEFORE calling the handler, passes it in here
+   * so it is emitted on the wire frame, and THEN assigns the SAME value to
+   * its own `assistantMessageId` variable so the post-injection streaming→DB
+   * sync persists under the matching id.
+   *
+   * See `InjectedUserMessageData.nextAssistantMessageId` for the full
+   * branch-picker fix rationale.
+   *
+   * Optional: when omitted, the wire frame has no next-id hint and the
+   * client falls back to `generateId()` (pre-fix behavior).
+   */
+  nextAssistantMessageId?: string;
 }
 
 export interface HandleInjectedPromptsResult {
@@ -199,6 +213,7 @@ async function runHandler(
     syncStreamingMessage,
     writer,
     orphanToolCalls,
+    nextAssistantMessageId,
   } = args;
 
   if (prompts.length === 0) {
@@ -281,6 +296,13 @@ async function runHandler(
           stopIntent: prompt.stopIntent,
           ...(orphanToolCalls && orphanToolCalls.length > 0
             ? { syntheticToolResults: orphanToolCalls }
+            : {}),
+          // Ship the server's pre-generated post-injection assistant id so
+          // the client splice uses the matching id. This is what prevents
+          // the branch-picker appearing after reloadSessionMessages replaces
+          // chat.messages with DB-derived server-id rows.
+          ...(nextAssistantMessageId
+            ? { nextAssistantMessageId }
             : {}),
         };
         emitInjectedUserMessageChunk(writer, payload);

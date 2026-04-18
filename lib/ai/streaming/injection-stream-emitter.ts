@@ -71,6 +71,36 @@ export interface InjectedUserMessageData {
    * render "cancelled by new user message" hints.
    */
   syntheticToolResults?: SyntheticToolResultDescriptor[];
+  /**
+   * The id the server will use for the post-injection assistant row it
+   * persists via the streaming→DB sync after this wire frame is processed.
+   *
+   * Why this field exists (branch-picker fix):
+   *   When `computeInjectionSplice` rotates `activeState.message.id` on the
+   *   client, and separately the server rotates its own `assistantMessageId`
+   *   on the next `prepareStep` iteration, the two random UUIDs disagree.
+   *   The client renders the post-injection assistant under the CLIENT id,
+   *   but the DB row is persisted under the SERVER id. When
+   *   `handleForegroundRunFinished` later calls
+   *   `reloadSessionMessages({ force: true })`, the DB-derived snapshot
+   *   replaces `chat.messages` with SERVER-id messages. Assistant-UI's
+   *   `__internal_setAdapter` reconciler then feeds the new server-id row to
+   *   `MessageRepository.addOrUpdateMessage` without pruning the old
+   *   client-id row, so both live under the same parent (the injected user
+   *   message) — producing a `← 2 / 2 →` branch picker.
+   *
+   * Fix: the server pre-generates the post-injection assistant id BEFORE
+   * calling the injection handler and ships it to the client on this wire
+   * frame. `computeInjectionSplice` uses this id instead of calling its
+   * local `generateId()`. After the frame is processed, the server assigns
+   * the same id to `assistantMessageId` so the DB row matches. Reload then
+   * finds the same id already in the tree — idempotent no-op, no branch.
+   *
+   * Optional for backward-compat with older clients: when absent, the
+   * client falls back to `generateId()` (preserves the old buggy behavior
+   * rather than crashing).
+   */
+  nextAssistantMessageId?: string;
 }
 
 /**

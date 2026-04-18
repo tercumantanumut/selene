@@ -376,7 +376,18 @@ export function computeInjectionSplice(
     // in-flight chunk pipeline may still hold that reference.
     const clonedSealed = clone(activeState.message);
     sealedSnapshot = tombstoneUnresolvedToolParts(clonedSealed, tombstoneReason);
-    newAssistantId = generateId();
+    // Prefer the server-provided id when present so the post-injection
+    // assistant row rendered on the client shares its id with the DB row
+    // that the streaming→DB sync will persist. Without this, a later
+    // `reloadSessionMessages({ force: true })` (fired by
+    // `handleForegroundRunFinished`) replaces chat.messages with DB-derived
+    // server-id rows and MessageRepository ends up holding BOTH the old
+    // client-id assistant AND the new server-id assistant as siblings
+    // under the injected user message — producing a branch picker.
+    //
+    // Fallback to `generateId()` keeps backward-compat with any server
+    // that hasn't yet been updated to ship `nextAssistantMessageId`.
+    newAssistantId = data.nextAssistantMessageId ?? generateId();
     activeState.message = {
       id: newAssistantId,
       role: "assistant",

@@ -862,6 +862,11 @@ export async function POST(req: Request) {
               )
             : [];
 
+          // Pre-generate the post-injection assistant id so the client splice
+          // rotates to the matching id. See the non-CC primary injection
+          // branch for the full branch-picker-fix rationale — same shape here.
+          const nextAssistantMessageId = crypto.randomUUID();
+
           // Shared seal + persist + emit-frame path. `handleInjectedPromptsCC`
           // writes one `data-injected-user-message` chunk per entry onto the
           // active UIMessageStream writer (via injectionWriterRef), so the
@@ -875,10 +880,11 @@ export async function POST(req: Request) {
             syncStreamingMessage: _sync ?? null,
             writer: injectionWriterRef.current,
             orphanToolCalls,
+            nextAssistantMessageId,
           });
 
           if (_state && _sync) {
-            assistantMessageId = crypto.randomUUID();
+            assistantMessageId = nextAssistantMessageId;
             // Claude Code runs entirely inside streamText step 0, so any
             // injected follow-up content must ignore canonical step
             // reconciliation.
@@ -1249,6 +1255,19 @@ export async function POST(req: Request) {
                 ? findOrphanToolCalls(streamingState.parts as unknown as Array<{ type?: string; toolCallId?: string; toolName?: string }>)
                 : [];
 
+              // Pre-generate the post-injection assistant id BEFORE emitting
+              // the wire frame so we can ship it to the client on the same
+              // frame. The client splice (`computeInjectionSplice`) then
+              // rotates `activeState.message.id` to this value — matching the
+              // id the streaming→DB sync will use for the post-injection row.
+              //
+              // Branch-picker fix: without this, client and server rotate to
+              // independent random UUIDs, and reloadSessionMessages on
+              // stream-finish replaces chat.messages with DB-id rows,
+              // producing a duplicate sibling under the injected user message
+              // in MessageRepository (→ `← 2 / 2 →`).
+              const nextAssistantMessageId = crypto.randomUUID();
+
               // Seal + persist + emit data-injected-user-message chunks via the
               // shared handler. It tags the sealed assistant row with
               // livePromptInjected (and orphanToolCalls, when any), allocates
@@ -1263,13 +1282,17 @@ export async function POST(req: Request) {
                 writer: injectionWriterRef.current,
                 orphanToolCalls,
                 stepNumber,
+                nextAssistantMessageId,
               });
 
               // Rotate assistant UUID + set stepOffset only if the handler
               // actually resealed state (background mode might have pre-split
               // the row; reusing the same id would collapse the continuation).
+              // MUST match the id we shipped on the wire frame above so the
+              // server-persisted post-injection DB row id equals the id the
+              // client rotated `activeState.message` to.
               if (syncStreamingMessage && streamingState) {
-                assistantMessageId = crypto.randomUUID();
+                assistantMessageId = nextAssistantMessageId;
                 streamingState.stepOffset = stepNumber;
               }
 
@@ -1352,6 +1375,12 @@ export async function POST(req: Request) {
                     ? findOrphanToolCalls(streamingState.parts as unknown as Array<{ type?: string; toolCallId?: string; toolName?: string }>)
                     : [];
 
+                  // Pre-generate the post-injection assistant id and ship it
+                  // on the wire frame so the client splice rotates to the
+                  // matching id. See the primary injection branch above for
+                  // the full branch-picker-fix rationale.
+                  const nextAssistantMessageId = crypto.randomUUID();
+
                   await handleInjectedPromptsNonCC({
                     sessionId,
                     prompts: delegationPrompts,
@@ -1360,10 +1389,11 @@ export async function POST(req: Request) {
                     writer: injectionWriterRef.current,
                     orphanToolCalls,
                     stepNumber,
+                    nextAssistantMessageId,
                   });
 
                   if (syncStreamingMessage && streamingState) {
-                    assistantMessageId = crypto.randomUUID();
+                    assistantMessageId = nextAssistantMessageId;
                     streamingState.stepOffset = stepNumber;
                   }
 
