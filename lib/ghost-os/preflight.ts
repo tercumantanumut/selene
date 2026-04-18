@@ -350,8 +350,27 @@ async function probeSidecarHandshake(
         result?: { tools?: unknown[] };
       };
       const toolCount = toolsResponse.result?.tools?.length ?? 0;
-      result.toolPingOk = true;
       result.toolCount = toolCount;
+      // Treat zero tools as a probe FAILURE: the sidecar binary is present
+      // and the JSON-RPC handshake completed, but the server exposes no
+      // useful tools — almost always a sign that the binary launched in a
+      // degraded mode (missing entitlements, partial install, wrong
+      // version) where the user can technically connect but no MCP tool
+      // calls would ever succeed. Surfacing this as a `failed` stage lets
+      // the UI prompt the user to fix the install rather than silently
+      // pretending Ghost OS is ready.
+      if (toolCount === 0) {
+        result.toolPingOk = false;
+        result.toolPingError =
+          "tools/list returned 0 tools — sidecar started but exposes no callable tools. Verify install completeness and required permissions.";
+        emit(
+          makeEvent("first_tool_ping", "failed", {
+            error: result.toolPingError,
+          }),
+        );
+        return result;
+      }
+      result.toolPingOk = true;
       emit(
         makeEvent("first_tool_ping", "ok", {
           detail: `${toolCount} tool${toolCount === 1 ? "" : "s"} discovered`,

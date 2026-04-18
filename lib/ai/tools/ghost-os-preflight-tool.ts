@@ -79,8 +79,11 @@ function buildAdvice(result: PreflightResult): string[] {
   const advice: string[] = [];
 
   if (!result.binaryFound) {
+    // Keep the brew tap formula in sync with `lib/ghost-os/setup.ts` —
+    // both messages are user-facing and any drift produces a copy/paste
+    // command that immediately 404s on `brew install`.
     advice.push(
-      "Install Ghost OS: `brew install ghost-os/tap/ghost` (or equivalent) so the `ghost` binary is on PATH."
+      "Install Ghost OS: `brew install ghostwright/ghost-os/ghost-os` so the `ghost` binary is on PATH."
     );
     return advice;
   }
