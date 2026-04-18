@@ -480,10 +480,15 @@ async function processInboundMessage(message: ChannelInboundMessage): Promise<vo
         });
 
         if (injected) {
-          // Persist the message in DB with livePromptInjected flag so it
-          // doesn't count as a visible conversation turn and won't trigger
-          // another AI response when messages reload.
-          await persistInboundMessage(sessionId, message, contentParts, { livePromptInjected: true });
+          // DO NOT persist here. The queue drain at
+          // `lib/ai/streaming/injection-handler.ts` is the sole persister for
+          // queued live-prompt entries — it allocates a strictly-monotonic
+          // orderingIndex after the sealed assistant and writes the user row
+          // with `livePromptInjected: true`. If the stream ends before the
+          // next `prepareStep` drains the queue, `handleUndrainedQueueMessages`
+          // in `app/api/chat/stream-callbacks.ts` persists the entry as a
+          // safety net. Persisting here as well would produce duplicate user
+          // rows (the hide-filter that previously masked them was removed).
 
           // Best-effort user-visible ack on the originating channel so the
           // sender sees their message was accepted even though the next

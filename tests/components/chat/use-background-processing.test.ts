@@ -160,12 +160,13 @@ describe("useBackgroundProcessing live-prompt reconciliation", () => {
     });
 
     const expectedUiMessages = convertDBMessagesToUIMessages(dbMessages as never);
-    expect(expectedUiMessages).toHaveLength(3);
+    expect(expectedUiMessages).toHaveLength(4);
+    // Injected user messages are now first-class and visible in the UI.
     expect(expectedUiMessages.some((message) =>
       message.parts.some((part: any) => part.type === "text" && part.text === "Also check tests")
-    )).toBe(false);
+    )).toBe(true);
 
-    expect(notifySessionUpdate).toHaveBeenCalledWith("session-1", { messageCount: 3 });
+    expect(notifySessionUpdate).toHaveBeenCalledWith("session-1", { messageCount: 4 });
     expect(setSessionState).toHaveBeenCalledTimes(1);
     expect(sessionState.messages).toEqual(expectedUiMessages);
     expect(chatSetMessages).toHaveBeenCalledWith(expectedUiMessages);
@@ -211,7 +212,7 @@ describe("useBackgroundProcessing live-prompt reconciliation", () => {
       await hookRef.current!.refreshMessages();
     });
 
-    expect(notifySessionUpdate).toHaveBeenCalledWith("session-1", { messageCount: 3 });
+    expect(notifySessionUpdate).toHaveBeenCalledWith("session-1", { messageCount: 4 });
     expect(setSessionState).not.toHaveBeenCalled();
     expect(chatSetMessages).not.toHaveBeenCalled();
 
@@ -222,7 +223,7 @@ describe("useBackgroundProcessing live-prompt reconciliation", () => {
       await hookRef.current!.refreshMessages();
     });
 
-    expect(notifySessionUpdate).toHaveBeenCalledWith("session-1", { messageCount: 3 });
+    expect(notifySessionUpdate).toHaveBeenCalledWith("session-1", { messageCount: 4 });
     expect(setSessionState).toHaveBeenCalledTimes(1);
     expect(sessionState.messages).toEqual(persistedUiMessages);
     expect(chatSetMessages).toHaveBeenCalledWith(persistedUiMessages);

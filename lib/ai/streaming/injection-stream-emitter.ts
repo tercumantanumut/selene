@@ -1,7 +1,7 @@
 /**
  * Mid-Stream User-Message Injection — Wire Protocol Emitter
  *
- * Emits a typed `data-*` custom data part on the active AI SDK v5
+ * Emits a typed `data-*` custom data part on the active AI SDK v6
  * UIMessageStream writer so the client transport can splice a new user
  * message into the assistant-ui thread mid-stream.
  *
@@ -9,7 +9,7 @@
  * `fix/mid-stream-injection-render`, docs/mid-stream-injection-design.md).
  *
  * Why a data part and not a second `start` chunk:
- *   AI SDK v5's UIMessageStream assumes one message per response —
+ *   AI SDK v6's UIMessageStream assumes one message per response —
  *   `generateMessageId` is scoped per-stream and `useChat`'s reducer appends
  *   deltas to the streaming assistant message id. A second `start` would be
  *   treated as a new assistant message. Typed `data-*` parts are the
@@ -18,7 +18,7 @@
  *   https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-tool-usage#data-parts .
  */
 
-/** Stable AI SDK v5 data-part type identifier. */
+/** Stable AI SDK v6 data-part type identifier. */
 export const INJECTED_USER_MESSAGE_CHUNK_TYPE = "data-injected-user-message" as const;
 
 /** Origin label for the injection. */
@@ -81,7 +81,7 @@ export interface InjectedUserMessageData {
 export type InjectedUserMessagePayload = Omit<InjectedUserMessageData, "role">;
 
 /**
- * Minimal writer shape we depend on. The real AI SDK v5
+ * Minimal writer shape we depend on. The real AI SDK v6
  * `UIMessageStreamWriter<ChatUIMessage>` exposes `.write(chunk)`; we stay
  * loose here so the emitter is trivially unit-testable with a recording
  * double.
@@ -115,7 +115,7 @@ export function emitInjectedUserMessageChunk(
   const data: InjectedUserMessageData = { ...payload, role: "user" };
   writer.write({
     type: INJECTED_USER_MESSAGE_CHUNK_TYPE,
-    // AI SDK v5 requires a stable `id` on data parts for dedupe across
+    // AI SDK v6 requires a stable `id` on data parts for dedupe across
     // reconnects. Using the DB messageId guarantees idempotence.
     id: payload.messageId,
     data,

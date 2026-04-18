@@ -235,18 +235,33 @@ export const Composer: FC<{
 
   // Attempt to inject a message into the currently active run's live prompt queue.
   // The server resolves the active runId from the session index — no runId needed on the client.
-  // Uses exponential backoff (200, 400, 800, 1600, 3200ms) with a max of 5 attempts.
-  // Returns true if successfully queued, false if no active run or all retries failed.
+  //
+  // Retries on ALL transient failures (409 `no_active_run`, network errors,
+  // `queued:false` responses). 409 in particular is NOT terminal — the server
+  // registers the queue via `reserveLivePromptQueueBySession` early in
+  // /api/chat, but the HTTP request from this composer can still race that
+  // reservation in a cold-start / slow-DB edge case. Retrying covers that
+  // residual window.
+  //
+  // Backoff: base 200ms doubling, capped at 3200ms, 8 attempts
+  // → sleeps [0, 200, 400, 800, 1600, 3200, 3200, 3200] = ~12.6s total
+  // plus 8 × 5s request timeout budget. More than enough to cover any
+  // realistic /api/chat warmup even in slow environments.
+  //
+  // Returns true if successfully queued, false if all retries failed.
   const queueLivePromptForActiveRun = useCallback(
     async (content: string, inspectCtx?: InspectMessageContext | null): Promise<boolean> => {
-      const MAX_RETRIES = 5;
+      const MAX_RETRIES = 8;
       const BASE_DELAY_MS = 200;
+      const MAX_DELAY_MS = 3200;
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         if (attempt > 0) {
-          await new Promise<void>(resolve =>
-            setTimeout(resolve, BASE_DELAY_MS * Math.pow(2, attempt - 1))
+          const delay = Math.min(
+            BASE_DELAY_MS * Math.pow(2, attempt - 1),
+            MAX_DELAY_MS
           );
+          await new Promise<void>(resolve => setTimeout(resolve, delay));
         }
 
         try {
@@ -256,16 +271,15 @@ export const Composer: FC<{
             { timeout: 5_000, retries: 0 }
           );
 
-          if (status === 409) {
-            // No active run — no point retrying
-            return false;
-          }
-
           if (data?.queued) {
             return true;
           }
+          // 409 `no_active_run` or any other non-success — fall through to
+          // the next retry attempt. With Fix A (early server-side
+          // reservation) the server should accept injections within ms of
+          // /api/chat starting; retries handle only residual races.
         } catch {
-          // Network error — retry
+          // Network error — retry.
         }
       }
 

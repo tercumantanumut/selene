@@ -73,16 +73,11 @@ export interface DBMessage {
   toolCallId?: string | null;  // For role="tool" messages, references the parent tool call
 }
 
-function isInjectedLivePromptUserMessage(dbMessage: Pick<DBMessage, "role" | "metadata">): boolean {
-  if (dbMessage.role !== "user") return false;
-  const metadata = parseMessageMetadata(dbMessage.metadata);
-  return metadata?.livePromptInjected === true;
-}
-
 /**
  * Returns true if any message in the array carries the `livePromptInjected`
  * metadata flag (regardless of role — both sealed assistant messages and
- * injected user messages are tagged).
+ * injected user messages are tagged). Drives reconciliation deferral for
+ * mid-stream injection flows.
  */
 export function hasLivePromptInjectedMessages(dbMessages: Pick<DBMessage, "metadata">[]): boolean {
   return dbMessages.some(m => {
@@ -91,11 +86,14 @@ export function hasLivePromptInjectedMessages(dbMessages: Pick<DBMessage, "metad
   });
 }
 
-export function countVisibleConversationMessages(dbMessages: Pick<DBMessage, "role" | "metadata">[]): number {
-  return dbMessages.filter((message) => {
-    if (message.role !== "user" && message.role !== "assistant") return false;
-    return !isInjectedLivePromptUserMessage(message);
-  }).length;
+/**
+ * Count user + assistant messages. Injected live-prompt user rows ARE counted
+ * as visible — they render as first-class messages in the thread, so the
+ * count must include them for reconciliation predicates to match the UI
+ * shape. Tool and system rows are excluded as they never render.
+ */
+export function countVisibleConversationMessages(dbMessages: Pick<DBMessage, "role">[]): number {
+  return dbMessages.filter((message) => message.role === "user" || message.role === "assistant").length;
 }
 
 /**
@@ -563,8 +561,11 @@ export function convertDBMessagesToUIMessages(dbMessages: DBMessage[]): UIMessag
 
   for (const dbMsg of sortedMessages) {
     // Skip system/tool messages - tool results are merged into assistant turns.
+    // Injected live-prompt user rows are kept: they render as first-class
+    // user messages in the thread, matching the live in-memory shape so the
+    // force-reload in handleForegroundRunFinished does not truncate under
+    // assistant-ui's cached cursor.
     if (dbMsg.role === "system" || dbMsg.role === "tool") continue;
-    if (isInjectedLivePromptUserMessage(dbMsg)) continue;
 
     const content = dbMsg.content as DBContentPart[];
     if (!Array.isArray(content) || content.length === 0) {
@@ -610,74 +611,12 @@ export function convertDBMessagesToUIMessages(dbMessages: DBMessage[]): UIMessag
     } as UIMessage);
   }
 
-  // Post-processing: merge consecutive assistant messages that result from
-  // live prompt injection (sealed assistant → hidden user → continuation assistant).
-  // Without this merge, assistant-ui treats consecutive assistant messages as
-  // sibling branches and shows the "← 2 / 2 →" branch picker.
-  return mergeConsecutiveAssistantMessages(result);
-}
-
-/**
- * Merge consecutive assistant messages into a single message.
- *
- * When a live prompt injection splits an assistant turn into two DB rows
- * (sealed pre-injection + continuation post-injection), the hidden injected
- * user message between them is skipped by the converter, leaving two
- * consecutive assistant messages. assistant-ui interprets these as sibling
- * branches and shows a "← 2 / 2 →" branch picker.
- *
- * This function collapses such sequences into one message, concatenating
- * parts and using the first segment's ID (the original turn).
- */
-function mergeConsecutiveAssistantMessages(messages: UIMessage[]): UIMessage[] {
-  if (messages.length <= 1) return messages;
-
-  const merged: UIMessage[] = [];
-
-  for (const msg of messages) {
-    const prev = merged[merged.length - 1];
-
-    if (prev && prev.role === "assistant" && msg.role === "assistant") {
-      // Merge: append the continuation's parts into the previous assistant message.
-      // Add a separator between segments for readability.
-      const continuationParts = msg.parts as UIMessage["parts"];
-
-      // If both have text parts, avoid double-blank — only add separator if needed
-      const lastPrevPart = prev.parts[prev.parts.length - 1];
-      const firstContPart = continuationParts[0];
-      if (
-        lastPrevPart?.type === "text" &&
-        firstContPart?.type === "text" &&
-        lastPrevPart.text !== "" &&
-        firstContPart.text !== ""
-      ) {
-        // Merge text parts with a newline separator
-        prev.parts[prev.parts.length - 1] = {
-          type: "text",
-          text: lastPrevPart.text + "\n\n" + firstContPart.text,
-        };
-        // Add remaining parts from continuation
-        for (let i = 1; i < continuationParts.length; i++) {
-          (prev.parts as any[]).push(continuationParts[i]);
-        }
-      } else {
-        // Different part types or empty text — just concatenate
-        for (const part of continuationParts) {
-          (prev.parts as any[]).push(part);
-        }
-      }
-
-      // Merge metadata (combine custom fields, keep usage from the last segment)
-      if ((msg.metadata as any)?.custom) {
-        if (!prev.metadata) prev.metadata = {} as any;
-        (prev.metadata as any).custom = { ...(prev.metadata as any).custom, ...(msg.metadata as any).custom };
-      }
-    } else {
-      merged.push({ ...msg });
-    }
-  }
-
-  return merged;
+  // Injected-user rows now sit BETWEEN the sealed and continuation assistant
+  // rows, so the two assistants are not adjacent and assistant-ui's sibling
+  // branch heuristic ("← 2 / 2 →" picker) never triggers. No post-processing
+  // merge is applied — the previous mergeConsecutiveAssistantMessages helper
+  // was a workaround for the now-removed hide filter above.
+  return result;
 }
 
 // ThreadMessageLike content part types (what runtime.thread.reset() expects)

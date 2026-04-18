@@ -533,7 +533,7 @@ describe("Message Ordering", () => {
     expect(secondToolParts).toHaveLength(0);
   });
 
-  it("hides injected live-prompt user messages during post-background reconciliation", async () => {
+  it("renders injected live-prompt user messages as first-class UIMessages after reconciliation", async () => {
     const session = await createSession({ title: "Injected live prompt resume", userId: TEST_USER_ID });
     if (!session) throw new Error("Failed to create session");
 
@@ -552,7 +552,7 @@ describe("Message Ordering", () => {
       metadata: { livePromptInjected: true },
     });
 
-    await createMessage({
+    const injectedUserRow = await createMessage({
       sessionId: session.id,
       role: "user",
       orderingIndex: 3,
@@ -568,29 +568,35 @@ describe("Message Ordering", () => {
     });
 
     expect(preInjectionAssistant?.id).toBeTruthy();
+    expect(injectedUserRow?.id).toBeTruthy();
     expect(postInjectionAssistant?.id).toBeTruthy();
 
     const persisted = await getMessages(session.id);
     const sessionWithMessages = await getSessionWithMessages(session.id);
     const uiMessages = convertDBMessagesToUIMessages(persisted as any);
 
+    // DB-level `messageCount` column still excludes injected users (sidebar
+    // semantics). Converter-level count includes them (reconciliation
+    // semantics — must match live thread length).
     expect(sessionWithMessages?.session.messageCount).toBe(3);
-    expect(countVisibleConversationMessages(persisted as any)).toBe(3);
-    expect(uiMessages).toHaveLength(3);
+    expect(countVisibleConversationMessages(persisted as any)).toBe(4);
+    expect(uiMessages).toHaveLength(4);
     expect(uiMessages.map((message) => message.role)).toEqual([
       "user",
       "assistant",
+      "user",
       "assistant",
     ]);
     expect(uiMessages.map((message) => message.id)).toEqual([
       persisted[0].id,
       preInjectionAssistant!.id,
+      injectedUserRow!.id,
       postInjectionAssistant!.id,
     ]);
     expect(
       uiMessages.some((message) =>
         message.parts.some((part: any) => part.type === "text" && part.text === "Live prompt follow-up")
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 });

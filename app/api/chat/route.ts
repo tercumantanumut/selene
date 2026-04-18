@@ -34,6 +34,9 @@ import {
   drainLivePromptQueue,
   removeLivePromptQueue,
   waitForQueueMessage,
+  reserveLivePromptQueueBySession,
+  promoteLivePromptQueueToRunId,
+  clearLivePromptQueueBySession,
 } from "@/lib/background-tasks/live-prompt-queue-registry";
 import { signalUndrainedMessages } from "@/lib/background-tasks/undrained-signal";
 import {
@@ -353,6 +356,15 @@ export async function POST(req: Request) {
       }
     }
 
+    // Reserve the live-prompt queue as early as possible — before the slow
+    // awaits (preflight check, createAgentRun) run. Injections POSTed to
+    // /api/sessions/[id]/live-prompt-queue during the warmup window would
+    // otherwise land before the queue is registered and come back as 409
+    // `no_active_run`. The reservation is rekeyed to the real agentRun.id
+    // below via `promoteLivePromptQueueToRunId`.
+    activeSessionId = sessionId;
+    reserveLivePromptQueueBySession(sessionId);
+
     // Keep session timezone fresh so tools in this same request can rely on it.
     if (isValidIanaTimezone(userTimezoneHeader) && sessionMetadata.userTimezone !== userTimezoneHeader) {
       sessionMetadata = { ...sessionMetadata, userTimezone: userTimezoneHeader };
@@ -457,6 +469,9 @@ export async function POST(req: Request) {
 
     if (!contextCheck.canProceed) {
       console.error(`[CHAT API] Context window check failed: ${contextCheck.error}`, contextCheck.status);
+      // Release the reservation — no agentRun will be created, so the normal
+      // onFinish/onAbort cleanup paths won't run.
+      clearLivePromptQueueBySession(sessionId);
       return new Response(
         JSON.stringify({
           error: "Context window limit exceeded",
@@ -490,7 +505,10 @@ export async function POST(req: Request) {
     });
     const chatAbortController = new AbortController();
     registerChatAbortController(agentRun.id, chatAbortController);
-    createLivePromptQueue(agentRun.id, sessionId);
+    // Promote the earlier reservation (or create afresh if the reservation
+    // path was somehow bypassed). Any injections that raced to the queue
+    // during warmup are preserved and carried into the real runId key.
+    promoteLivePromptQueueToRunId(sessionId, agentRun.id);
 
     const isDelegation = sessionMetadata?.isDelegation === true;
     const chatTask: ChatTask = {
@@ -1870,6 +1888,18 @@ export async function POST(req: Request) {
 
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     const isCreditError = detectCreditError(errorMessage);
+
+    // If we threw after reserving the live-prompt queue but before agentRun
+    // was created (e.g. an exception in the model scope resolver), the normal
+    // `removeLivePromptQueue(agentRun.id, …)` cleanup below wouldn't run.
+    // Clear the reservation by session to avoid a stale queue entry.
+    if (!agentRun?.id && activeSessionId) {
+      try {
+        clearLivePromptQueueBySession(activeSessionId);
+      } catch (cleanupErr) {
+        console.error("[CHAT API] Failed to clear reserved live-prompt queue on error:", cleanupErr);
+      }
+    }
 
     if (chatTaskRegistered && agentRun?.id) {
       try {

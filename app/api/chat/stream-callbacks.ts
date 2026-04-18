@@ -51,10 +51,22 @@ import type { ContextInjectionTrackingMetadata } from "./context-injection";
  * flow: delegation completes → result stored → frontend notified → new turn
  * drains the store and injects results.
  *
- * Non-delegation entries are signaled as undrained so the frontend can convert
- * the injected-live chips to "fallback" and replay them as a new run.
+ * Non-delegation entries are PERSISTED as `user` rows (tagged
+ * `livePromptInjected: true`) so they survive a page refresh and the frontend
+ * auto-resume can replay them as a new run. Historically these were discarded
+ * with only a `signalUndrainedMessages(sessionId)` ping, which caused the
+ * in-session messages to disappear from history after the run finalized —
+ * exactly the bug this patch fixes.
+ *
+ * The frontend still receives the undrained-signal so it can convert the
+ * injected-live chips to "fallback" and kick off auto-resume; the only
+ * behavior change is that the DB now retains the user's input.
  */
-function handleUndrainedQueueMessages(runId: string, sessionId: string): void {
+/** @internal - exported for tests only. */
+export async function handleUndrainedQueueMessages(
+  runId: string,
+  sessionId: string,
+): Promise<void> {
   const undrained = drainLivePromptQueue(runId);
   if (undrained.length === 0) return;
 
@@ -77,6 +89,41 @@ function handleUndrainedQueueMessages(runId: string, sessionId: string): void {
       completedAt: Date.now(),
       resultContent: entry.content,
     });
+  }
+
+  // Persist non-delegation entries as user rows so they don't vanish after
+  // refresh. Mirrors the `handleInjectedPromptsNonCC` persistence loop at
+  // `lib/ai/streaming/injection-handler.ts:223-294`.
+  for (const entry of otherEntries) {
+    try {
+      const orderingIndex = await nextOrderingIndex(sessionId);
+      const promptCustom: Record<string, unknown> = {};
+      if (entry.metadata?.inspectContext) {
+        promptCustom.inspectContext = entry.metadata.inspectContext;
+      }
+
+      await createMessage({
+        sessionId,
+        role: "user",
+        content: [{ type: "text", text: entry.content }],
+        orderingIndex,
+        metadata: {
+          livePromptInjected: true,
+          ...(entry.stopIntent ? { stopIntent: true } : {}),
+          // Tag as undrained so operators can distinguish these from inline
+          // injections that actually reached `prepareStep`.
+          undrained: true,
+          ...(Object.keys(promptCustom).length > 0
+            ? { custom: promptCustom }
+            : {}),
+        },
+      });
+    } catch (dbError) {
+      console.warn(
+        "[CHAT API] Failed to persist undrained live-prompt entry:",
+        dbError,
+      );
+    }
   }
 
   if (otherEntries.length > 0) {
@@ -154,7 +201,7 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
     }
 
     if (ctx.agentRun?.id) {
-      handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId);
+      await handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId);
       removeChatAbortController(ctx.agentRun.id);
       removeLivePromptQueue(ctx.agentRun.id, ctx.sessionId);
     }
@@ -482,7 +529,7 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
     }
 
     if (ctx.agentRun?.id) {
-      handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId);
+      await handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId);
       removeChatAbortController(ctx.agentRun.id);
       removeLivePromptQueue(ctx.agentRun.id, ctx.sessionId);
     }
@@ -503,8 +550,16 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
       }
 
       // Build canonical content from the partial stream and completed steps.
+      // Respect the split marker from a mid-run live-prompt injection — only
+      // include post-injection steps here so the pre-injection content stays
+      // in its own sealed DB record. Matches `onFinish` at
+      // stream-callbacks.ts ~180.
+      const relevantSteps =
+        ctx.streamingState?.stepOffset != null
+          ? (steps as StepLike[]).slice(ctx.streamingState.stepOffset)
+          : (steps as StepLike[] | undefined);
       const stepContent = buildCanonicalAssistantContentFromSteps(
-        steps as StepLike[] | undefined
+        relevantSteps,
       );
       const mergedContent = mergeCanonicalAssistantContent(
         ctx.streamingState?.parts,

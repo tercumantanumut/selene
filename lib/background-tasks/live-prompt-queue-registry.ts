@@ -47,6 +47,127 @@ export function createLivePromptQueue(runId: string, sessionId: string): void {
 }
 
 /**
+ * Prefix used when reserving a queue by sessionId before the real agentRun.id
+ * is known. Callers must never construct this key manually — use
+ * `reserveLivePromptQueueBySession` and `promoteLivePromptQueueToRunId`.
+ */
+const PENDING_RUN_KEY_PREFIX = "pending-run:";
+
+function pendingRunKey(sessionId: string): string {
+  return `${PENDING_RUN_KEY_PREFIX}${sessionId}`;
+}
+
+/**
+ * Reserve a live-prompt queue by sessionId before agentRun.id is known.
+ *
+ * Registers a placeholder runId keyed on the sessionId so that
+ * `appendToLivePromptQueueBySession` starts returning true immediately after
+ * /api/chat begins — before the slow awaits (session load, preflight check,
+ * createAgentRun) finish. Closes the ~9–11 s race window that caused
+ * mid-stream injections to receive 409 `no_active_run` on fresh runs.
+ *
+ * Must be followed either by `promoteLivePromptQueueToRunId` once agentRun.id
+ * is assigned, or by `clearLivePromptQueueBySession` on any early-return path
+ * (e.g. the context-window 413 early exit).
+ *
+ * If a stale reservation already exists for this session (prior aborted
+ * request), it is cleared first so injections from the new run don't bleed
+ * into it.
+ */
+export function reserveLivePromptQueueBySession(sessionId: string): void {
+  const newKey = pendingRunKey(sessionId);
+  const index = getSessionIndex();
+  const queueMap = getQueueMap();
+  const waiterMap = getWaiterMap();
+
+  const existingKey = index.get(sessionId);
+  if (existingKey && existingKey !== newKey) {
+    // Stale entry from a prior run — drop it so this new reservation wins.
+    queueMap.delete(existingKey);
+    const staleWaiters = waiterMap.get(existingKey);
+    if (staleWaiters) {
+      for (const notify of [...staleWaiters]) {
+        notify();
+      }
+      waiterMap.delete(existingKey);
+    }
+  }
+
+  queueMap.set(newKey, []);
+  index.set(sessionId, newKey);
+}
+
+/**
+ * Rekey a reserved queue (from `reserveLivePromptQueueBySession`) to the real
+ * agentRun.id once it's assigned. Preserves any entries and waiters that
+ * landed on the placeholder key during the warmup window.
+ *
+ * Falls back to `createLivePromptQueue(runId, sessionId)` if no reservation
+ * exists, so callers can promote unconditionally.
+ *
+ * Idempotent: safe to call again with the same (sessionId, runId) pair.
+ */
+export function promoteLivePromptQueueToRunId(sessionId: string, runId: string): void {
+  const index = getSessionIndex();
+  const queueMap = getQueueMap();
+  const waiterMap = getWaiterMap();
+
+  const oldKey = index.get(sessionId);
+  if (!oldKey) {
+    // No prior reservation — create a fresh queue under the real runId.
+    createLivePromptQueue(runId, sessionId);
+    return;
+  }
+  if (oldKey === runId) {
+    // Already promoted.
+    return;
+  }
+
+  const queue = queueMap.get(oldKey) ?? [];
+  const waiters = waiterMap.get(oldKey);
+
+  queueMap.set(runId, queue);
+  queueMap.delete(oldKey);
+  if (waiters) {
+    waiterMap.set(runId, waiters);
+    waiterMap.delete(oldKey);
+  }
+  index.set(sessionId, runId);
+
+  // Wake any waiters that were parked on the placeholder — they were likely
+  // waiting on the very entries we just carried over.
+  if (waiters && queue.length > 0) {
+    for (const notify of [...waiters]) {
+      notify();
+    }
+  }
+}
+
+/**
+ * Clear a queue by sessionId regardless of whether it's still a placeholder
+ * reservation or a fully promoted run. Use on early-return / error paths
+ * where agentRun.id may not be known yet (e.g. context-window 413 exit, or
+ * outer catch handling a throw before createAgentRun).
+ *
+ * Safe to call even when no queue exists for the session.
+ */
+export function clearLivePromptQueueBySession(sessionId: string): void {
+  const index = getSessionIndex();
+  const key = index.get(sessionId);
+  if (!key) return;
+
+  getQueueMap().delete(key);
+  const waiters = getWaiterMap().get(key);
+  if (waiters) {
+    for (const notify of [...waiters]) {
+      notify();
+    }
+    getWaiterMap().delete(key);
+  }
+  index.delete(sessionId);
+}
+
+/**
  * Append an entry to the queue for the given run.
  * Returns false if no active queue exists for this runId (i.e. run is not active).
  * This is the O(1) in-memory "is active run?" check — no DB query needed.

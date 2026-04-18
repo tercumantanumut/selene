@@ -175,14 +175,16 @@ describe("Ghost Branch Prevention - Integration", () => {
     const finalMessages = await getMessages(session.id);
     const uiMessages = convertDBMessagesToUIMessages(finalMessages as any);
 
-    // The UI should show: original user + pre-injection assistant + post-injection assistant
-    // The injected user message should be hidden
+    // The UI shows all four rows: original user + pre-injection assistant +
+    // injected user + post-injection assistant. Injected user IS visible.
     expect(uiMessages.some(m =>
       m.parts.some((p: any) => p.type === "text" && p.text === "Also check the test coverage")
-    )).toBe(false);
+    )).toBe(true);
 
-    // Both assistant segments should be visible
+    // Both assistant segments are visible as distinct UIMessages.
     expect(uiMessages.filter(m => m.role === "assistant")).toHaveLength(2);
+    // And the injected user is first-class too.
+    expect(uiMessages.filter(m => m.role === "user")).toHaveLength(2);
   });
 
   /**
@@ -305,15 +307,15 @@ describe("Ghost Branch Prevention - Integration", () => {
 
     const uiMessages = convertDBMessagesToUIMessages(allMessages as any);
 
-    // UI should show: original user, pre-assistant, post-assistant, follow-up user
-    // Should hide: injected user
+    // UI shows all 5 rows in order: original user, pre-assistant, injected
+    // user, post-assistant, follow-up user. Injected user is first-class.
     const visibleRoles = uiMessages.map(m => m.role);
-    expect(visibleRoles).toEqual(["user", "assistant", "assistant", "user"]);
+    expect(visibleRoles).toEqual(["user", "assistant", "user", "assistant", "user"]);
 
-    // Injected user content should not be visible
+    // Injected user content IS visible.
     expect(uiMessages.some(m =>
       m.parts.some((p: any) => p.type === "text" && p.text === "Use TypeScript strict mode")
-    )).toBe(false);
+    )).toBe(true);
   });
 
   /**
@@ -473,9 +475,10 @@ describe("Ghost Branch Prevention - Integration", () => {
     const shouldBlock = isRunActive && !isForced && containsInjected;
     expect(shouldBlock).toBe(false);
 
-    // The messages should still convert correctly
+    // The messages convert to 3 UIMessages: original user + sealed assistant
+    // + injected user (no continuation assistant yet in this fixture).
     const uiMessages = convertDBMessagesToUIMessages(dbMessages as any);
-    // Injected user is hidden, so we see: user + assistant
-    expect(uiMessages).toHaveLength(2);
+    expect(uiMessages).toHaveLength(3);
+    expect(uiMessages.map(m => m.role)).toEqual(["user", "assistant", "user"]);
   });
 });

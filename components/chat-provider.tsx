@@ -13,6 +13,7 @@ if (process.env.NODE_ENV !== "production") {
   };
 }
 
+
 import { Component, createContext, type ErrorInfo, type FC, type MutableRefObject, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
@@ -25,7 +26,7 @@ import {
   useAISDKRuntime,
   AssistantChatTransport,
 } from "@assistant-ui/react-ai-sdk";
-import { useChat } from "@ai-sdk/react";
+import { Chat, useChat } from "@ai-sdk/react";
 import type { CreateUIMessage, UIMessage, UIMessageChunk } from "ai";
 import { DeepResearchProvider } from "./assistant-ui/deep-research-context";
 import { VoiceProvider } from "./assistant-ui/voice-context";
@@ -49,6 +50,25 @@ import {
   INJECTED_USER_MESSAGE_CHUNK_TYPE,
   type InjectedUserMessageData,
 } from "@/lib/ai/streaming/injection-stream-emitter";
+import {
+  computeInjectionSplice,
+  type AiSdkActiveResponseStateLike,
+} from "@/lib/ai/streaming/injection-splice";
+import {
+  bootstrapInjectionDiagnostics,
+  findDuplicateIds,
+  logStreamChunk,
+  patchChatState,
+  registerChatMessagesSource,
+  summarizeMessages,
+} from "@/lib/ai/streaming/injection-diagnostic-logger";
+
+// Kick off mid-stream-injection diagnostic logging. No-op in production,
+// no-op when `window.__SELENE_INJECTION_LOG === "off"`. Patches
+// @assistant-ui/core's MessageRepository.addOrUpdateMessage so the
+// `performOp/link` duplicate-id crash is logged with full ancestor-chain
+// context BEFORE it bubbles up.
+bootstrapInjectionDiagnostics();
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -81,6 +101,26 @@ function cloneMessages(messages: UIMessage[]): UIMessage[] {
       ? message.parts.map((part) => ({ ...part }))
       : message.parts,
   }));
+}
+
+/**
+ * Deep-clone a UIMessage. Used when we seal an in-flight assistant row
+ * before mid-stream user-message injection — we need the snapshot to be
+ * decoupled from future in-place mutations the AI SDK performs on
+ * `activeResponse.state.message.parts` (e.g. text-delta appends). We
+ * prefer `structuredClone` when available (Node 17+, all modern
+ * browsers) and fall back to the shallow cloner above for older runtimes.
+ */
+function structuredCloneMessage(message: UIMessage): UIMessage {
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(message);
+    } catch {
+      // Fall through to shallow clone if the message contains non-cloneable
+      // values (e.g. functions or DOM nodes stuffed into metadata).
+    }
+  }
+  return cloneMessages([message])[0]!;
 }
 
 function isRecoverableStreamingError(error: Error): boolean {
@@ -576,17 +616,50 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
 };
 
 /**
+ * Shape of the AI SDK v6 `AbstractChat.activeResponse.state` object that we
+ * reach into during mid-stream user-message injection. The field is declared
+ * `private` in the TypeScript `.d.ts` but is a plain own-property at runtime;
+ * we cast through `unknown` to access it.
+ *
+ * Why we need this: AI SDK v6's `UIMessageStream` assumes one message per
+ * response. When we splice an injected user UIMessage into `chat.messages`,
+ * the next chunk's `write()` sees `state.message.id !== lastMessage.id` and
+ * calls `pushMessage(state.message)` — which inserts the in-flight assistant
+ * a SECOND time (same reference, same id), causing an `addOrUpdateMessage`
+ * collision inside `@assistant-ui/core`'s `MessageRepository.performOp/link`
+ * ("A message with the same id already exists in the parent tree").
+ *
+ * The fix (see `BufferedAssistantChatTransport.spliceInjectedUserMessage`)
+ * snapshots the current `state.message`, substitutes the snapshot for the
+ * in-flight assistant in the array, and then RESETS `state.message` to a
+ * fresh empty assistant with a new id. That forces the next write()'s
+ * `pushMessage` path to produce a genuinely new assistant row instead of
+ * re-emitting the old reference.
+ */
+type AiSdkActiveResponseState = AiSdkActiveResponseStateLike;
+
+interface AiSdkActiveResponse {
+  state: AiSdkActiveResponseState;
+}
+
+/**
  * Chat helpers that the transport needs access to in order to intercept
  * out-of-band mid-stream events (currently: `data-injected-user-message`
  * data parts emitted when a user message is injected while an assistant
  * stream is live).
- *
- * We keep this shape narrow on purpose — widening it later should be a
- * conscious decision rather than an accidental coupling of transport
- * internals to `useChat` internals.
  */
 interface TransportChatHelpers {
   setMessages: (updater: UIMessage[] | ((prev: UIMessage[]) => UIMessage[])) => void;
+  /**
+   * Returns the AI SDK's live `activeResponse.state` if a response is
+   * currently streaming, else null. The transport reads + mutates this to
+   * force a clean split between pre- and post-injection assistant rows.
+   */
+  getActiveResponseState: () => AiSdkActiveResponseState | null;
+  /** ID generator used by the underlying `useChat` instance. Re-used so the
+   *  rotated post-injection assistant message id matches the rest of the
+   *  UUIDs the AI SDK produces. */
+  generateId: () => string;
 }
 
 class BufferedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
@@ -613,11 +686,53 @@ class BufferedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
   }
 
   /**
-   * Splice an injected user UIMessage into `chat.messages` immediately
-   * BEFORE the in-flight assistant message (always the last item during a
-   * live stream). This preserves the assistant-message identity that the
-   * AI SDK reducer appends deltas to, while making the injected user turn
-   * visible to the thread renderer.
+   * Splice an injected user UIMessage into `chat.messages` so the thread
+   * renderer shows:
+   *
+   *   [..., prior_user, assistant_A_sealed, injected_user, assistant_B_live]
+   *
+   * The tricky part — and the reason this method is ~3x the size you'd
+   * expect — is that AI SDK v6's `UIMessageStream` protocol was designed
+   * around a single message per HTTP response. The `Chat.activeResponse.state.message`
+   * object is a SINGLE assistant UIMessage that accumulates parts for the
+   * entire stream duration. Every `write()` call during chunk processing
+   * picks between two branches based on the id match:
+   *
+   *   replaceMessage(last, state.message)   if state.message.id === lastMessage.id
+   *   pushMessage(state.message)            otherwise
+   *
+   * If we naïvely `setMessages(prev => [...prev, injected_user])`, then
+   * `lastMessage.id` becomes `injected_user.id` but `state.message.id` is
+   * still the pre-injection assistant id. The very next delta's `write()`
+   * therefore takes the `pushMessage` branch, concatenating the SAME
+   * `state.message` reference (same id) onto the array by reference. That
+   * produces a duplicated id at both index 1 (deep-cloned snapshot from
+   * the last replaceMessage) and index 3 (live ref from pushMessage). The
+   * assistant-ui `MessageRepository` then throws during `performOp/link`
+   * because walking up the parent tree finds a message with the same id.
+   *
+   * Fix: perform an atomic 3-step dance INSIDE the transport transform,
+   * synchronously, before the next chunk reaches processUIMessageStream.
+   * (The caller — the transform — is responsible for absorbing any
+   * client-side-batched text delta into `state.activeTextParts[id].text`
+   * IN PLACE BEFORE invoking this method, because we can't safely enqueue
+   * a text-delta chunk here and then clear `activeTextParts` without
+   * racing processUIMessageStream.)
+   *
+   *   1. Deep-clone the current `state.message` into a sealed snapshot
+   *      (frozen pre-injection content, old id).
+   *
+   *   2. Reset `state.message` to a fresh empty assistant with a NEW id,
+   *      and clear all active part trackers so post-injection chunks
+   *      don't accidentally latch onto pre-injection part objects.
+   *
+   *   3. Rewrite `chat.messages` to
+   *      `[...prev.slice(0, -1), sealed_snapshot, injected_user]` so the
+   *      in-flight assistant reference that was at the tail is replaced
+   *      by our sealed snapshot (old id preserved), followed by the
+   *      injected user. The next chunk's `write()` sees
+   *      `state.message.id (new) !== lastMessage.id (injected_user)` →
+   *      `pushMessage` branch → new assistant_B row appended at the end.
    *
    * Idempotent on `messageId` — safe to call multiple times on reconnect.
    */
@@ -628,45 +743,60 @@ class BufferedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
     if (this.injectedMessageIds.has(data.messageId)) {
       return;
     }
-    this.injectedMessageIds.add(data.messageId);
 
     const helpers = this.chatHelpers;
     if (!helpers) return;
 
-    const injectedMessage: UIMessage = {
-      id: data.messageId,
-      role: "user",
-      parts: [{ type: "text", text: data.text ?? "" }],
-      metadata: {
-        livePromptInjected: true,
-        orderingIndex: data.orderingIndex,
-        sessionId: data.sessionId,
-        source: data.source,
-        stopIntent: data.stopIntent,
-        createdAt: data.createdAt,
-        ...(data.syntheticToolResults && data.syntheticToolResults.length > 0
-          ? { syntheticToolResults: data.syntheticToolResults }
-          : {}),
-      },
-    } as UIMessage;
+    // Only mark as handled after we've verified helpers are wired — a
+    // transport swap (e.g. session change) should not leave a "handled"
+    // tombstone that silently drops a legitimate retry.
+    this.injectedMessageIds.add(data.messageId);
+
+    // All the splice math lives in `computeInjectionSplice` so the
+    // regression test suite in `tests/lib/mid-stream-injection/` and the
+    // production transport exercise the SAME code. Any drift here is
+    // a bug. We MUST rotate `activeState` before calling `setMessages`
+    // because the next AI SDK `write()` reads `activeState.message.id`
+    // synchronously and decides replaceMessage-vs-pushMessage from it —
+    // and `pushMessage` concats the live reference by-reference, which
+    // is the exact scenario that triggers the assistant-ui
+    // `MessageRepository(performOp/link)` duplicate-id crash when the id
+    // isn't rotated.
+    const activeState = helpers.getActiveResponseState();
+
+    // Mirror the two reason strings used on the server-side synthetic shim
+    // (see `app/api/chat/route.ts` :1307 and :1382) so live-session rendering
+    // of the sealed snapshot matches reload-from-DB rendering exactly.
+    const tombstoneReason =
+      data.source === "delegation"
+        ? "Cancelled — delegation result arrived while tool call was in flight"
+        : "Cancelled — user interjected with a new message";
 
     helpers.setMessages((prev) => {
-      // Second-chance dedupe on array contents (set tracking is instance-
-      // scoped and a transport swap across renders would lose it).
-      if (prev.some((m) => m.id === data.messageId)) return prev;
-
-      if (prev.length === 0) return [injectedMessage];
-
-      const lastIdx = prev.length - 1;
-      const tail = prev[lastIdx];
-      // Insert BEFORE the last message (the in-flight assistant) so the
-      // reducer keeps appending deltas to the same assistant identity.
-      // If the last message isn't an assistant (edge case: pre-step-0), we
-      // still splice before it for consistent ordering.
-      void tail;
-      const next = prev.slice();
-      next.splice(lastIdx, 0, injectedMessage);
-      return next;
+      const result = computeInjectionSplice({
+        prev,
+        activeState,
+        data,
+        generateId: helpers.generateId,
+        clone: structuredCloneMessage,
+        tombstoneReason,
+      });
+      if (process.env.NODE_ENV !== "production" && !result.alreadyApplied) {
+        const dup = findDuplicateIds(result.nextMessages);
+        console.debug(
+          "[ChatTransport] Spliced injected user message",
+          {
+            injectedId: data.messageId,
+            sealedTail: result.sealedTail,
+            newAssistantId: result.newAssistantId,
+            sealedSnapshotId: result.sealedSnapshot?.id ?? null,
+            activeMessageIdAfterRotation: activeState?.message?.id ?? null,
+            nextSummary: summarizeMessages(result.nextMessages),
+            duplicateIdsAfterSplice: dup,
+          },
+        );
+      }
+      return result.nextMessages;
     });
   }
 
@@ -876,19 +1006,58 @@ class BufferedAssistantChatTransport extends AssistantChatTransport<UIMessage> {
     const transformed = baseStream.pipeThrough(
       new TransformStream<UIMessageChunk, UIMessageChunk>({
         transform: (chunk, controller) => {
+          // ─── Diagnostic chunk trace ────────────────────────────────────
+          // Gated inside the logger on DIAGNOSTIC_ENABLED. Cheap when off.
+          try {
+            const helpersForLog = this.chatHelpers;
+            const activeStateForLog = helpersForLog?.getActiveResponseState?.();
+            const activeMessageId =
+              (activeStateForLog as { message?: { id?: string } } | null)?.message?.id ??
+              null;
+            logStreamChunk(
+              chunk as unknown as { type?: string } & Record<string, unknown>,
+              activeMessageId,
+              null,
+            );
+          } catch {
+            // never let diagnostic logging break the stream
+          }
+
           // Mid-stream user-message injection protocol. Swallow the chunk so
           // the AI SDK's useChat reducer never appends it to the in-flight
           // assistant message; splice a synthesized user UIMessage into
           // `chat.messages` instead. Idempotent on `data.messageId` so a
           // reconnect re-delivery doesn't double-render the row.
+          //
+          // IMPORTANT: we CANNOT flush buffered text via
+          // `flushBuffer(controller)` here, because that enqueues a
+          // `text-delta` chunk downstream for the AI SDK to consume AFTER
+          // this transform returns. Meanwhile,
+          // `spliceInjectedUserMessage` clears the AI SDK's
+          // `activeTextParts` map so the rotated post-injection state can
+          // start fresh. A race between those two would make the AI SDK
+          // throw `UIMessageStreamError: No text part found` when it
+          // tries to consume the enqueued chunk against the cleared map.
+          //
+          // Instead we absorb the buffered delta IN PLACE into the active
+          // text part (which is the same object referenced by
+          // `state.message.parts`) BEFORE taking the sealed snapshot.
+          // `spliceInjectedUserMessage` then clones `state.message` with
+          // the absorbed text included, so no downstream chunk is needed.
           if (chunk.type === INJECTED_USER_MESSAGE_CHUNK_TYPE) {
             const raw = (chunk as unknown as { data?: InjectedUserMessageData })
               .data;
             if (raw) {
-              // Flush any pending text-delta BEFORE the splice so the
-              // rendered timeline stays [text-so-far][user-inject][…]
-              // instead of [partial-before-inject][user-inject][finish-partial].
-              flushBuffer(controller);
+              if (bufferedDelta && lastTextId) {
+                const activeState = this.chatHelpers?.getActiveResponseState();
+                const textPart = activeState?.activeTextParts?.[lastTextId];
+                if (textPart && typeof textPart.text === "string") {
+                  textPart.text += bufferedDelta;
+                }
+                bufferedDelta = "";
+                lastTextId = null;
+                clearTimer();
+              }
               this.spliceInjectedUserMessage(raw);
             }
             return; // swallow — do NOT enqueue
@@ -1234,39 +1403,100 @@ export const ChatProvider: FC<ChatProviderProps> = ({
   const recoverRetryStateRef = useRef<() => void>(() => {});
   const scheduleRetryFromErrorRef = useRef<(error: Error, source: string) => boolean>(() => false);
 
-  const chat = useChat({
-    id: sessionId,
-    transport,
-    messages: safeMessages,
-    generateId: () => crypto.randomUUID(),
-    onFinish: ({ isError }) => {
-      if (!isError) {
-        autoRetryAttemptRef.current = 0;
-      }
-    },
-    onError: (error) => {
-      if (shouldIgnoreUseChatError(error, chatStatusRef.current)) {
-        return;
-      }
-
-      if (isClientRetryStateError(error)) {
-        recoverRetryStateRef.current();
-        return;
-      }
-
-      if (scheduleRetryFromErrorRef.current(error, "useChat.onError")) {
-        return;
-      }
-
-      console.error("[ChatProvider] useChat error:", error.message);
-      chat.clearError();
-    },
+  // ─── Own the Chat instance explicitly ──────────────────────────────────
+  //
+  // Why: `useChat` from @ai-sdk/react returns a `UseChatHelpers` plain
+  // object that does NOT expose the underlying `Chat` instance. The
+  // mid-stream injection splice needs direct access to
+  // `chat.activeResponse.state.message` so it can rotate the in-flight
+  // assistant id before the next `write()` dispatches `pushMessage`
+  // (otherwise the live assistant reference gets appended a second time,
+  // producing the `MessageRepository(performOp/link): A message with the
+  // same id already exists in the parent tree.` crash).
+  //
+  // `useChat` supports an escape hatch: pass `{ chat }` and it will use
+  // your Chat instance instead of creating one internally. We construct
+  // the Chat ourselves via `new Chat({...})` and keep a ref so the
+  // transport-helpers effect can reach into `activeResponse`.
+  //
+  // Callback stability: `new Chat({...})` captures `onError`/`onFinish`
+  // by closure, so we route them through a refs-based trampoline — the
+  // underlying handler bodies reference component refs that are updated
+  // every render, without requiring us to recreate the Chat.
+  const chatCallbacksRef = useRef<{
+    onError: (error: Error) => void;
+    onFinish: (event: { isError?: boolean }) => void;
+  }>({
+    onError: () => {},
+    onFinish: () => {},
   });
+
+  const chatInstance = useMemo(() => {
+    return new Chat<UIMessage>({
+      id: sessionId,
+      transport,
+      messages: safeMessages,
+      generateId: () => crypto.randomUUID(),
+      onError: (error) => chatCallbacksRef.current.onError(error),
+      onFinish: (event) =>
+        chatCallbacksRef.current.onFinish(event as { isError?: boolean }),
+    });
+    // `safeMessages` is seed-only (consumed by ReactChatState ctor); mutating
+    // it thereafter uses `setMessages`. So we intentionally do NOT include it
+    // in deps — a new session resets via `sessionId`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, transport]);
+
+  const chat = useChat({ chat: chatInstance });
+
+  chatCallbacksRef.current.onFinish = ({ isError }) => {
+    if (!isError) {
+      autoRetryAttemptRef.current = 0;
+    }
+  };
+  chatCallbacksRef.current.onError = (error) => {
+    if (shouldIgnoreUseChatError(error, chatStatusRef.current)) {
+      return;
+    }
+
+    if (isClientRetryStateError(error)) {
+      recoverRetryStateRef.current();
+      return;
+    }
+
+    if (scheduleRetryFromErrorRef.current(error, "useChat.onError")) {
+      return;
+    }
+
+    console.error("[ChatProvider] useChat error:", error.message);
+    chat.clearError();
+  };
 
   const runtime = useAISDKRuntime(chat, {
     adapters: { attachments: attachmentAdapter },
     toCreateMessage: toCreateMessageWithAttachmentMetadata,
   });
+
+  // Diagnostic instrumentation for the mid-stream-injection splice.
+  // Monkey-patches chat.state.pushMessage / replaceMessage / messages so
+  // every mutation on the underlying UIMessage array is logged with the
+  // id being written, plus a duplicate-id detector. No-op in production.
+  //
+  // We now OWN the Chat instance (see `chatInstance` above), so
+  // `chatInstance.state.pushMessage` and friends are directly reachable.
+  // `patchChatState` wraps those plus the `messages` setter descriptor.
+  // `registerChatMessagesSource` keeps the repo-layer wrapper able to
+  // snapshot the current messages array for every addOrUpdateMessage call.
+  useEffect(() => {
+    const uninstallPatch = patchChatState(chatInstance);
+    const uninstallBridge = registerChatMessagesSource({
+      getMessages: () => chatInstance.messages,
+    });
+    return () => {
+      uninstallPatch();
+      uninstallBridge();
+    };
+  }, [chatInstance]);
 
   const recoverRetryState = useCallback(() => {
     chat.setMessages((prev) => {
@@ -1354,18 +1584,62 @@ export const ChatProvider: FC<ChatProviderProps> = ({
 
   // Give the transport a handle on `chat.setMessages` so it can splice an
   // injected user UIMessage into the thread when a
-  // `data-injected-user-message` chunk arrives mid-stream. See
-  // `BufferedAssistantChatTransport.spliceInjectedUserMessage`.
+  // `data-injected-user-message` chunk arrives mid-stream. Also forwards
+  // a bridge to the AI SDK v6 `activeResponse.state` so the transport can
+  // rotate the in-flight assistant message id at injection time — see
+  // `BufferedAssistantChatTransport.spliceInjectedUserMessage` for the
+  // full rationale.
   useEffect(() => {
     if (transport instanceof BufferedAssistantChatTransport) {
-      transport.setChatHelpers({ setMessages: chat.setMessages });
+      // We OWN the Chat instance (see `chatInstance = new Chat(...)` above),
+      // so `activeResponse` is directly reachable. This is the handle
+      // `BufferedAssistantChatTransport.spliceInjectedUserMessage` needs in
+      // order to rotate the in-flight assistant message id at injection
+      // time — without it, rotation is silently skipped and the next
+      // `write()` `pushMessage`es the old assistant reference back onto
+      // the end of `chat.messages`, producing the duplicate-id crash.
+      const chatInternal = chatInstance as unknown as {
+        activeResponse?: AiSdkActiveResponse;
+      };
+
+      if (process.env.NODE_ENV !== "production") {
+        console.debug("[InjectionDiag] setChatHelpers — chat introspection", {
+          chatInstanceCtor: chatInstance.constructor.name,
+          hasActiveResponseProp: "activeResponse" in chatInternal,
+          activeResponseTruthy: Boolean(chatInternal.activeResponse),
+          activeResponseStateMessageId:
+            chatInternal.activeResponse?.state?.message?.id ?? null,
+        });
+      }
+
+      transport.setChatHelpers({
+        setMessages: chat.setMessages,
+        getActiveResponseState: () => {
+          const state = chatInternal.activeResponse?.state ?? null;
+          if (process.env.NODE_ENV !== "production" && state === null) {
+            // Logged every time the transport asks for the in-flight
+            // stream state — if this is null while the stream is clearly
+            // mid-flight (chat.status === "streaming"), the rotation
+            // branch in computeInjectionSplice is being skipped.
+            console.debug(
+              "[InjectionDiag] getActiveResponseState returned null",
+              {
+                chatStatus: chat.status,
+                messagesLen: chat.messages.length,
+              },
+            );
+          }
+          return state;
+        },
+        generateId: () => chatInstance.generateId(),
+      });
     }
     return () => {
       if (transport instanceof BufferedAssistantChatTransport) {
         transport.setChatHelpers(null);
       }
     };
-  }, [transport, chat.setMessages]);
+  }, [transport, chat, chatInstance]);
 
   useEffect(() => {
     chatStatusRef.current = chat.status;

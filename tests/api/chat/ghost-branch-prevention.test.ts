@@ -211,10 +211,13 @@ describe("Ghost Branch Prevention", () => {
   });
 
   /**
-   * UI conversion should hide the injected user message but show both
-   * assistant segments — this is what prevents the ghost branch visually.
+   * UI conversion renders all four rows (original user + sealed assistant +
+   * injected user + continuation assistant). Because the injected user sits
+   * BETWEEN the two assistants, they are not adjacent, so assistant-ui's
+   * sibling branch heuristic ("← 2 / 2 →" picker) does not fire — the
+   * ghost-branch defense moves from "hide+merge" to "natural separator".
    */
-  it("should hide injected user messages in UI conversion while showing both assistant segments", async () => {
+  it("should render injected user messages and both assistant segments as distinct UIMessages", async () => {
     const session = await createSession({ title: "Ghost Branch - UIConversion", userId: TEST_USER_ID });
     if (!session) throw new Error("Failed to create session");
 
@@ -252,26 +255,47 @@ describe("Ghost Branch Prevention", () => {
     const sessionWithMessages = await getSessionWithMessages(session.id);
     const uiMessages = convertDBMessagesToUIMessages(dbMessages as any);
 
-    // DB-level: 3 visible messages (user + 2 assistant segments)
-    // Injected user message is hidden
+    // DB-level `messageCount` column still excludes injected users (sidebar
+    // semantics — a live-prompt injection does not add a new "turn" to the
+    // conversation list). This is independent from the converter count.
     expect(sessionWithMessages?.session.messageCount).toBe(3);
-    expect(countVisibleConversationMessages(dbMessages as any)).toBe(3);
 
-    // UI-level: consecutive assistant segments are merged to prevent "2/2" branch picker
-    expect(uiMessages).toHaveLength(2);
-    expect(uiMessages.map(m => m.role)).toEqual(["user", "assistant"]);
+    // Converter-level count includes injected users so reconciliation
+    // predicates compare against the same shape the live thread holds.
+    expect(countVisibleConversationMessages(dbMessages as any)).toBe(4);
 
-    // Merged assistant should contain both segments' text
-    const assistantParts = uiMessages[1].parts.filter((p: any) => p.type === "text");
-    const fullText = assistantParts.map((p: any) => p.text).join("");
-    expect(fullText).toContain("Pre-injection");
-    expect(fullText).toContain("Post-injection");
+    // UI-level: four distinct UIMessages in DB order — the injected user sits
+    // between the two assistants, preventing adjacency and the branch picker.
+    expect(uiMessages).toHaveLength(4);
+    expect(uiMessages.map(m => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
 
-    // The injected user message should NOT appear in UI
+    // Both assistant segments remain distinct (no merge).
+    const assistant1Text = uiMessages[1].parts
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text)
+      .join("");
+    const assistant2Text = uiMessages[3].parts
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text)
+      .join("");
+    expect(assistant1Text).toContain("Pre-injection");
+    expect(assistant2Text).toContain("Post-injection");
+    expect(assistant1Text).not.toContain("Post-injection");
+
+    // The injected user message IS visible in UI.
     const hasInjectedUser = uiMessages.some(m =>
       m.parts.some((p: any) => p.type === "text" && p.text === "Injected mid-run")
     );
-    expect(hasInjectedUser).toBe(false);
+    expect(hasInjectedUser).toBe(true);
+
+    // Branch-picker guard: no adjacent same-role pairs.
+    let adjacentAssistantPairs = 0;
+    for (let i = 1; i < uiMessages.length; i++) {
+      if (uiMessages[i - 1].role === "assistant" && uiMessages[i].role === "assistant") {
+        adjacentAssistantPairs++;
+      }
+    }
+    expect(adjacentAssistantPairs).toBe(0);
   });
 
   /**
@@ -339,28 +363,46 @@ describe("Ghost Branch Prevention", () => {
 
     const uiMessages = convertDBMessagesToUIMessages(dbMessages as any);
 
-    // 3 assistant segments (2 sealed + 1 final) are merged into 1 to prevent branch picker
-    // 2 injected user messages are hidden
-    // Result: [user, assistant(merged)]
-    expect(uiMessages).toHaveLength(2);
-    expect(uiMessages.map(m => m.role)).toEqual(["user", "assistant"]);
+    // All 6 rows render as distinct UIMessages in DB order:
+    //   [user, assistant, user, assistant, user, assistant]
+    // The injected users separate the assistant segments, so no two
+    // assistants are adjacent → assistant-ui's branch picker does not fire.
+    expect(uiMessages).toHaveLength(6);
+    expect(uiMessages.map(m => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
 
-    // Merged assistant should contain all 3 segments' text
-    const assistantText = uiMessages[1].parts
-      .filter((p: any) => p.type === "text")
-      .map((p: any) => p.text)
-      .join("");
-    expect(assistantText).toContain("Working on step 1...");
-    expect(assistantText).toContain("Got it, doing X and step 2...");
-    expect(assistantText).toContain("Done with everything including X and Y.");
+    // Each assistant segment retains its own text (no merge).
+    const textOf = (i: number) =>
+      uiMessages[i].parts
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => p.text)
+        .join("");
+    expect(textOf(1)).toContain("Working on step 1...");
+    expect(textOf(3)).toContain("Got it, doing X and step 2...");
+    expect(textOf(5)).toContain("Done with everything including X and Y.");
 
-    // No injected user content visible
+    // Injected user content IS visible.
     const hasInjectedContent = uiMessages.some(m =>
       m.parts.some((p: any) =>
         p.type === "text" && (p.text === "Also do X" || p.text === "And Y too")
       )
     );
-    expect(hasInjectedContent).toBe(false);
+    expect(hasInjectedContent).toBe(true);
+
+    // Branch-picker guard: no adjacent same-role pairs.
+    let adjacentAssistantPairs = 0;
+    for (let i = 1; i < uiMessages.length; i++) {
+      if (uiMessages[i - 1].role === "assistant" && uiMessages[i].role === "assistant") {
+        adjacentAssistantPairs++;
+      }
+    }
+    expect(adjacentAssistantPairs).toBe(0);
   });
 
   /**
@@ -509,11 +551,17 @@ describe("Ghost Branch Prevention", () => {
     expect(injectedIds).toContain(sealedAssistant!.id);
     expect(injectedIds).toContain(injectedUser!.id);
 
-    // UI should show user + sealed assistant (injected user hidden)
+    // UI should show all three rows (original user + sealed assistant +
+    // injected user). There's no continuation assistant because the run
+    // was cancelled.
     const uiMessages = convertDBMessagesToUIMessages(messages as any);
-    expect(uiMessages).toHaveLength(2);
-    expect(uiMessages[0].role).toBe("user");
-    expect(uiMessages[1].role).toBe("assistant");
+    expect(uiMessages).toHaveLength(3);
+    expect(uiMessages.map(m => m.role)).toEqual(["user", "assistant", "user"]);
+    const injectedText = uiMessages[2].parts
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text)
+      .join("");
+    expect(injectedText).toContain("Do something else");
   });
 
   it("creates a distinct post-injection assistant row after background progress already persisted the pre-split row", async () => {

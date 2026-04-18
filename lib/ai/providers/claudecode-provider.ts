@@ -785,8 +785,84 @@ function buildSdkUserMessage(content: string, sessionId: string): SDKUserMessage
   } as SDKUserMessage;
 }
 
-async function* singleSdkUserMessage(message: SDKUserMessage): AsyncGenerator<SDKUserMessage> {
-  yield message;
+/**
+ * Long-lived, push-driven AsyncIterable channel used to feed the SDK's
+ * `query.streamInput(...)` for the full lifetime of a query.
+ *
+ * Why this exists:
+ *   The Claude Agent SDK's `streamInput(asyncIterable)` iterates the passed
+ *   iterable and, when that iterable returns, calls `transport.endInput()`
+ *   which closes stdin to the CLI subprocess (sdk.mjs, Query.streamInput).
+ *   Any subsequent `streamInput(...)` call therefore writes to a stdin that
+ *   has already been `.end()`'d, so the message is silently dropped —
+ *   including the wire frame the CLI would have emitted back to us.
+ *
+ *   The old `pumpLivePromptQueue` implementation called `streamInput(...)`
+ *   once per drain with a fresh single-message generator, so only the FIRST
+ *   mid-stream injection ever reached the model. The 2nd, 3rd, ... were
+ *   dropped on closed stdin — matching the reported "only first injection
+ *   works on CC" behavior.
+ *
+ * Fix shape:
+ *   Create ONE channel per query. Call `streamInput(channel.iterable())`
+ *   ONCE. Every subsequent injection calls `channel.push(message)`, which
+ *   resolves the iterator's pending `next()` and ships the message through
+ *   the same, still-open stdin pipe. The iterable is closed only when the
+ *   query ends (signal.aborted or session close), so `endInput()` fires
+ *   exactly once at the correct moment.
+ */
+interface SdkUserMessageChannel {
+  iterable: AsyncIterable<SDKUserMessage>;
+  push: (message: SDKUserMessage) => void;
+  close: () => void;
+}
+
+function createSdkUserMessageChannel(): SdkUserMessageChannel {
+  const queue: SDKUserMessage[] = [];
+  let pendingResolve: (() => void) | null = null;
+  let closed = false;
+
+  const waitForItem = (): Promise<void> => {
+    if (queue.length > 0 || closed) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      pendingResolve = resolve;
+    });
+  };
+
+  const iterable: AsyncIterable<SDKUserMessage> = {
+    async *[Symbol.asyncIterator]() {
+      while (true) {
+        while (queue.length > 0) {
+          const next = queue.shift();
+          if (next) yield next;
+        }
+        if (closed) return;
+        await waitForItem();
+      }
+    },
+  };
+
+  return {
+    iterable,
+    push(message) {
+      if (closed) return;
+      queue.push(message);
+      if (pendingResolve) {
+        const resolve = pendingResolve;
+        pendingResolve = null;
+        resolve();
+      }
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      if (pendingResolve) {
+        const resolve = pendingResolve;
+        pendingResolve = null;
+        resolve();
+      }
+    },
+  };
 }
 
 async function pumpLivePromptQueue(options: {
@@ -802,48 +878,84 @@ async function pumpLivePromptQueue(options: {
 
   const inputSessionId = crypto.randomUUID();
 
-  while (!signal.aborted && hasLivePromptQueue(runId)) {
-    let entries = drainLivePromptQueue(runId);
-    if (entries.length === 0) {
-      try {
-        await waitForQueueMessage(runId, signal);
-      } catch {
-        break;
+  // ONE channel, ONE streamInput call, MANY pushes.
+  //
+  // We kick off streamInput() asynchronously and do NOT await it here —
+  // it only resolves when the channel's async iterator returns (i.e.
+  // after we call channel.close() in the finally block). That's also when
+  // the SDK internally calls transport.endInput(), which is exactly the
+  // moment we want stdin to close: at end-of-query, never mid-query.
+  const channel = createSdkUserMessageChannel();
+  const streamInputPromise = query
+    .streamInput(channel.iterable)
+    .catch((err: unknown) => {
+      if (!signal.aborted) {
+        console.warn(
+          "[ClaudeCode] Persistent streamInput channel failed:",
+          err instanceof Error ? err.message : err,
+        );
       }
-      if (signal.aborted || !hasLivePromptQueue(runId)) {
-        break;
-      }
-      entries = drainLivePromptQueue(runId);
+    });
+
+  // Close the channel if the query is aborted so the pending streamInput
+  // iterator resolves cleanly instead of hanging.
+  const onAbort = () => channel.close();
+  if (signal.aborted) {
+    onAbort();
+  } else {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  try {
+    while (!signal.aborted && hasLivePromptQueue(runId)) {
+      let entries = drainLivePromptQueue(runId);
       if (entries.length === 0) {
+        try {
+          await waitForQueueMessage(runId, signal);
+        } catch {
+          break;
+        }
+        if (signal.aborted || !hasLivePromptQueue(runId)) {
+          break;
+        }
+        entries = drainLivePromptQueue(runId);
+        if (entries.length === 0) {
+          continue;
+        }
+      }
+
+      try {
+        await onQueueMessages?.(entries);
+      } catch (error) {
+        console.warn(
+          "[ClaudeCode] Failed to persist queued live prompt before injection:",
+          error,
+        );
+      }
+
+      const content = entries.some((entry) => entry.stopIntent)
+        ? buildStopSystemMessage(entries)
+        : buildUserInjectionContent(entries);
+      if (!content) {
         continue;
       }
-    }
 
-    try {
-      await onQueueMessages?.(entries);
-    } catch (error) {
-      console.warn("[ClaudeCode] Failed to persist queued live prompt before injection:", error);
-    }
+      // Push through the persistent channel. Never throws — the channel
+      // buffers pre-consumer, so ordering is strictly FIFO.
+      channel.push(buildSdkUserMessage(content, inputSessionId));
 
-    const content = entries.some((entry) => entry.stopIntent)
-      ? buildStopSystemMessage(entries)
-      : buildUserInjectionContent(entries);
-    if (!content) {
-      continue;
-    }
-
-    try {
-      await query.streamInput(singleSdkUserMessage(buildSdkUserMessage(content, inputSessionId)));
-    } catch (error) {
-      if (!signal.aborted) {
-        console.warn("[ClaudeCode] Failed to inject queued live prompt into SDK session:", error);
+      if (entries.some((entry) => entry.stopIntent)) {
+        break;
       }
-      break;
     }
-
-    if (entries.some((entry) => entry.stopIntent)) {
-      break;
-    }
+  } finally {
+    // Always close the channel so streamInput's iterator returns and the
+    // SDK closes stdin exactly once, at query-end.
+    channel.close();
+    signal.removeEventListener("abort", onAbort);
+    // Don't await — stream lifetime is owned by the query loop. We just
+    // ensure the promise doesn't become an unhandled rejection.
+    void streamInputPromise;
   }
 }
 

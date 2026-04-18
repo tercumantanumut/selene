@@ -7,6 +7,9 @@ import {
   hasLivePromptQueue,
   removeLivePromptQueue,
   waitForQueueMessage,
+  reserveLivePromptQueueBySession,
+  promoteLivePromptQueueToRunId,
+  clearLivePromptQueueBySession,
 } from "@/lib/background-tasks/live-prompt-queue-registry";
 
 const RUN_ID = "test-run-001";
@@ -189,6 +192,161 @@ describe("live-prompt-queue-registry", () => {
     removeLivePromptQueue(RUN_ID, SESSION_ID);
 
     await expect(waiter).resolves.toBeUndefined();
+  });
+
+  // ── reserveLivePromptQueueBySession / promoteLivePromptQueueToRunId ─────
+  // These close the ~9–11 s race window between /api/chat POST and
+  // createLivePromptQueue being reached after the slow awaits (session load,
+  // preflight check, createAgentRun). The composer's live-prompt-queue POST
+  // must succeed immediately after /api/chat begins, not only after the
+  // real agentRun.id is known.
+
+  describe("reserveLivePromptQueueBySession", () => {
+    beforeEach(() => {
+      clearLivePromptQueueBySession(SESSION_ID);
+    });
+
+    it("makes appendToLivePromptQueueBySession succeed before any runId is assigned", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+
+      const result = appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "pre-run-1",
+        content: "injected during warmup",
+        stopIntent: false,
+      });
+
+      expect(result).toBe(true);
+    });
+
+    it("clears a stale reservation from a prior session before creating the new one", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "stale-1",
+        content: "from a prior aborted run",
+        stopIntent: false,
+      });
+
+      // Re-reserving for the same session drops the stale entries so they
+      // don't bleed into the new run.
+      reserveLivePromptQueueBySession(SESSION_ID);
+
+      // Promote to a run and drain — should be empty.
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+      const drained = drainLivePromptQueue(RUN_ID);
+      expect(drained).toHaveLength(0);
+    });
+  });
+
+  describe("promoteLivePromptQueueToRunId", () => {
+    beforeEach(() => {
+      clearLivePromptQueueBySession(SESSION_ID);
+    });
+
+    it("carries entries queued during reservation into the real runId key", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "warmup-1",
+        content: "first injection",
+        stopIntent: false,
+      });
+      appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "warmup-2",
+        content: "second injection",
+        stopIntent: true,
+      });
+
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+
+      // Entries must survive the rekey.
+      const drained = drainLivePromptQueue(RUN_ID);
+      expect(drained).toHaveLength(2);
+      expect(drained[0].content).toBe("first injection");
+      expect(drained[1].content).toBe("second injection");
+      expect(drained[1].stopIntent).toBe(true);
+    });
+
+    it("is idempotent: calling twice with the same runId is a no-op", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+
+      appendToLivePromptQueue(RUN_ID, {
+        id: "post-1",
+        content: "after promote",
+        stopIntent: false,
+      });
+
+      // Second promote call must not wipe the entry.
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+      const drained = drainLivePromptQueue(RUN_ID);
+      expect(drained).toHaveLength(1);
+      expect(drained[0].content).toBe("after promote");
+    });
+
+    it("falls back to createLivePromptQueue when no reservation exists", () => {
+      // No prior reserve — promote should still leave a working queue.
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+
+      expect(hasLivePromptQueue(RUN_ID)).toBe(true);
+      const result = appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "fresh-1",
+        content: "no warmup",
+        stopIntent: false,
+      });
+      expect(result).toBe(true);
+    });
+
+    it("wakes waiters parked on the session during warmup when entries existed", async () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      // Queue an entry before promote to exercise the wake-on-promote path.
+      appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "warm-entry",
+        content: "will wake the waiter",
+        stopIntent: false,
+      });
+
+      // Promote and make sure the real-runId waiter can observe the entry.
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+      const waiter = waitForQueueMessage(RUN_ID);
+      // Entry already present — waiter resolves immediately.
+      await expect(waiter).resolves.toBeUndefined();
+    });
+  });
+
+  describe("clearLivePromptQueueBySession", () => {
+    beforeEach(() => {
+      clearLivePromptQueueBySession(SESSION_ID);
+    });
+
+    it("releases a reservation so a later append by session returns false", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      clearLivePromptQueueBySession(SESSION_ID);
+
+      const result = appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "after-clear",
+        content: "should not land",
+        stopIntent: false,
+      });
+      expect(result).toBe(false);
+    });
+
+    it("releases a promoted run — used by outer catch when agentRun.id is null", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+      clearLivePromptQueueBySession(SESSION_ID);
+
+      expect(hasLivePromptQueue(RUN_ID)).toBe(false);
+      const result = appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "after-clear",
+        content: "should not land",
+        stopIntent: false,
+      });
+      expect(result).toBe(false);
+    });
+
+    it("is a no-op when no queue exists for the session", () => {
+      // Must not throw even when nothing was reserved.
+      expect(() => clearLivePromptQueueBySession(SESSION_ID)).not.toThrow();
+    });
   });
 
 });
