@@ -245,7 +245,6 @@ class MCPClientManager {
                 }
 
                 console.log(`[MCP] Starting stdio transport: ${config.command} ${config.args?.join(" ") || ""}`);
-                console.log(`[MCP] Working directory access/arguments:`, config.args); // NEW: Debug log
 
                 transport = new StdioClientTransport({
                     command: config.command,
@@ -461,6 +460,17 @@ class MCPClientManager {
         const client = this.clients.get(serverName);
         const transport = this.transports.get(serverName);
         const wasConnected = !!(client || transport);
+
+        // Detach the lifecycle handlers BEFORE we trigger close() — otherwise
+        // `transport.onclose` (registered in connect()) would fire as a side
+        // effect of our own teardown and emit a second `disconnected` event,
+        // duplicating the one this method emits at the bottom. We only want
+        // onclose to fire for *unsolicited* transport deaths (sidecar crash,
+        // OS killed the process, etc.).
+        if (transport) {
+            transport.onclose = undefined;
+            transport.onerror = undefined;
+        }
 
         if (client) {
             try {
