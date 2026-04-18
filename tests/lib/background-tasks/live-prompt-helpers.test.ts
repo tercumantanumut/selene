@@ -29,6 +29,28 @@ describe("hasStopIntent", () => {
     expect(hasStopIntent("search the docs")).toBe(false);
     expect(hasStopIntent("what is the time?")).toBe(false);
   });
+
+  it("treats redirect messages as pivot, not stop", () => {
+    // Starts with a stop-word but the user is redirecting the task —
+    // the agent should drop the old task and pick up the new one,
+    // NOT emit a graceful stop.
+    expect(
+      hasStopIntent(
+        "nevermind, lets check how vector piepline works instead of auth",
+      ),
+    ).toBe(false);
+    expect(hasStopIntent("nevermind, let's do X instead")).toBe(false);
+    expect(hasStopIntent("wait, use the other tool instead")).toBe(false);
+    expect(hasStopIntent("stop, rather search the docs")).toBe(false);
+    expect(hasStopIntent("cancel, switch to vector search")).toBe(false);
+    expect(hasStopIntent("nevermind, actually do the other thing")).toBe(false);
+  });
+
+  it("still classifies pure stop requests that happen to be wordy", () => {
+    expect(hasStopIntent("stop and wait")).toBe(true);
+    expect(hasStopIntent("cancel this task")).toBe(true);
+    expect(hasStopIntent("nevermind forget it")).toBe(true);
+  });
 });
 
 describe("sanitizeLivePromptContent", () => {

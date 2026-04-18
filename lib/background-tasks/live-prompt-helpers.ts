@@ -44,10 +44,30 @@ const STOP_INTENT_PATTERNS = [
   /^never mind\b/i,
 ];
 
+// When the user starts with a stop-word but follows it with a redirect
+// marker, they are pivoting the task rather than asking the agent to halt.
+// Example: "nevermind, lets check X instead of Y" — the agent should drop
+// the current task and take on the new one, not wrap up with
+// "Stopping here as requested." Without this guard, Claude Code's
+// pumpLivePromptQueue routes the redirect through buildStopSystemMessage
+// ([STOP REQUESTED BY USER] ... Do not start any new tasks or tool calls),
+// producing a phantom stop the user never asked for.
+const REDIRECT_MARKERS =
+  /\b(instead|let'?s|rather|switch\s+to|change\s+to|do\s+this\s+instead|actually\s+(?:do|check|search|use|try|look))\b/i;
+
 /** Returns true if the message content signals the user wants to stop the current run. */
 export function hasStopIntent(content: string): boolean {
   const trimmed = content.trim();
-  return STOP_INTENT_PATTERNS.some(pattern => pattern.test(trimmed));
+  if (!STOP_INTENT_PATTERNS.some(pattern => pattern.test(trimmed))) {
+    return false;
+  }
+  // Redirect wins over stop: "nevermind, let's do X instead" is a pivot,
+  // not a halt. Only classify as stop when no redirection markers are
+  // present.
+  if (REDIRECT_MARKERS.test(trimmed)) {
+    return false;
+  }
+  return true;
 }
 
 /**
