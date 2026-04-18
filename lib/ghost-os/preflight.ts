@@ -174,6 +174,18 @@ async function probeSidecarHandshake(
   let nextId = 1;
   let killed = false;
 
+  /**
+   * Reject every pending JSON-RPC request so abort/exit paths fail fast
+   * instead of waiting for each per-request timeout to fire. Idempotent —
+   * the Map is cleared so repeat invocations are no-ops.
+   */
+  const rejectAllPending = (error: Error) => {
+    for (const pending of pendingResponses.values()) {
+      pending.reject(error);
+    }
+    pendingResponses.clear();
+  };
+
   const cleanup = () => {
     if (killed) return;
     killed = true;
@@ -192,7 +204,19 @@ async function probeSidecarHandshake(
     }, 1000);
   };
 
-  const abortHandler = () => cleanup();
+  const abortHandler = () => {
+    rejectAllPending(new Error("Ghost OS preflight aborted"));
+    cleanup();
+  };
+
+  // Fail fast if the signal is already aborted when we enter the probe —
+  // otherwise spawn would run and we'd rely on the caller-supplied timer to
+  // eventually kill the process.
+  if (signal?.aborted) {
+    result.spawnError = "Ghost OS preflight aborted before spawn";
+    emit(makeEvent("sidecar_spawn", "failed", { error: result.spawnError }));
+    return result;
+  }
   signal?.addEventListener("abort", abortHandler);
 
   try {
@@ -224,6 +248,19 @@ async function probeSidecarHandshake(
     result.spawnOk = true;
     result.spawnPid = child.pid;
     emit(makeEvent("sidecar_spawn", "ok", { detail: `pid ${child.pid}` }));
+
+    // Asynchronous spawn failures (ENOENT, EACCES, exec format errors) are
+    // delivered via the "error" event, NOT via the try/catch around
+    // spawn(). Without a listener Node crashes the whole process on
+    // uncaughtException. Register it BEFORE any stream interaction so we
+    // never miss the event window.
+    child.on("error", (err: Error) => {
+      if (!result.spawnError) {
+        result.spawnError = err.message;
+      }
+      rejectAllPending(err);
+      cleanup();
+    });
 
     // ---- Wire stdout/stderr ---------------------------------------------
     child.stdout.setEncoding("utf8");
@@ -262,8 +299,16 @@ async function probeSidecarHandshake(
     });
 
     const childClosed = new Promise<void>((resolve) => {
-      child!.once("close", () => resolve());
-      child!.once("exit", () => resolve());
+      const onClosed = () => {
+        rejectAllPending(
+          new Error(
+            `sidecar exited${stderrBuf ? `: ${stderrBuf.trim().slice(0, 400)}` : ""}`,
+          ),
+        );
+        resolve();
+      };
+      child!.once("close", onClosed);
+      child!.once("exit", onClosed);
     });
 
     // ---- Helper: send one JSON-RPC request with timeout -----------------
@@ -346,7 +391,17 @@ async function probeSidecarHandshake(
     emit(makeEvent("first_tool_ping", "running", { detail: "tools/list" }));
 
     try {
-      const toolsResponse = (await sendRequest("tools/list", {}, 5000)) as {
+      const toolsResponse = (await Promise.race([
+        sendRequest("tools/list", {}, 5000),
+        // Race against childClosed so a mid-request sidecar exit surfaces
+        // immediately with the stderr tail, instead of waiting for the
+        // per-request timeout. Mirrors the mcp_handshake stage above.
+        childClosed.then(() => {
+          throw new Error(
+            `sidecar exited before tools/list${stderrBuf ? `: ${stderrBuf.trim().slice(0, 400)}` : ""}`,
+          );
+        }),
+      ])) as {
         result?: { tools?: unknown[] };
       };
       const toolCount = toolsResponse.result?.tools?.length ?? 0;
