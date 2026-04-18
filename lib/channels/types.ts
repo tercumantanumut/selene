@@ -126,7 +126,10 @@ export interface ChannelConnector {
    * errors, never retry. Per-channel expectations:
    *   - Telegram: emoji reaction on the inbound message (setMessageReaction).
    *   - WhatsApp: readMessages() (piggybacks on the existing read receipt).
-   *   - Slack:    chat.postEphemeral in-thread confirmation.
+   *   - Slack:    reactions.add ("eyes" emoji) on the inbound message —
+   *               silent and persistent (we used to suggest postEphemeral
+   *               here, but the impl was changed to a reaction so we don't
+   *               leave a chat line to clean up; see slack.ts:180).
    *   - Discord:  message.react() on the inbound message.
    */
   acknowledgeQueued?(peerId: string, externalMessageId: string): Promise<void>;
