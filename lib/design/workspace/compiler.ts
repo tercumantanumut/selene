@@ -11,8 +11,15 @@ import * as esbuild from "esbuild";
 import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import type { Config } from "tailwindcss";
-import { resolve } from "path";
-import { SANDBOX_NODE_MODULES } from "../libraries";
+import { basename, resolve } from "path";
+import { SANDBOX_DIR, SANDBOX_NODE_MODULES } from "../libraries";
+
+// Derive the workspace folder name from the canonical SANDBOX_DIR constant
+// rather than re-typing the literal "selene-workspace" inside suggestion
+// strings. This keeps diagnostic suggestions in sync if the sandbox name is
+// ever changed in `lib/design/libraries.ts` and removes the duplicated literal
+// flagged in commit 0aff3a43 review.
+const SANDBOX_DIR_NAME = basename(SANDBOX_DIR);
 import { getProjectRoot } from "../../utils/project-root";
 import {
   installSandboxPackages,
@@ -250,7 +257,7 @@ function buildIssueSuggestion(
 
     const couldResolveMatch = message.match(/["'`](.+?)["'`]/);
     if (couldResolveMatch?.[1]) {
-      return `Verify that ${couldResolveMatch[1]} is installed in selene-workspace/package.json.`;
+      return `Verify that ${couldResolveMatch[1]} is installed in ${SANDBOX_DIR_NAME}/package.json.`;
     }
   }
 
@@ -606,7 +613,7 @@ function createMissingDependencyIssues(
   return dependencyCheck.missingPackages.map((packageName) => ({
     type: "dependency",
     message: `Cannot resolve workspace package \"${packageName}\".`,
-    suggestion: `Install ${packageName} in selene-workspace/package.json or allow automatic recovery to install it.`,
+    suggestion: `Install ${packageName} in ${SANDBOX_DIR_NAME}/package.json or allow automatic recovery to install it.`,
   }));
 }
 
