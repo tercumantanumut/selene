@@ -110,6 +110,22 @@ function extractMediaFromResult(result: unknown): Array<{ type: "image" | "video
   const record = result as Record<string, unknown>;
   const media: Array<{ type: "image" | "video"; url: string }> = [];
 
+  // Ephemeral-stub format (canonical-content.ts#makeEphemeralStubResult):
+  // tools flagged `ephemeralResults: true` are persisted as compact stubs
+  // where only `mediaRefs: [{ url, mimeType }]` survives. On replay this
+  // is the only shape with hosted media URLs, so render from it first.
+  if (Array.isArray(record.mediaRefs)) {
+    for (const item of record.mediaRefs) {
+      if (!item || typeof item !== "object") continue;
+      const refRecord = item as { url?: unknown; mimeType?: unknown };
+      const refUrl = typeof refRecord.url === "string" ? refRecord.url : undefined;
+      if (!refUrl) continue;
+      const mimeType = typeof refRecord.mimeType === "string" ? refRecord.mimeType : "";
+      const type: "image" | "video" = mimeType.startsWith("video/") ? "video" : "image";
+      media.push({ type, url: refUrl });
+    }
+  }
+
   if (Array.isArray(record.images)) {
     for (const item of record.images) {
       if (item && typeof item === "object" && typeof (item as { url?: unknown }).url === "string") {

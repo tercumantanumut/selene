@@ -486,6 +486,15 @@ function getString(value: unknown): string | undefined {
  * tool-result. The model has already seen the full result in the current
  * streaming turn — on replay it only needs to know the tool ran, the final
  * status, and any media refs (so later tool calls can pass the URL along).
+ *
+ * NOTE on i18n: `summary` is intentionally English. It is fed back to the
+ * LLM as replay context only — it is never rendered in the UI (the chat
+ * card extracts media from `mediaRefs` directly; see
+ * `components/assistant-ui/tool-call-group.tsx#extractMediaFromResult` and
+ * `lib/channels/delivery.ts#extractImageUrlsFromToolResult`). Locale
+ * resolution would have to happen at the persistence boundary which is
+ * request-scope agnostic; keeping English here matches every other
+ * server-side log/diagnostic string in this file.
  */
 function makeEphemeralStubResult(
   toolName: string,
@@ -584,7 +593,7 @@ export function stubEphemeralToolResults(
   }
 
   if (anyStubbed) {
-    console.log(
+    console.debug(
       `[CHAT API] Ephemeral stub applied to tool-result(s) before persistence (ephemeralResults metadata honored).`,
     );
   }
