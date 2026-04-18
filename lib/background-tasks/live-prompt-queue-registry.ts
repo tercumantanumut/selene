@@ -219,6 +219,22 @@ export function hasLivePromptQueue(runId: string): boolean {
 }
 
 /**
+ * Resolve the queue key registered for this session.
+ *
+ * Returns the real `agentRun.id` once promoted, or the `pending-run:<sessionId>`
+ * placeholder while the reservation is still in warmup. Returns `undefined` when
+ * no reservation has been made yet.
+ *
+ * Callers that need to drain-before-remove on error paths where the run id
+ * may not yet exist (e.g. the chat catch handler that fires before
+ * `createAgentRun` returns) use this to pass the live key into
+ * `drainLivePromptQueue`.
+ */
+export function getLivePromptQueueKeyBySession(sessionId: string): string | undefined {
+  return getSessionIndex().get(sessionId);
+}
+
+/**
  * Wait until the queue receives at least one entry, or until the caller aborts.
  * Resolves immediately when entries are already available.
  */

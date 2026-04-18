@@ -37,6 +37,7 @@ import {
   reserveLivePromptQueueBySession,
   promoteLivePromptQueueToRunId,
   clearLivePromptQueueBySession,
+  getLivePromptQueueKeyBySession,
 } from "@/lib/background-tasks/live-prompt-queue-registry";
 import {
   buildUserInjectionContent,
@@ -1893,15 +1894,41 @@ export async function POST(req: Request) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     const isCreditError = detectCreditError(errorMessage);
 
-    // If we threw after reserving the live-prompt queue but before agentRun
-    // was created (e.g. an exception in the model scope resolver), the normal
-    // `removeLivePromptQueue(agentRun.id, …)` cleanup below wouldn't run.
-    // Clear the reservation by session to avoid a stale queue entry.
-    if (!agentRun?.id && activeSessionId) {
+    // Unified live-prompt queue cleanup on the error path.
+    //
+    // This must run regardless of whether `agentRun.id` was assigned or
+    // `chatTaskRegistered` has flipped — otherwise injections that landed on
+    // the reservation during warmup (or mid-flight, before the stream
+    // settled) are silently dropped.
+    //
+    //   agentRun.id present → drain into persistence, then release by runId.
+    //   reservation only    → resolve the placeholder key, drain, then clear
+    //                         by session.
+    //
+    // Both branches end in the same invariant: no queue entry for this
+    // session survives into the next request.
+    let livePromptQueueCleanedUp = false;
+    if (activeSessionId) {
       try {
-        clearLivePromptQueueBySession(activeSessionId);
+        if (agentRun?.id) {
+          await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
+          removeLivePromptQueue(agentRun.id, activeSessionId);
+        } else {
+          const pendingKey = getLivePromptQueueKeyBySession(activeSessionId);
+          if (pendingKey) {
+            // handleUndrainedQueueMessages only uses its first arg as a map
+            // lookup key — passing the pending placeholder key is safe and
+            // drains any entries that raced in during reservation warmup.
+            await handleUndrainedQueueMessages(pendingKey, activeSessionId);
+          }
+          clearLivePromptQueueBySession(activeSessionId);
+        }
+        livePromptQueueCleanedUp = true;
       } catch (cleanupErr) {
-        console.error("[CHAT API] Failed to clear reserved live-prompt queue on error:", cleanupErr);
+        console.error(
+          "[CHAT API] Failed to drain/clear live-prompt queue on error:",
+          cleanupErr,
+        );
       }
     }
 
@@ -1936,7 +1963,11 @@ export async function POST(req: Request) {
         });
         const runStatus = shouldCancel ? "cancelled" : "failed";
         removeChatAbortController(agentRun.id);
-        if (activeSessionId) {
+        // Live-prompt queue removal is handled by the unified
+        // drain-before-remove block at the top of this catch handler
+        // (`livePromptQueueCleanedUp`). Only fall back here if that block
+        // itself threw — otherwise we'd double-remove.
+        if (activeSessionId && !livePromptQueueCleanedUp) {
           removeLivePromptQueue(agentRun.id, activeSessionId);
         }
         await completeAgentRun(agentRun.id, runStatus, shouldCancel

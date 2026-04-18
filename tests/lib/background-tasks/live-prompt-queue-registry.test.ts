@@ -10,6 +10,7 @@ import {
   reserveLivePromptQueueBySession,
   promoteLivePromptQueueToRunId,
   clearLivePromptQueueBySession,
+  getLivePromptQueueKeyBySession,
 } from "@/lib/background-tasks/live-prompt-queue-registry";
 
 const RUN_ID = "test-run-001";
@@ -346,6 +347,55 @@ describe("live-prompt-queue-registry", () => {
     it("is a no-op when no queue exists for the session", () => {
       // Must not throw even when nothing was reserved.
       expect(() => clearLivePromptQueueBySession(SESSION_ID)).not.toThrow();
+    });
+  });
+
+  describe("getLivePromptQueueKeyBySession", () => {
+    it("returns undefined when no reservation exists", () => {
+      expect(getLivePromptQueueKeyBySession(SESSION_ID)).toBeUndefined();
+    });
+
+    it("returns the placeholder key after reservation, before promotion", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      const key = getLivePromptQueueKeyBySession(SESSION_ID);
+      expect(key).toBeDefined();
+      expect(key).toContain("pending-run:");
+      expect(key).toContain(SESSION_ID);
+    });
+
+    it("returns the real run id after promotion", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      promoteLivePromptQueueToRunId(SESSION_ID, RUN_ID);
+      expect(getLivePromptQueueKeyBySession(SESSION_ID)).toBe(RUN_ID);
+    });
+
+    it("returned placeholder key drains entries that raced in during warmup", () => {
+      // Simulates the error-path drain scenario: injection lands while the
+      // queue is still on the pending key (agentRun.id not yet assigned),
+      // then the route throws and must drain-before-clear instead of
+      // silently dropping the entry.
+      reserveLivePromptQueueBySession(SESSION_ID);
+      appendToLivePromptQueueBySession(SESSION_ID, {
+        id: "race-1",
+        content: "injected during warmup",
+        stopIntent: false,
+      });
+
+      const key = getLivePromptQueueKeyBySession(SESSION_ID);
+      expect(key).toBeDefined();
+      const drained = drainLivePromptQueue(key as string);
+      expect(drained).toHaveLength(1);
+      expect(drained[0].content).toBe("injected during warmup");
+
+      // After drain, clearing must still succeed and the key must detach.
+      clearLivePromptQueueBySession(SESSION_ID);
+      expect(getLivePromptQueueKeyBySession(SESSION_ID)).toBeUndefined();
+    });
+
+    it("returns undefined after clear", () => {
+      reserveLivePromptQueueBySession(SESSION_ID);
+      clearLivePromptQueueBySession(SESSION_ID);
+      expect(getLivePromptQueueKeyBySession(SESSION_ID)).toBeUndefined();
     });
   });
 
