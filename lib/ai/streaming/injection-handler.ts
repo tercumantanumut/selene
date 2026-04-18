@@ -115,20 +115,15 @@ export interface HandleInjectedPromptsResult {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// `LivePromptEntry.metadata` has no `source` field (see
+// `lib/background-tasks/live-prompt-queue-registry.ts#LivePromptEntry`) — all
+// channel producers enqueue without a channel tag, so every non-delegation
+// injection surfaces as "web" on the wire. If/when channel producers start
+// stamping `metadata.source`, extend LivePromptEntry first, then widen this
+// helper to forward the typed value. Do NOT re-introduce the freeform
+// `{ source?: string }` cast — it hid the fact that the branches were dead.
 function sourceFor(entry: LivePromptEntry): InjectedUserMessageSource {
-  if (entry.metadata?.kind === "delegation_completion") return "delegation";
-  const rawSource = (entry.metadata as { source?: string } | undefined)?.source;
-  switch (rawSource) {
-    case "telegram":
-    case "whatsapp":
-    case "slack":
-    case "discord":
-    case "web":
-    case "workflow":
-      return rawSource;
-    default:
-      return "web";
-  }
+  return entry.metadata?.kind === "delegation_completion" ? "delegation" : "web";
 }
 
 async function sealPreInjectionAssistant(
