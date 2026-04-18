@@ -135,6 +135,22 @@ export interface InjectionStreamWriter {
  * before `useChat`'s reducer sees it, so the frame never becomes visible
  * content — the rendered output is a separate synthesized user UIMessage.
  */
+/**
+ * Generate the post-injection `nextAssistantMessageId` value.
+ *
+ * Centralized so all three injection call sites in `app/api/chat/route.ts`
+ * (Claude-Code primary branch, non-CC primary branch, and the
+ * delegation-completion branch) can't accidentally diverge on the id
+ * format. The contract is documented on
+ * {@link InjectedUserMessageData.nextAssistantMessageId} — the id has to
+ * match `MessageRepository`'s expectations on the client (any stable,
+ * unique string) and round-trip cleanly through SQLite as the canonical
+ * `messages.id` column. `crypto.randomUUID()` satisfies both.
+ */
+export function generateNextAssistantMessageId(): string {
+  return crypto.randomUUID();
+}
+
 export function emitInjectedUserMessageChunk(
   writer: InjectionStreamWriter,
   payload: InjectedUserMessagePayload,

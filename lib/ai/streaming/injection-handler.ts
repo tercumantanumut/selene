@@ -175,10 +175,14 @@ async function sealPreInjectionAssistant(
  * branch) and :1309–1363 (post-delegation inject branch). The caller is
  * responsible for the follow-up work unique to non-CC: building the
  * synthetic `ToolModelMessage` shim, composing the final `messages` array
- * for the SDK step, and rotating `assistantMessageId`.
+ * for the SDK step, and rotating `assistantMessageId`. The caller also
+ * owns `stepOffset` bookkeeping on `streamingState` — we deliberately
+ * don't take `stepNumber` here because the handler has no use for it
+ * and threading an unused param through both injection branches just
+ * invites future drift.
  */
 export async function handleInjectedPromptsNonCC(
-  args: HandleInjectedPromptsArgs & { stepNumber: number },
+  args: HandleInjectedPromptsArgs,
 ): Promise<HandleInjectedPromptsResult> {
   return runHandler(args);
 }

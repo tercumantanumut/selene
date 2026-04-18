@@ -38,13 +38,11 @@ import {
   promoteLivePromptQueueToRunId,
   clearLivePromptQueueBySession,
 } from "@/lib/background-tasks/live-prompt-queue-registry";
-import { signalUndrainedMessages } from "@/lib/background-tasks/undrained-signal";
 import {
   buildUserInjectionContent,
   buildStopSystemMessage,
 } from "@/lib/background-tasks/live-prompt-helpers";
 import {
-  addDelegationCompletion,
   drainDelegationCompletions,
 } from "@/lib/ai/tools/delegation-completion-store";
 import { createHeartbeatStream } from "@/lib/utils/heartbeat-stream";
@@ -78,6 +76,7 @@ import {
   type InjectionStreamingState,
 } from "@/lib/ai/streaming/injection-handler";
 import type { InjectionStreamWriter } from "@/lib/ai/streaming/injection-stream-emitter";
+import { generateNextAssistantMessageId } from "@/lib/ai/streaming/injection-stream-emitter";
 import {
   findOrphanToolCalls,
   buildSyntheticModelToolResults,
@@ -109,7 +108,7 @@ import {
 } from "./canonical-content";
 import { buildToolsForRequest } from "./tools-builder";
 import { prepareMessagesForRequest } from "./message-prep";
-import { createOnFinishCallback, createOnAbortCallback } from "./stream-callbacks";
+import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
 import { buildSystemPromptForRequest } from "./system-prompt-builder";
 import { mcpContextStore, type SeleneMcpContext } from "@/lib/ai/providers/mcp-context-store";
@@ -143,40 +142,6 @@ registerAllTools();
 
 // Check if Styly AI API is configured (for tool discovery instructions)
 const hasStylyApiKey = () => !!process.env.STYLY_AI_API_KEY;
-
-/**
- * Drain any messages that were queued for live-prompt injection but never
- * processed by prepareStep. Delegation completion entries are moved to the
- * persistent completion store (so the next turn can inject them); other
- * entries are signaled as undrained for frontend replay.
- */
-function handleUndrainedQueueMessages(runId: string, sessionId: string): void {
-  const undrained = drainLivePromptQueue(runId);
-  if (undrained.length === 0) return;
-
-  const delegationEntries = undrained.filter(
-    (e) => e.metadata?.kind === "delegation_completion",
-  );
-  const otherEntries = undrained.filter(
-    (e) => e.metadata?.kind !== "delegation_completion",
-  );
-
-  for (const entry of delegationEntries) {
-    addDelegationCompletion({
-      delegationId: entry.metadata?.delegationId || entry.id,
-      delegateName: entry.metadata?.delegateName || "Sub-agent",
-      sessionId: "",
-      initiatorSessionId: sessionId,
-      characterId: "",
-      completedAt: Date.now(),
-      resultContent: entry.content,
-    });
-  }
-
-  if (otherEntries.length > 0) {
-    signalUndrainedMessages(sessionId);
-  }
-}
 
 export async function POST(req: Request) {
   let agentRun: { id: string } | null = null;
@@ -865,7 +830,7 @@ export async function POST(req: Request) {
           // Pre-generate the post-injection assistant id so the client splice
           // rotates to the matching id. See the non-CC primary injection
           // branch for the full branch-picker-fix rationale — same shape here.
-          const nextAssistantMessageId = crypto.randomUUID();
+          const nextAssistantMessageId = generateNextAssistantMessageId();
 
           // Shared seal + persist + emit-frame path. `handleInjectedPromptsCC`
           // writes one `data-injected-user-message` chunk per entry onto the
@@ -1004,7 +969,7 @@ export async function POST(req: Request) {
           const runStatus = shouldCancel ? "cancelled" : "failed";
           removeChatAbortController(agentRun.id);
           if (activeSessionId) {
-            handleUndrainedQueueMessages(agentRun.id, activeSessionId);
+            await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
             removeLivePromptQueue(agentRun.id, activeSessionId);
           }
           await completeAgentRun(agentRun.id, runStatus, shouldCancel
@@ -1266,7 +1231,7 @@ export async function POST(req: Request) {
               // stream-finish replaces chat.messages with DB-id rows,
               // producing a duplicate sibling under the injected user message
               // in MessageRepository (→ `← 2 / 2 →`).
-              const nextAssistantMessageId = crypto.randomUUID();
+              const nextAssistantMessageId = generateNextAssistantMessageId();
 
               // Seal + persist + emit data-injected-user-message chunks via the
               // shared handler. It tags the sealed assistant row with
@@ -1281,7 +1246,6 @@ export async function POST(req: Request) {
                 syncStreamingMessage: syncStreamingMessage ?? null,
                 writer: injectionWriterRef.current,
                 orphanToolCalls,
-                stepNumber,
                 nextAssistantMessageId,
               });
 
@@ -1320,6 +1284,17 @@ export async function POST(req: Request) {
               // doesn't 400 on "tool_use without tool_result". The shape mirrors
               // what `splitToolResultsFromAssistantMessages` synthesizes on later
               // DB rehydration, so replay stays stable across edit/reload.
+              //
+              // i18n note: this string is the model-facing content of a synthetic
+              // tool-result, NOT a user-rendered label. The model reads it to
+              // understand why the prior tool call has no real result, and then
+              // narrates back to the user in the user's own language. Threading
+              // the request locale through `prepareStep` here would mean
+              // resolving session locale at every hop in the streaming pipeline
+              // for zero user-visible benefit, so we keep this English (matching
+              // every other model-facing system/replay string in this file —
+              // see `canonical-content.ts#makeEphemeralStubResult` for the same
+              // rationale).
               const syntheticShim: ModelMessage[] =
                 orphanToolCalls.length > 0
                   ? [
@@ -1379,7 +1354,7 @@ export async function POST(req: Request) {
                   // on the wire frame so the client splice rotates to the
                   // matching id. See the primary injection branch above for
                   // the full branch-picker-fix rationale.
-                  const nextAssistantMessageId = crypto.randomUUID();
+                  const nextAssistantMessageId = generateNextAssistantMessageId();
 
                   await handleInjectedPromptsNonCC({
                     sessionId,
@@ -1388,7 +1363,6 @@ export async function POST(req: Request) {
                     syncStreamingMessage: syncStreamingMessage ?? null,
                     writer: injectionWriterRef.current,
                     orphanToolCalls,
-                    stepNumber,
                     nextAssistantMessageId,
                   });
 
