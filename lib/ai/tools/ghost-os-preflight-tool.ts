@@ -26,7 +26,6 @@ interface GhostOsPreflightToolOptions {
 }
 
 interface GhostOsPreflightArgs {
-  binaryPath?: string;
   timeoutMs?: number;
 }
 
@@ -36,11 +35,6 @@ const ghostOsPreflightSchema = jsonSchema<GhostOsPreflightArgs>({
   description:
     "Input for running the Ghost OS preflight probe (diagnose binary / sidecar / MCP handshake).",
   properties: {
-    binaryPath: {
-      type: "string",
-      description:
-        "Optional override for the `ghost` binary path. If omitted, the probe searches PATH and Homebrew locations (/opt/homebrew/bin, /usr/local/bin).",
-    },
     timeoutMs: {
       type: "number",
       description:
@@ -168,7 +162,9 @@ async function executeGhostOsPreflight(
 
   try {
     const result = await runGhostOsPreflight({
-      binaryPath: args.binaryPath,
+      // NOTE: never forward an agent-supplied binary path — the preflight
+      // spawns whatever it's given with the server's env, which would be
+      // an RCE primitive. Binary lookup is internal (resolveGhostBinary()).
       signal: controller.signal,
       onProgress: (event) => {
         stages.push(event);
