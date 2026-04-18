@@ -256,7 +256,16 @@ export async function sanitizeToolResultForBase64<T = unknown>(
 
     // Plain object. Check for known envelope shapes before recursing.
     const obj = value as Record<string, unknown>;
-    if (seen.has(obj)) return obj;
+    if (seen.has(obj)) {
+      // Cycle: returning `obj` here would re-introduce the original (still
+      // un-sanitized) reference into the rewritten tree, defeating the whole
+      // purpose of this walk for any payload that revisits a node containing
+      // a base64 source. Tool-result payloads are JSON-serialised at the
+      // bridge boundary anyway (cycles can't survive the persist step), so
+      // collapse the cycle to a stable placeholder rather than leaking
+      // unsanitized data.
+      return { _circular: BASE64_REMOVED_PLACEHOLDER };
+    }
     seen.add(obj);
 
     // Anthropic-style image/document block with base64 source.
