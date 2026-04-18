@@ -219,9 +219,11 @@ function extractImageUrlsFromToolResult(result: unknown): string[] {
   // Ephemeral-stub format (canonical-content.ts#makeEphemeralStubResult):
   // when an ephemeralResults tool is replayed from history, only `mediaRefs`
   // survives — the original `images`/`videos`/`content` shape was dropped.
-  // Treat any non-image mimeType conservatively as image too (channel
-  // delivery currently only knows how to attach images), letting the
-  // downstream loadImageFromUrl filter rule out non-image content-types.
+  // Channel delivery only attaches images, so we keep refs whose `mimeType`
+  // either starts with `image/` or is missing entirely (missing-mimeType is
+  // treated optimistically as image; the downstream loader validates the
+  // actual content-type on fetch). Refs with an explicit non-image mimeType
+  // are intentionally skipped here — do not remove this guard.
   const mediaRefs = record.mediaRefs;
   if (Array.isArray(mediaRefs)) {
     for (const item of mediaRefs) {

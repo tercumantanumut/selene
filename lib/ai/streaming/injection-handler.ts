@@ -312,10 +312,22 @@ async function runHandler(
         emitInjectedUserMessageChunk(writer, payload);
       }
     } catch (dbError) {
-      console.warn(
-        "[injection-handler] Failed to persist injected user message:",
+      // Fail closed: a genuine DB error (connection loss, constraint we
+      // didn't anticipate, serialization failure) means the injected
+      // prompt exists only in-memory for this function scope. If we
+      // swallowed and continued, the caller would still pass this prompt
+      // to the model and the assistant could reply to a user message that
+      // has no row in the DB and no wire frame on the client — leaving
+      // transcript and UI permanently inconsistent.
+      //
+      // Note: the `!injected` branch above is NOT treated as an error —
+      // that's the idempotent retry path (UNIQUE-constraint collision)
+      // where the row already exists and reconnect recovery hydrates it.
+      console.error(
+        "[injection-handler] Failed to persist injected user message (aborting stream):",
         dbError,
       );
+      throw dbError;
     }
   }
 

@@ -246,12 +246,12 @@ describe("sanitizeToolResultForBase64 — SDK built-in tool results", () => {
     expect(sanitized).toEqual(raw);
   });
 
-  it("data-URL strings inside text fields are persisted and replaced with /api/media URLs", async () => {
+  it("leaves data-URL strings embedded in prose unchanged (no scanning inside text)", async () => {
     const dataUrl = `data:image/gif;base64,${fakeBase64(2_000)}`;
     const raw = {
       content: [
         { type: "text", text: `Inline: ${dataUrl}` },
-        { type: "text", text: `Standalone: ${dataUrl}` },
+        { type: "text", text: `Also embedded: ${dataUrl}` },
       ],
     };
 
@@ -259,11 +259,14 @@ describe("sanitizeToolResultForBase64 — SDK built-in tool results", () => {
       sessionId: "test-session",
     });
 
-    // Only standalone data-URL strings get captured — text containing a
-    // data-URL does NOT match `startsWith("data:")` and is left as-is. This is
-    // the correct, conservative behavior (no scanning inside prose).
+    // Only standalone data-URL string values get captured — text containing
+    // a data-URL does NOT match `startsWith("data:")` and is left as-is.
+    // This is the correct, conservative behavior: we never scan inside
+    // prose. The companion test immediately below this one pins the
+    // positive (standalone) case.
     const content = sanitized.content as Array<Record<string, unknown>>;
     expect(content[0].text).toBe(`Inline: ${dataUrl}`); // unchanged
+    expect(content[1].text).toBe(`Also embedded: ${dataUrl}`); // unchanged
     expect(mediaRefs).toHaveLength(0);
   });
 
