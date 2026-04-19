@@ -1,9 +1,50 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir, platform } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { extractTextFromDocument } from "@/lib/documents/parser";
 import { loadSettings, saveSettings, type AppSettings } from "@/lib/settings/settings-manager";
+import { WHISPER_MODELS, type WhisperModelInfo } from "@/lib/config/whisper-models";
+
+/**
+ * Pick any locally-downloaded whisper model so the WAV test doesn't hard-code
+ * `ggml-small.en` (which few developer machines have). Mirrors the search-dir
+ * logic in `lib/audio/transcription.ts#resolveWhisperModelPath` (kept private
+ * there) so the test stays honest without exporting internals. Returns the
+ * first model id whose backing file actually exists on disk, or null.
+ */
+function findAvailableWhisperModel(): string | null {
+  const searchDirs: string[] = [];
+  const home = homedir();
+  const os = platform();
+  const appName = "selene";
+
+  if (os === "darwin") {
+    searchDirs.push(path.join(home, "Library", "Application Support", appName, "models", "whisper"));
+  } else if (os === "win32") {
+    const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+    searchDirs.push(path.join(appData, appName, "models", "whisper"));
+  } else if (os === "linux") {
+    const xdgDataHome = process.env.XDG_DATA_HOME || path.join(home, ".config");
+    searchDirs.push(path.join(xdgDataHome, appName, "models", "whisper"));
+  }
+  searchDirs.push(path.join(process.cwd(), ".local-data", "models", "whisper"));
+  searchDirs.push("/opt/homebrew/share/whisper-cpp/models");
+  searchDirs.push("/usr/local/share/whisper-cpp/models");
+  searchDirs.push(path.join(home, ".cache", "whisper"));
+  searchDirs.push(path.join(home, ".local", "share", "whisper"));
+
+  const filenameFor = (m: WhisperModelInfo) => m.hfFile || `${m.id}.bin`;
+
+  for (const model of WHISPER_MODELS) {
+    const filename = filenameFor(model);
+    for (const dir of searchDirs) {
+      if (existsSync(path.join(dir, filename))) return model.id;
+    }
+  }
+  return null;
+}
 
 const FIXTURE_DIR = path.join(process.cwd(), "tests", "fixtures", "documents");
 
@@ -92,13 +133,23 @@ describe.sequential("extractTextFromDocument fixture coverage", () => {
     expect(result.text).toContain("Summary points");
   }, 90_000);
 
-  it("routes WAV audio through local STT", async () => {
+  it("routes WAV audio through local STT", async (ctx) => {
+    const availableModel = findAvailableWhisperModel();
+    if (!availableModel) {
+      console.warn(
+        "[parser.integration] No local whisper model found — skipping WAV STT test. " +
+          "Download one in Settings → Voice & Audio → Whisper Model.",
+      );
+      ctx.skip();
+      return;
+    }
+
     const current = loadSettings();
     saveSettings({
       ...current,
       sttEnabled: true,
       sttProvider: "local",
-      sttLocalModel: "ggml-small.en",
+      sttLocalModel: availableModel,
     });
 
     const result = await extractTextFromDocument(
