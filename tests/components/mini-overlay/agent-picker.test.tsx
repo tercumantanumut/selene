@@ -5,6 +5,14 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("next-intl", () => ({
+  useTranslations: () => (key: string, values?: Record<string, string | number>) => {
+    if (values && "count" in values) return `${key}:${values.count}`;
+    if (values && "time" in values) return `${key}:${values.time}`;
+    return key;
+  },
+}));
+
 vi.mock("lucide-react", () => ({
   ChevronDown: (props: SVGProps<SVGSVGElement>) => createElement("svg", props),
 }));
