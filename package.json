@@ -225,6 +225,7 @@
     "wait-on": "^9.0.4"
   },
   "optionalDependencies": {
+    "@ff-labs/fff-node": "^0.6.4",
     "zlib-sync": "^0.1.10"
   }
 }

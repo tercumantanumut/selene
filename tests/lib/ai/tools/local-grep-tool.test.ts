@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Isolate the tool test from the DB-backed filesystem helpers. `path-utils` pulls in
+// `@/lib/db/sqlite-client` at import time, which loads better-sqlite3's native binding.
+// The tool only needs `isOtherWorktreePath` from that module, so a lightweight stub
+// keeps the test hermetic for local runs regardless of native-module ABI.
+vi.mock("@/lib/ai/filesystem/path-utils", () => ({
+  isOtherWorktreePath: vi.fn(() => false),
+}));
+
 const settingsMock = vi.hoisted(() => {
   const state = {
     settings: {
@@ -7,6 +15,8 @@ const settingsMock = vi.hoisted(() => {
       localGrepMaxResults: 50,
       localGrepContextLines: 2,
       localGrepRespectGitignore: true,
+      searchBackend: "auto" as "auto" | "ripgrep" | "fff",
+      searchBackendFallback: true,
     },
   };
 
@@ -68,6 +78,9 @@ describe("localGrep tool contract", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     settingsMock.state.settings.localGrepEnabled = true;
+    settingsMock.state.settings.localGrepRespectGitignore = true;
+    settingsMock.state.settings.searchBackend = "auto";
+    settingsMock.state.settings.searchBackendFallback = true;
     ripgrepMock.isRipgrepAvailable.mockReturnValue(true);
     syncFolderMock.getAccessibleSyncFolders.mockResolvedValue([]);
     sessionQueriesMock.getSession.mockResolvedValue(null);
@@ -277,5 +290,80 @@ describe("localGrep tool contract", () => {
     expect(result.error).toContain("regex parse error");
     expect(result.error).toContain("set regex: false");
     expect(result.error).toContain("escape metacharacters");
+  });
+
+  it("tags each successful result with the backend that produced it", async () => {
+    ripgrepMock.searchWithRipgrep.mockResolvedValue({
+      matches: [{ file: "/repo/a.ts", line: 1, column: 0, text: "match" }],
+      totalMatches: 1,
+      wasTruncated: false,
+    });
+
+    const tool = createLocalGrepTool({ sessionId: "sess-1", characterId: null });
+    const result = await tool.execute(
+      { pattern: "match", paths: ["/repo"] },
+      { toolCallId: "tc-backend-1", messages: [], abortSignal: new AbortController().signal }
+    );
+
+    expect(result).toMatchObject({ status: "success", backend: "ripgrep" });
+  });
+
+  it("passes respectGitignore from settings through to the backend", async () => {
+    settingsMock.state.settings.localGrepRespectGitignore = false;
+    ripgrepMock.searchWithRipgrep.mockResolvedValue({
+      matches: [],
+      totalMatches: 0,
+      wasTruncated: false,
+    });
+
+    const tool = createLocalGrepTool({ sessionId: "sess-1", characterId: null });
+    await tool.execute(
+      { pattern: "match", paths: ["/repo"] },
+      { toolCallId: "tc-gitignore", messages: [], abortSignal: new AbortController().signal }
+    );
+
+    // Ripgrep must still run (fff would be filtered out by the tool's respectGitignore guard).
+    expect(ripgrepMock.searchWithRipgrep).toHaveBeenCalledWith(
+      expect.objectContaining({ respectGitignore: false })
+    );
+  });
+
+  it("clamps excessive maxResults to the hard cap before invoking the backend", async () => {
+    ripgrepMock.searchWithRipgrep.mockResolvedValue({
+      matches: [],
+      totalMatches: 0,
+      wasTruncated: false,
+    });
+
+    const tool = createLocalGrepTool({ sessionId: "sess-1", characterId: null });
+    await tool.execute(
+      { pattern: "match", paths: ["/repo"], maxResults: 100_000 },
+      { toolCallId: "tc-clamp-hi", messages: [], abortSignal: new AbortController().signal }
+    );
+
+    // MAX_RESULTS_HARD_CAP is 1000; anything larger must be clamped down so
+    // downstream backends (especially fff, which multiplies into pageSize)
+    // cannot receive unbounded values.
+    expect(ripgrepMock.searchWithRipgrep).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 1000 })
+    );
+  });
+
+  it("clamps non-positive maxResults up to at least 1", async () => {
+    ripgrepMock.searchWithRipgrep.mockResolvedValue({
+      matches: [],
+      totalMatches: 0,
+      wasTruncated: false,
+    });
+
+    const tool = createLocalGrepTool({ sessionId: "sess-1", characterId: null });
+    await tool.execute(
+      { pattern: "match", paths: ["/repo"], maxResults: 0 },
+      { toolCallId: "tc-clamp-lo", messages: [], abortSignal: new AbortController().signal }
+    );
+
+    expect(ripgrepMock.searchWithRipgrep).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 1 })
+    );
   });
 });

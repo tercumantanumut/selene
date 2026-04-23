@@ -6,7 +6,14 @@
  */
 
 import { tool, jsonSchema } from "ai";
-import { searchWithRipgrep, isRipgrepAvailable, type RipgrepMatch, type RipgrepSearchResult } from "./ripgrep";
+import { isRipgrepAvailable } from "./ripgrep";
+import {
+    getSearchBackendRegistry,
+    isFallbackEligibleError,
+    type SearchBackendId,
+    type SearchMatch,
+    type SearchResult,
+} from "@/lib/ai/search";
 import { getSession } from "@/lib/db/queries";
 import { getWorkspaceInfo } from "@/lib/workspace/types";
 import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
@@ -52,6 +59,10 @@ interface LocalGrepResult {
     attemptedScopes?: string[];
     /** Whether the tool ran a same-call fallback scope after zero matches */
     fallbackUsed?: boolean;
+    /** Which search backend produced the result (e.g. "ripgrep" | "fff") */
+    backend?: SearchBackendId;
+    /** Backends skipped because they failed with a fallback-eligible error */
+    backendFallbacks?: Array<{ backend: SearchBackendId; reason: string }>;
     results?: string;
     matches?: Array<{ file: string; line: number; text: string }>;
     message?: string;
@@ -163,16 +174,17 @@ function buildRegexErrorHint(pattern: string, errorMessage: string): string {
 }
 
 /**
- * Format ripgrep matches for AI consumption
+ * Format search matches for AI consumption.
+ * Accepts the generic SearchResult so it works across backends.
  */
-function formatResults(searchResult: RipgrepSearchResult, query: string): string {
+function formatResults(searchResult: SearchResult, query: string): string {
     const { matches, totalMatches, wasTruncated } = searchResult;
 
     if (matches.length === 0) {
         return `No matches found for pattern: "${query}"`;
     }
 
-    const groupedByFile = new Map<string, RipgrepMatch[]>();
+    const groupedByFile = new Map<string, SearchMatch[]>();
     for (const match of matches) {
         const existing = groupedByFile.get(match.file) || [];
         existing.push(match);
@@ -369,23 +381,6 @@ Respects .gitignore and skips binary files by default.`,
             // regex=true -> regex mode, otherwise literal mode.
             const isRegex = regex === true;
 
-            // Check if ripgrep is available
-            if (!isRipgrepAvailable()) {
-                const errorMessage = "ripgrep is not available. The vscode-ripgrep package may not be installed correctly.";
-                logToolEvent({
-                    level: "error",
-                    toolName: "localGrep",
-                    event: "error",
-                    error: errorMessage,
-                    metadata: { searchPath: "native_localgrep" },
-                });
-
-                return {
-                    status: "error",
-                    error: errorMessage,
-                };
-            }
-
             // Load settings
             const settings = loadSettings();
             const enabled = settings.localGrepEnabled ?? true;
@@ -404,17 +399,97 @@ Respects .gitignore and skips binary files by default.`,
                 };
             }
 
-            const executeSearch = async (candidatePaths: string[]) => {
-                return searchWithRipgrep({
+            // Build the ordered backend chain up front. Classification + fallback
+            // happen inside executeSearch.
+            const registry = getSearchBackendRegistry();
+            const backendSelection = settings.searchBackend ?? "auto";
+            const backendFallback = settings.searchBackendFallback ?? true;
+            const backendChain = await registry.resolveChain(backendSelection, backendFallback);
+
+            if (backendChain.length === 0) {
+                // No backend registered at all — this is only possible if the
+                // bundled ripgrep is broken AND fff isn't installed.
+                const errorMessage = isRipgrepAvailable()
+                    ? "No search backend could be resolved."
+                    : "ripgrep is not available. The vscode-ripgrep package may not be installed correctly.";
+                logToolEvent({
+                    level: "error",
+                    toolName: "localGrep",
+                    event: "error",
+                    error: errorMessage,
+                    metadata: { searchPath: "native_localgrep" },
+                });
+                return { status: "error", error: errorMessage };
+            }
+
+            const backendFallbacks: Array<{ backend: SearchBackendId; reason: string }> = [];
+            const respectGitignore = settings.localGrepRespectGitignore ?? true;
+
+            // Server-side clamp. Prevents a single call from blowing memory
+            // — especially important because fff derives pageSize = maxResults * 4
+            // per root. Hard cap at 1000 matches per query.
+            const MAX_RESULTS_HARD_CAP = 1000;
+            const requestedMax = maxResults ?? settings.localGrepMaxResults ?? 20;
+            const clampedMaxResults = Math.max(
+                1,
+                Math.min(requestedMax, MAX_RESULTS_HARD_CAP),
+            );
+
+            const executeSearch = async (candidatePaths: string[]): Promise<SearchResult> => {
+                const opts = {
                     pattern,
                     paths: candidatePaths,
                     regex: isRegex,
                     caseInsensitive,
-                    maxResults: maxResults ?? settings.localGrepMaxResults ?? 20,
+                    maxResults: clampedMaxResults,
                     fileTypes,
                     contextLines: contextLines ?? settings.localGrepContextLines ?? 2,
-                    respectGitignore: settings.localGrepRespectGitignore ?? true,
-                });
+                    respectGitignore,
+                    rankByFrecency: settings.fffRankByFrecency ?? true,
+                };
+
+                const effectiveChain = respectGitignore
+                    ? backendChain
+                    : backendChain.filter((backend) => backend.id !== "fff");
+
+                if (effectiveChain.length === 0) {
+                    throw new Error(
+                        "No compatible search backend could be resolved for respectGitignore=false. Use ripgrep or re-enable .gitignore handling.",
+                    );
+                }
+
+                let lastErr: unknown;
+                for (const backend of effectiveChain) {
+                    try {
+                        // Optional: warm an index when the backend supports it.
+                        if (backend.prepare) {
+                            try { await backend.prepare(candidatePaths); } catch { /* swallow */ }
+                        }
+                        return await backend.search(opts);
+                    } catch (err) {
+                        lastErr = err;
+                        if (!isFallbackEligibleError(err)) {
+                            // Permanent error (e.g. user regex syntax) → don't try next backend.
+                            throw err;
+                        }
+                        backendFallbacks.push({
+                            backend: backend.id,
+                            reason: err instanceof Error ? err.message : String(err),
+                        });
+                        logToolEvent({
+                            level: "warn",
+                            toolName: "localGrep",
+                            event: "retry",
+                            metadata: {
+                                reason: "backend_fallback",
+                                from: backend.id,
+                                cause: err instanceof Error ? err.message : String(err),
+                            },
+                        });
+                    }
+                }
+                // All backends exhausted.
+                throw lastErr ?? new Error("All search backends failed without surfacing an error.");
             };
 
             // Determine search paths
@@ -545,6 +620,8 @@ Respects .gitignore and skips binary files by default.`,
                         pathSource: finalPathSource,
                         attemptedScopes: attemptedScopes.join(","),
                         fallbackUsed,
+                        backend: searchResult.backend,
+                        backendFallbackCount: backendFallbacks.length,
                     },
                 });
 
@@ -559,10 +636,12 @@ Respects .gitignore and skips binary files by default.`,
                     pathSource: finalPathSource,
                     attemptedScopes: attemptedScopes.length > 0 ? attemptedScopes : undefined,
                     fallbackUsed,
+                    backend: searchResult.backend,
+                    backendFallbacks: backendFallbacks.length > 0 ? backendFallbacks : undefined,
                     results: formattedOutput,
                     message: infoMessages.length > 0 ? infoMessages.join(" ") : undefined,
                     // Also include structured data for potential further processing
-                    matches: searchResult.matches.slice(0, 20).map((m: RipgrepMatch) => ({
+                    matches: searchResult.matches.slice(0, 20).map((m: SearchMatch) => ({
                         file: m.file,
                         line: m.line,
                         text: m.text.slice(0, 200), // Truncate long lines

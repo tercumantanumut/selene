@@ -196,6 +196,11 @@ export interface AppSettings {
     localGrepContextLines?: number;       // Context lines before/after match (default: 2)
     localGrepRespectGitignore?: boolean;  // Respect .gitignore files (default: true)
 
+    // Search backend selection (for localGrep). See lib/ai/search/*
+    searchBackend?: "auto" | "ripgrep" | "fff"; // Preferred backend (default: "auto")
+    searchBackendFallback?: boolean;            // Fall back to another backend on transient failure (default: true)
+    fffRankByFrecency?: boolean;                // fff backend: re-rank hits by frecency (default: true)
+
     // Local user info (for offline mode)
     localUserId: string;
     localUserEmail: string;
@@ -366,6 +371,10 @@ const DEFAULT_SETTINGS: AppSettings = {
     localGrepMaxResults: 20,
     localGrepContextLines: 2,
     localGrepRespectGitignore: true,
+    // Search backend defaults (auto = prefer fff when available, else ripgrep)
+    searchBackend: "auto",
+    searchBackendFallback: true,
+    fffRankByFrecency: true,
     // ComfyUI defaults (Z-Image)
     imageGenerationProvider: "openrouter",
     comfyuiEnabled: false,
