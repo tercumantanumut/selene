@@ -114,6 +114,7 @@ export const TOOL_DISCOVERY_MINIMAL = `## Tool Discovery & Codebase Search
 - To discover AI capabilities: use \`searchTools\` (queries tool registry, NOT files).
 - Most tools are deferred-loaded. Use searchTools to discover capabilities you don't see.
 - Never reject a request for missing capability without checking searchTools first.
+- When a pre-loaded tool returns a STUB, truncation, or "disabled" error, read the Retrieval section carefully. If it references a tool you don't have a schema for (e.g., executeCommand), call searchTools with \`select:toolName\` BEFORE retrying the failed tool.
 - The "skill" tool is for platform skills and workflows only (e.g., simplify, update-config). Do NOT use "skill" for file operations — use searchTools to load editFile, readFile, writeFile instead.`;
 
 /**

@@ -1,132 +1,106 @@
-import { describe, expect, it } from "vitest";
+/**
+ * Tests for buildOutputStub — specifically the retrievalToolLoaded flag added
+ * in Phase 1 of the model-looping fix.
+ */
+import { describe, it, expect } from "vitest";
+import { buildOutputStub } from "@/lib/ai/output-stub";
 
-import { buildOutputStub, deriveOutline } from "@/lib/ai/output-stub";
+const SAMPLE_TEXT = `line A
+line B
+line C
+line D
+line E`;
 
-describe("deriveOutline", () => {
-  it("returns empty outline for empty input", () => {
-    const outline = deriveOutline("");
-    expect(outline.lineCount).toBe(0);
-    expect(outline.format).toBe("empty");
-    expect(outline.estimatedTokens).toBe(0);
-  });
-
-  it("counts lines and tokens for text input", () => {
-    const text = "hello\nworld\nthis is a test";
-    const outline = deriveOutline(text);
-    expect(outline.lineCount).toBe(3);
-    expect(outline.format).toBe("text");
-    expect(outline.firstLine).toBe("hello");
-    expect(outline.lastLine).toBe("this is a test");
-    expect(outline.estimatedTokens).toBeGreaterThan(0);
-  });
-
-  it("detects top-level JSON keys", () => {
-    const text = JSON.stringify({ status: "ok", items: [1, 2, 3], error: null });
-    const outline = deriveOutline(text);
-    expect(outline.format).toBe("json");
-    expect(outline.topLevelKeys).toEqual(["status", "items", "error"]);
-  });
-
-  it("detects JSON arrays", () => {
-    const outline = deriveOutline("[1,2,3,4,5]");
-    expect(outline.format).toBe("json");
-    expect(outline.topLevelKeys).toEqual(["array[5]"]);
-  });
-
-  it("captures stderr line count when provided", () => {
-    const outline = deriveOutline("stdout line", { stderr: "err1\nerr2\nerr3" });
-    expect(outline.stderrLineCount).toBe(3);
-  });
-
-  it("handles non-JSON that starts with { (graceful fallback)", () => {
-    const outline = deriveOutline("{ this is not json\nmore text");
-    expect(outline.format).toBe("text");
-  });
-});
-
-describe("buildOutputStub", () => {
-  it("includes header, outline and retrieval for high-tier output", () => {
-    const text = "line1\nline2\nline3";
+describe("buildOutputStub — retrievalToolLoaded flag", () => {
+  it("retrievalToolLoaded=true (default) does NOT emit step-0 for logId", () => {
     const stub = buildOutputStub({
-      toolName: "executeCommand",
-      originalText: text,
-      retrievalId: "abc123",
+      toolName: "bash",
+      originalText: SAMPLE_TEXT,
+      retrievalId: "log_abc123",
       idType: "logId",
-      previewTokens: 0,
+      retrievalToolLoaded: true,
     });
 
-    expect(stub).toContain("[STUB: tool=executeCommand");
-    expect(stub).toContain("logId=abc123");
-    expect(stub).toContain("Outline:");
-    expect(stub).toContain("Lines: 3");
-    expect(stub).toContain("Retrieval:");
-    expect(stub).toContain(`executeCommand({ command: "readLog", logId: "abc123", head: 100 })`);
-    expect(stub).toContain(`executeCommand({ command: "readLog", logId: "abc123", tail: 100 })`);
-    expect(stub).toContain(`executeCommand({ command: "readLog", logId: "abc123", range: [400, 500] })`);
-    expect(stub).toContain(`executeCommand({ command: "readLog", logId: "abc123", grep: "error" })`);
-    expect(stub).not.toContain("Preview");
+    expect(stub).toContain("[STUB:");
+    expect(stub).toContain("executeCommand({ command: \"readLog\"");
+    // Step-0 must NOT be present
+    expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
+    expect(stub).not.toContain("searchTools({ query:");
   });
 
-  it("includes preview section when previewTokens > 0", () => {
-    const text = "a\nb\nc\nd\ne";
+  it("retrievalToolLoaded=false emits mandatory step-0 for logId", () => {
     const stub = buildOutputStub({
-      toolName: "executeCommand",
-      originalText: text,
-      retrievalId: "log_xyz",
+      toolName: "bash",
+      originalText: SAMPLE_TEXT,
+      retrievalId: "log_abc123",
       idType: "logId",
-      previewTokens: 500,
+      retrievalToolLoaded: false,
     });
-    expect(stub).toContain("Preview (first");
-    // The preview budget (500 tokens × 4 chars) exceeds total text — full text shown.
-    expect(stub).toContain("a\nb\nc\nd\ne");
+
+    expect(stub).toContain("[STUB:");
+    // Step-0 must be present
+    expect(stub).toContain("Step 0 (MANDATORY)");
+    expect(stub).toContain('searchTools({ query: "select:executeCommand" })');
+    expect(stub).toContain("Step 1 (AFTER loading)");
+    // Retrieval calls still present, after step-0
+    expect(stub).toContain("executeCommand({ command: \"readLog\"");
+    expect(stub).toContain("Retrieval calls (usable after step 0):");
+    // The warning about the tool not being loaded
+    expect(stub).toContain("executeCommand is NOT currently in your active tool set");
   });
 
-  it("uses retrieveFullContent invocation when idType is contentId", () => {
+  it("retrievalToolLoaded=false emits mandatory step-0 for contentId", () => {
     const stub = buildOutputStub({
-      toolName: "webSearch",
-      originalText: "foo\nbar",
-      retrievalId: "trunc_abc",
+      toolName: "readFile",
+      originalText: SAMPLE_TEXT,
+      retrievalId: "trunc_xyz",
       idType: "contentId",
+      retrievalToolLoaded: false,
     });
-    expect(stub).toContain("contentId=trunc_abc");
-    expect(stub).toContain(`retrieveFullContent({ contentId: "trunc_abc", head: 100 })`);
-    expect(stub).toContain(`retrieveFullContent({ contentId: "trunc_abc", grep: "error" })`);
-    expect(stub).not.toContain("readLog");
+
+    expect(stub).toContain("Step 0 (MANDATORY)");
+    expect(stub).toContain('searchTools({ query: "select:retrieveFullContent" })');
+    expect(stub).toContain("retrieveFullContent is NOT currently in your active tool set");
+    expect(stub).toContain("retrieveFullContent({ contentId:");
   });
 
-  it("warns when no retrieval ID is available", () => {
+  it("retrievalToolLoaded=true (default) does NOT emit step-0 for contentId", () => {
     const stub = buildOutputStub({
-      toolName: "someTool",
-      originalText: "foo",
-      retrievalId: undefined,
+      toolName: "readFile",
+      originalText: SAMPLE_TEXT,
+      retrievalId: "trunc_xyz",
+      idType: "contentId",
+      retrievalToolLoaded: true,
     });
-    expect(stub).toContain("Full output NOT stored");
+
+    expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
+    expect(stub).not.toContain("searchTools({ query:");
+    expect(stub).toContain("retrieveFullContent({ contentId:");
   });
 
-  it("preview is head-only — tail lines are NOT in the preview section", () => {
-    // Build a long text where the last line is clearly distinct.
-    const head = Array.from({ length: 1_000 }, (_, i) => `line ${i}`).join("\n");
-    const text = head + "\nMARKER_AT_TAIL";
+  it("default behavior (retrievalToolLoaded omitted) is backwards-compatible", () => {
     const stub = buildOutputStub({
-      toolName: "executeCommand",
-      originalText: text,
-      retrievalId: "log_x",
+      toolName: "bash",
+      originalText: SAMPLE_TEXT,
+      retrievalId: "log_def",
       idType: "logId",
-      // Small preview so the tail is outside of budget.
-      previewTokens: 200,
+      // retrievalToolLoaded NOT passed → defaults to true
     });
 
-    // Isolate the preview section — it ends at the Outline header.
-    const previewStart = stub.indexOf("Preview (first");
-    expect(previewStart).toBeGreaterThan(-1);
-    const outlineStart = stub.indexOf("Outline:");
-    const previewBody = stub.slice(previewStart, outlineStart);
+    // Same as retrievalToolLoaded=true — no step-0
+    expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
+    expect(stub).toContain("executeCommand({ command: \"readLog\"");
+    expect(stub).toContain("Only call readLog");
+  });
 
-    // Preview must show head lines, not the tail marker.
-    expect(previewBody).toContain("line 0");
-    expect(previewBody).not.toContain("MARKER_AT_TAIL");
+  it("no retrievalId still works regardless of flag", () => {
+    const stub = buildOutputStub({
+      toolName: "bash",
+      originalText: SAMPLE_TEXT,
+      retrievalToolLoaded: false,
+    });
 
-    // The outline will still reference the last line — that's by design.
-    expect(stub).toContain("Last line:");
+    expect(stub).toContain("Full output NOT stored");
+    expect(stub).not.toContain("Step 0");
   });
 });

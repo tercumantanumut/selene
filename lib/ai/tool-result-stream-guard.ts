@@ -31,6 +31,18 @@ interface GuardToolResultForStreamingOptions {
   sessionId?: string;
   /** Optional tool-call ID, surfaced in telemetry for correlation. */
   toolCallId?: string;
+  /**
+   * Live set of initially-loaded (non-deferred) tool names.
+   * Used to determine whether the retrieval tool referenced by a stub
+   * (executeCommand for logId, retrieveFullContent for contentId) is
+   * available to the model or needs a searchTools step-0 first.
+   */
+  initialActiveTools?: Set<string>;
+  /**
+   * Live mutable set of tools discovered via searchTools during this request.
+   * Mutated as the model discovers tools, so the guard always sees current state.
+   */
+  discoveredTools?: Set<string>;
 }
 
 function safeStringify(value: unknown): string {
@@ -246,6 +258,16 @@ export function guardToolResultForStreaming(
     estimatedTokens <= PREVIEW_TIER_TOKENS ? "preview_plus_stub" : "stub_only";
   const previewTokens = tier === "preview_plus_stub" ? MID_TIER_PREVIEW_TOKENS : 0;
 
+  // Determine whether the retrieval tool needed for this stub is currently
+  // loaded in the model's active tool set.  The stub then decides whether to
+  // prepend a step-0 searchTools discovery instruction.
+  const retrievalToolName =
+    idType === "logId" ? "executeCommand" : "retrieveFullContent";
+  const retrievalToolLoaded =
+    options.initialActiveTools?.has(retrievalToolName) ||
+    options.discoveredTools?.has(retrievalToolName) ||
+    false;
+
   const stub = buildOutputStub({
     toolName,
     originalText: primaryText,
@@ -254,6 +276,7 @@ export function guardToolResultForStreaming(
     idType,
     previewTokens,
     stderr,
+    retrievalToolLoaded,
   });
 
   const finalResult = replacePrimaryText(result, stub);

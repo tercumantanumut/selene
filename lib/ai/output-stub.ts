@@ -47,6 +47,13 @@ export interface BuildStubOptions {
   previewTokens?: number;
   /** Optional extra stderr text length hint (used by executeCommand) */
   stderr?: string;
+  /**
+   * Whether the retrieval tool needed for this stub (executeCommand for logId,
+   * retrieveFullContent for contentId) is currently loaded in the model's active
+   * tool set. When false, the stub prepends a mandatory step-0 discovery
+   * instruction so the model doesn't loop calling an unavailable tool.
+   */
+  retrievalToolLoaded?: boolean;
 }
 
 /** Rough estimate of tokens for an arbitrary string. */
@@ -183,6 +190,7 @@ export function buildOutputStub(opts: BuildStubOptions): string {
     idType = "contentId",
     previewTokens = 0,
     stderr,
+    retrievalToolLoaded = true,
   } = opts;
 
   const outline = opts.outline ?? deriveOutline(originalText, { stderr });
@@ -229,13 +237,39 @@ export function buildOutputStub(opts: BuildStubOptions): string {
   if (retrievalId) {
     parts.push("");
     parts.push("Retrieval:");
+
+    // When the retrieval tool isn't loaded yet, prepend a mandatory step-0 so
+    // the model doesn't loop trying to call an unavailable tool.
+    if (!retrievalToolLoaded) {
+      const retrievalToolName =
+        idType === "logId" ? "executeCommand" : "retrieveFullContent";
+      const selectQuery =
+        idType === "logId"
+          ? "select:executeCommand"
+          : "select:retrieveFullContent";
+      parts.push("");
+      parts.push(
+        `⚠️  IMPORTANT — ${retrievalToolName} is NOT currently in your active tool set.`
+      );
+      parts.push(
+        `    Step 0 (MANDATORY): First load it with → searchTools({ query: "${selectQuery}" })`
+      );
+      parts.push(
+        `    Step 1 (AFTER loading): Then use one of the retrieval calls below.`
+      );
+      parts.push("");
+      parts.push("Retrieval calls (usable after step 0):");
+    }
+
     parts.push(`- ${retrievalCall(idType, retrievalId, "head: 100")}`);
     parts.push(`- ${retrievalCall(idType, retrievalId, "tail: 100")}`);
     parts.push(`- ${retrievalCall(idType, retrievalId, "range: [400, 500]")}`);
     parts.push(`- ${retrievalCall(idType, retrievalId, 'grep: "error"')}`);
     parts.push("");
     const hintTool = idType === "logId" ? "readLog" : "retrieveFullContent";
-    parts.push(`Only call ${hintTool} if the preview/outline doesn't answer your task.`);
+    parts.push(
+      `Only call ${hintTool} if the preview/outline doesn't answer your task.`
+    );
   } else {
     parts.push("");
     parts.push("Full output NOT stored (no retrieval ID available). Re-run with a smaller/filtered command if needed.");

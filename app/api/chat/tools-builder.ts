@@ -178,6 +178,21 @@ export async function buildToolsForRequest(
     provider: ctx.provider,
   });
 
+  // Companion-tool enforcement: bash and executeCommand are coupled by the
+  // stub-retrieval protocol.  bash produces logId-bearing stubs that need
+  // executeCommand's readLog sub-command to retrieve; pre-loading one without
+  // the other is a protocol violation that causes model looping.
+  if (
+    initialActiveTools.has("bash") &&
+    !initialActiveTools.has("executeCommand") &&
+    allTools.executeCommand
+  ) {
+    initialActiveTools.add("executeCommand");
+    console.log(
+      "[CHAT API] Companion-tool enforcement: promoted executeCommand to always-loaded because bash is loaded"
+    );
+  }
+
   // Mutable set to track tools discovered via searchTools during this request.
   const discoveredTools = new Set<string>(previouslyDiscoveredTools);
 
@@ -587,6 +602,9 @@ export async function buildToolsForRequest(
   let execCommandDisabledByLoopGuard = false;
   let execCommandDisableReason: string | null = null;
   const EXEC_COMMAND_OVERSIZED_LIMIT = 2;
+  /** logIds from oversized results, surfaced in the disable message so the
+   *  model can retrieve slices via readLog instead of re-running commands. */
+  const oversizedExecLogIds: string[] = [];
 
   for (const [toolId, originalTool] of Object.entries(allToolsWithMCP)) {
     if (!originalTool.execute) {
@@ -618,14 +636,25 @@ export async function buildToolsForRequest(
           console.warn(
             `[CHAT API] ${toolId} disabled for remaining response (${execCommandDisableReason ?? "unknown reason"})`
           );
+          // Build the recovery hint with the readLog escape hatch and explicit
+          // logIds so the model can retrieve slices instead of looping.
+          const logIdList = oversizedExecLogIds.length > 0
+            ? ` Previous log IDs: ${oversizedExecLogIds.join(", ")}.`
+            : "";
+          const executeCommandLoaded =
+            initialActiveTools.has("executeCommand") || discoveredTools.has("executeCommand");
+          const step0 = executeCommandLoaded
+            ? ""
+            : ` First, load executeCommand with: searchTools({ query: "select:executeCommand" }). Then, `;
           return {
             status: "error",
             error:
               `${toolId} has been temporarily disabled for this response ` +
               `(${execCommandDisableReason}). ` +
-              `The previous commands produced output too large for the context window. ` +
-              `To recover: run specific test files (e.g., npm test -- path/to/file.test.ts), ` +
-              `use head/tail to limit output, or use a compact reporter (--reporter=dot).`,
+              `To recover without re-running:${step0} use ` +
+              `executeCommand({ command: "readLog", logId: "<id>" }) to retrieve slices ` +
+              `of the previous output.${logIdList} ` +
+              `Or, re-run with head/tail to limit output, or use a compact reporter.`,
           };
         }
 
@@ -707,6 +736,10 @@ export async function buildToolsForRequest(
             metadata: {
               sourceFileName: "app/api/chat/tools-builder.ts",
             },
+            // Pass the live tool sets so the guard can determine whether the
+            // retrieval tool referenced in a stub is currently loaded.
+            initialActiveTools,
+            discoveredTools,
           });
           if (guardedResult.blocked) {
             console.warn(
@@ -746,6 +779,15 @@ export async function buildToolsForRequest(
           if (toolId === "executeCommand" || toolId === "bash") {
             if (guardedResult.blocked) {
               consecutiveOversizedExecCommands += 1;
+              // Collect logId from the raw result so the disable message can
+              // list explicit retrieval targets for the model.
+              const rawLogId =
+                rawResult && typeof rawResult === "object" && !Array.isArray(rawResult)
+                  ? (rawResult as Record<string, unknown>).logId
+                  : undefined;
+              if (typeof rawLogId === "string" && rawLogId.length > 0) {
+                oversizedExecLogIds.push(rawLogId);
+              }
               if (consecutiveOversizedExecCommands >= EXEC_COMMAND_OVERSIZED_LIMIT) {
                 execCommandDisableReason =
                   `${consecutiveOversizedExecCommands} consecutive oversized shell command results`;

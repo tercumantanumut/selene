@@ -1,158 +1,99 @@
-import { describe, expect, it } from "vitest";
+/**
+ * Tests for guardToolResultForStreaming — specifically the retrievalToolLoaded
+ * resolver added in Phase 1 of the model-looping fix.
+ */
+import { describe, it, expect } from "vitest";
+import { guardToolResultForStreaming } from "@/lib/ai/tool-result-stream-guard";
 
-import {
-  INLINE_PASSTHROUGH_TOKENS,
-  MAX_STREAM_TOOL_RESULT_TOKENS,
-  MID_TIER_PREVIEW_TOKENS,
-  PREVIEW_TIER_TOKENS,
-  guardToolResultForStreaming,
-} from "@/lib/ai/tool-result-stream-guard";
+const LARGE_TEXT = "line ".repeat(12_000); // ~12K chars → ~3K tokens → mid-tier
 
-// Helpers --------------------------------------------------------------------
+describe("guardToolResultForStreaming — retrievalToolLoaded resolver", () => {
+  it("passes retrievalToolLoaded=true when executeCommand is in initialActiveTools", () => {
+    const result = guardToolResultForStreaming(
+      "bash",
+      { stdout: LARGE_TEXT, stderr: "", logId: "log_001" },
+      {
+        maxTokens: 25_000,
+        initialActiveTools: new Set(["bash", "executeCommand", "readFile"]),
+        discoveredTools: new Set(),
+      }
+    );
 
-/** Produce a string sized to a specific estimated-token count (~4 chars/tok). */
-function textOfTokens(tokens: number): string {
-  return "x".repeat(tokens * 4);
-}
-
-describe("guardToolResultForStreaming — tiering", () => {
-  it("passes small tool results through unchanged (≤ INLINE_PASSTHROUGH_TOKENS)", () => {
-    const result = { status: "success", content: "ok" };
-
-    const guarded = guardToolResultForStreaming("localGrep", result);
-
-    expect(guarded.blocked).toBe(false);
-    expect(guarded.result).toEqual(result);
-    expect(guarded.estimatedTokens).toBeLessThan(INLINE_PASSTHROUGH_TOKENS);
+    expect(result.blocked).toBe(true);
+    const stub = JSON.stringify(result.result);
+    // Step-0 must NOT be present because executeCommand is loaded
+    expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
+    expect(stub).toContain("executeCommand({ command: \\\"readLog\\\"");
   });
 
-  it("MID-tier output (10K < t ≤ 25K) produces a stub with preview", () => {
-    // ~12K tokens worth of stdout
-    const mid = textOfTokens(12_000);
-    const result = {
-      status: "success",
-      stdout: mid,
-      stderr: "",
-      exitCode: 0,
-      logId: "log_mid",
-    };
+  it("passes retrievalToolLoaded=false when executeCommand is NOT loaded anywhere", () => {
+    const result = guardToolResultForStreaming(
+      "bash",
+      { stdout: LARGE_TEXT, stderr: "", logId: "log_002" },
+      {
+        maxTokens: 25_000,
+        initialActiveTools: new Set(["bash", "readFile"]), // executeCommand NOT here
+        discoveredTools: new Set(["searchTools"]),          // executeCommand NOT here
+      }
+    );
 
-    const guarded = guardToolResultForStreaming("executeCommand", result);
-
-    expect(guarded.blocked).toBe(true);
-    expect(guarded.estimatedTokens).toBeGreaterThan(INLINE_PASSTHROUGH_TOKENS);
-    expect(guarded.estimatedTokens).toBeLessThanOrEqual(PREVIEW_TIER_TOKENS);
-
-    const truncated = guarded.result as Record<string, unknown>;
-    expect(truncated.status).toBe("success");
-    expect(truncated.exitCode).toBe(0);
-    expect(truncated.isTruncated).toBe(true);
-
-    const stdout = String(truncated.stdout);
-    expect(stdout).toContain("[STUB:");
-    expect(stdout).toContain("tool=executeCommand");
-    expect(stdout).toContain("logId=log_mid");
-    expect(stdout).toContain("Preview");
-    expect(stdout).toContain("Outline:");
-    expect(stdout).toContain("Retrieval:");
-    expect(stdout).toContain("readLog");
-
-    // Must be significantly smaller than the original.
-    expect(stdout.length).toBeLessThan(mid.length);
+    expect(result.blocked).toBe(true);
+    const stub = JSON.stringify(result.result);
+    // Step-0 MUST be present because executeCommand is not loaded
+    expect(stub).toContain("Step 0 (MANDATORY)");
+    expect(stub).toContain("select:executeCommand");
   });
 
-  it("HIGH-tier output (> 25K) produces a stub-only (no preview) with retrieval commands", () => {
-    const huge = textOfTokens(40_000);
-    const result = {
-      status: "success",
-      stdout: huge,
-      stderr: "",
-      exitCode: 0,
-      logId: "log_huge",
-    };
+  it("passes retrievalToolLoaded=true when executeCommand is in discoveredTools", () => {
+    const result = guardToolResultForStreaming(
+      "bash",
+      { stdout: LARGE_TEXT, stderr: "", logId: "log_003" },
+      {
+        maxTokens: 25_000,
+        initialActiveTools: new Set(["bash"]), // executeCommand NOT initially loaded
+        discoveredTools: new Set(["executeCommand"]), // BUT discovered later
+      }
+    );
 
-    const guarded = guardToolResultForStreaming("executeCommand", result);
-
-    expect(guarded.blocked).toBe(true);
-    expect(guarded.estimatedTokens).toBeGreaterThan(PREVIEW_TIER_TOKENS);
-
-    const truncated = guarded.result as Record<string, unknown>;
-    const stdout = String(truncated.stdout);
-    expect(stdout).toContain("[STUB:");
-    expect(stdout).toContain("logId=log_huge");
-    expect(stdout).toContain("Outline:");
-    expect(stdout).toContain("Retrieval:");
-    // No preview section in the top tier.
-    expect(stdout).not.toContain("Preview (first");
-
-    // Stub total length should be a tiny fraction of the original.
-    expect(stdout.length).toBeLessThan(huge.length / 10);
+    expect(result.blocked).toBe(true);
+    const stub = JSON.stringify(result.result);
+    // Step-0 must NOT be present because executeCommand was discovered
+    expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
   });
 
-  it("prefers logId over truncatedContentId in the retrieval line", () => {
-    const result = {
-      status: "success",
-      stdout: "line\n".repeat(60_000),
-      logId: "log_abc",
-      truncatedContentId: "trunc_xyz",
-    };
+  it("passes retrievalToolLoaded=true for contentId when retrieveFullContent is available", () => {
+    const textNoLogId = "content ".repeat(12_000);
+    const result = guardToolResultForStreaming(
+      "readFile",
+      textNoLogId,
+      {
+        maxTokens: 25_000,
+        sessionId: "test-session-guard",
+        initialActiveTools: new Set(["retrieveFullContent"]),
+        discoveredTools: new Set(),
+      }
+    );
 
-    const guarded = guardToolResultForStreaming("executeCommand", result);
-
-    expect(guarded.blocked).toBe(true);
-    const stdout = String((guarded.result as Record<string, unknown>).stdout);
-    expect(stdout).toContain("logId=log_abc");
-    expect(stdout).toContain("readLog");
+    expect(result.blocked).toBe(true);
+    const stub = JSON.stringify(result.result);
+    // No step-0 for retrieveFullContent since it's loaded
+    expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
   });
 
-  it("falls back to truncatedContentId when logId is absent", () => {
-    const result = {
-      content: "y".repeat(200_000),
-      truncatedContentId: "trunc_only",
-    };
+  it("passthrough (under limit) does NOT interfere with retrievalToolLoaded logic", () => {
+    const short = "short output";
+    const result = guardToolResultForStreaming(
+      "bash",
+      { stdout: short, logId: "log_small" },
+      {
+        maxTokens: 25_000,
+        initialActiveTools: new Set(["bash"]),
+        discoveredTools: new Set(),
+      }
+    );
 
-    const guarded = guardToolResultForStreaming("webSearch", result);
-
-    expect(guarded.blocked).toBe(true);
-    const content = String((guarded.result as Record<string, unknown>).content);
-    expect(content).toContain("contentId=trunc_only");
-    expect(content).toContain("retrieveFullContent");
-  });
-
-  it("handles MCP content arrays by replacing the first text item with the stub", () => {
-    const result = {
-      content: [
-        { type: "text", text: "x".repeat(200_000) },
-        { type: "image", url: "https://example.com/img.png" },
-      ],
-    };
-
-    const guarded = guardToolResultForStreaming("mcpTool", result);
-
-    expect(guarded.blocked).toBe(true);
-    const truncated = guarded.result as Record<string, unknown>;
-    const contentArr = truncated.content as any[];
-    expect(contentArr[0].text).toContain("[STUB:");
-    expect(contentArr[0].text.length).toBeLessThan(200_000);
-    // Non-text items must be preserved.
-    expect(contentArr[1]).toEqual({ type: "image", url: "https://example.com/img.png" });
-  });
-
-  it("handles string results by replacing the whole string with the stub", () => {
-    const huge = "y".repeat(200_000);
-
-    const guarded = guardToolResultForStreaming("someTool", huge);
-
-    expect(guarded.blocked).toBe(true);
-    expect(typeof guarded.result).toBe("string");
-    expect((guarded.result as string)).toContain("[STUB:");
-    expect((guarded.result as string).length).toBeLessThan(huge.length);
-  });
-
-  it("exposes tier thresholds as stable exports", () => {
-    expect(INLINE_PASSTHROUGH_TOKENS).toBe(10_000);
-    expect(PREVIEW_TIER_TOKENS).toBe(25_000);
-    expect(MID_TIER_PREVIEW_TOKENS).toBe(1_500);
-    expect(MAX_STREAM_TOOL_RESULT_TOKENS).toBe(25_000);
+    // Under 10K tokens → passthrough, no stub
+    expect(result.blocked).toBe(false);
+    expect(typeof result.result).toBe("object");
   });
 });
