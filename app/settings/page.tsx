@@ -901,6 +901,7 @@ export default function SettingsPage() {
               section={activeSection}
               formState={formState}
               setFormState={setFormState}
+              reloadSettings={loadSettings}
               antigravityAuth={antigravityAuth}
               antigravityLoading={antigravityLoading}
               onAntigravityLogin={handleAntigravityLogin}

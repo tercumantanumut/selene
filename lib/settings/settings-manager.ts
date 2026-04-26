@@ -202,6 +202,7 @@ export interface AppSettings {
     localUserEmail: string;
 
     // App preferences
+    appLanguage?: "en" | "tr";
     theme: "dark" | "light" | "system";
     chatWorkspaceMode?: ChatWorkspaceMode;
     toolLoadingMode?: "deferred" | "always";  // Tool loading strategy: deferred saves tokens, always loads all upfront
@@ -327,6 +328,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     vllmBaseUrl: "http://localhost:8000/v1",
     localUserId: crypto.randomUUID(),
     localUserEmail: "local@zlutty.ai",
+    appLanguage: "en",
     theme: "dark",
     chatWorkspaceMode: DEFAULT_CHAT_WORKSPACE_MODE,
     toolLoadingMode: "deferred",  // Default to deferred loading to save tokens
