@@ -11,6 +11,10 @@ import {
   type DesignSnapshot,
   type DesignPreviewTheme,
   type InspectedElement,
+  type ActiveTool,
+  type Measurement,
+  type PickedColor,
+  type DesignComment,
 } from "./types";
 import {
   DEFAULT_DESIGN_WORKSPACE_CONFIG,
@@ -178,6 +182,10 @@ function extractSessionState(store: DesignWorkspaceState): DesignWorkspaceSessio
     lastValidation: store.lastValidation,
     lastCompileReport: store.lastCompileReport,
     history: store.history,
+    activeTool: store.activeTool,
+    measurements: store.measurements,
+    pickedColors: store.pickedColors,
+    comments: store.comments,
   };
 }
 
@@ -199,6 +207,10 @@ const initialSessionState: DesignWorkspaceSessionState = {
   lastValidation: null,
   lastCompileReport: null,
   history: null,
+  activeTool: null,
+  measurements: [],
+  pickedColors: [],
+  comments: [],
 };
 
 const initialState = {
@@ -386,11 +398,20 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
   },
 
   toggleInspector: () => {
-    const next = !get().inspectorEnabled;
+    const current = get();
+    const next: ActiveTool = current.activeTool === "inspect" ? null : "inspect";
+    get().setActiveTool(next);
+  },
+
+  setActiveTool: (tool: ActiveTool) => {
+    const current = get();
+    const inspectorEnabled = tool === "inspect";
+    // Clear in-progress per-tool state when switching tools.
     set({
-      inspectorEnabled: next,
-      selectedElement: next ? get().selectedElement : null,
-      selectedElements: next ? get().selectedElements : [],
+      activeTool: tool,
+      inspectorEnabled,
+      selectedElement: inspectorEnabled ? current.selectedElement : null,
+      selectedElements: inspectorEnabled ? current.selectedElements : [],
     });
   },
 
@@ -559,5 +580,57 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     if (sessionId) hydrationOrderBySession.delete(sessionId);
     else hydrationOrderBySession.delete(NO_SESSION_HYDRATION_KEY);
     set({ ...initialState, selectedBreakpoint: { ...DESIGN_BREAKPOINTS[0] } });
+  },
+
+  addMeasurement: (m: Measurement) => {
+    set({ measurements: [...get().measurements, m] });
+  },
+
+  removeMeasurement: (id: string) => {
+    set({ measurements: get().measurements.filter((entry) => entry.id !== id) });
+  },
+
+  clearMeasurements: () => {
+    set({ measurements: [] });
+  },
+
+  addPickedColor: (c: PickedColor) => {
+    set({ pickedColors: [...get().pickedColors, c] });
+  },
+
+  removePickedColor: (id: string) => {
+    set({ pickedColors: get().pickedColors.filter((entry) => entry.id !== id) });
+  },
+
+  clearPickedColors: () => {
+    set({ pickedColors: [] });
+  },
+
+  addComment: (c: DesignComment) => {
+    set({ comments: [...get().comments, c] });
+  },
+
+  updateComment: (id: string, patch: Partial<Omit<DesignComment, "id">>) => {
+    set({
+      comments: get().comments.map((entry) =>
+        entry.id === id ? { ...entry, ...patch } : entry,
+      ),
+    });
+  },
+
+  removeComment: (id: string) => {
+    set({ comments: get().comments.filter((entry) => entry.id !== id) });
+  },
+
+  resolveComment: (id: string) => {
+    set({
+      comments: get().comments.map((entry) =>
+        entry.id === id ? { ...entry, resolved: !entry.resolved } : entry,
+      ),
+    });
+  },
+
+  clearComments: () => {
+    set({ comments: [] });
   },
 }));

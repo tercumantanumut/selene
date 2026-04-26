@@ -71,6 +71,35 @@ export interface InspectedElement {
   };
 }
 
+/** Active toolbar mode in the design preview. `null` is the default cursor / no tool. */
+export type ActiveTool = "inspect" | "measure" | "eyedropper" | "comment" | null;
+
+export interface Measurement {
+  id: string;
+  from: { selector: string; rect: { x: number; y: number; width: number; height: number } };
+  to: { selector: string; rect: { x: number; y: number; width: number; height: number } };
+  distances: { dx: number; dy: number; horizontal: number; vertical: number; euclidean: number };
+  createdAt: number;
+}
+
+export interface PickedColor {
+  id: string;
+  hex: string;
+  rgb: { r: number; g: number; b: number; a: number };
+  hsl: { h: number; s: number; l: number; a: number };
+  source: "background" | "foreground";
+  element: { selector: string; tagName: string };
+  createdAt: number;
+}
+
+export interface DesignComment {
+  id: string;
+  elementSelector: string;
+  text: string;
+  createdAt: number;
+  resolved: boolean;
+}
+
 /** Serialisable session state that gets cached when switching sessions. */
 export interface DesignWorkspaceSessionState {
   isOpen: boolean;
@@ -90,6 +119,10 @@ export interface DesignWorkspaceSessionState {
   lastValidation: DesignWorkspaceValidationResult | null;
   lastCompileReport: DesignWorkspaceCompileReport | null;
   history: DesignWorkspaceHistory | null;
+  activeTool: ActiveTool;
+  measurements: Measurement[];
+  pickedColors: PickedColor[];
+  comments: DesignComment[];
 }
 
 export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
@@ -122,4 +155,16 @@ export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   setHistory: (history: DesignWorkspaceHistory | null) => void;
   setActiveSession: (sessionId: string) => void;
   reset: () => void;
+  setActiveTool: (tool: ActiveTool) => void;
+  addMeasurement: (m: Measurement) => void;
+  removeMeasurement: (id: string) => void;
+  clearMeasurements: () => void;
+  addPickedColor: (c: PickedColor) => void;
+  removePickedColor: (id: string) => void;
+  clearPickedColors: () => void;
+  addComment: (c: DesignComment) => void;
+  updateComment: (id: string, patch: Partial<Omit<DesignComment, "id">>) => void;
+  removeComment: (id: string) => void;
+  resolveComment: (id: string) => void;
+  clearComments: () => void;
 }
