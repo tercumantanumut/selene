@@ -7,8 +7,7 @@
 
 import { tool, jsonSchema } from "ai";
 import { searchWithRipgrep, isRipgrepAvailable, type RipgrepMatch, type RipgrepSearchResult } from "./ripgrep";
-import { getSession } from "@/lib/db/queries";
-import { getWorkspaceInfo } from "@/lib/workspace/types";
+import { resolveSessionWorkspaceInfo } from "@/lib/workspace/metadata";
 import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
 import { validateSyncFolderPath } from "@/lib/vectordb/path-validation";
 import { loadSettings } from "@/lib/settings/settings-manager";
@@ -120,13 +119,7 @@ async function resolveWorkspaceSearchPath(sessionId: string): Promise<string | n
     }
 
     try {
-        const session = await getSession(sessionId);
-        if (!session) {
-            return null;
-        }
-
-        const metadata = (session.metadata || {}) as Record<string, unknown>;
-        const workspaceInfo = getWorkspaceInfo(metadata);
+        const workspaceInfo = await resolveSessionWorkspaceInfo(sessionId);
         const worktreePath = workspaceInfo?.worktreePath;
 
         if (!worktreePath || typeof worktreePath !== "string") {
