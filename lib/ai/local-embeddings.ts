@@ -14,6 +14,46 @@ const DEFAULT_QUERY_PREFIX = "Represent this code for search:";
 const DEFAULT_QUERY_MAX_CHARS = 512;
 const DEFAULT_MAX_BATCH = 64;
 
+/**
+ * Valid ONNX dtypes accepted by @huggingface/transformers v4.x for the
+ * `feature-extraction` pipeline. fp32 = full precision (largest, safest);
+ * q8/int8/uint8 = ~4× smaller; q4/bnb4 = ~8× smaller; fp16 = ~2× smaller
+ * but unsupported on some models (notably EmbeddingGemma).
+ */
+type LocalEmbeddingDtype =
+  | "fp32"
+  | "fp16"
+  | "q8"
+  | "int8"
+  | "uint8"
+  | "q4"
+  | "bnb4"
+  | "q4f16";
+
+const VALID_LOCAL_EMBEDDING_DTYPES: ReadonlySet<LocalEmbeddingDtype> = new Set([
+  "fp32", "fp16", "q8", "int8", "uint8", "q4", "bnb4", "q4f16",
+]);
+
+const DEFAULT_LOCAL_EMBEDDING_DTYPE: LocalEmbeddingDtype = "fp32";
+
+/**
+ * Resolve the ONNX dtype for the embedding pipeline.
+ * Source priority: explicit option > LOCAL_EMBEDDING_DTYPE env var > "fp32".
+ * Invalid values fall back to fp32 with a warning so a typo never crashes load.
+ */
+function resolveEmbeddingDtype(override?: string): LocalEmbeddingDtype {
+  const candidate = override ?? process.env.LOCAL_EMBEDDING_DTYPE;
+  if (!candidate) return DEFAULT_LOCAL_EMBEDDING_DTYPE;
+  if (VALID_LOCAL_EMBEDDING_DTYPES.has(candidate as LocalEmbeddingDtype)) {
+    return candidate as LocalEmbeddingDtype;
+  }
+  console.warn(
+    `[LocalEmbeddings] Invalid LOCAL_EMBEDDING_DTYPE "${candidate}". ` +
+    `Valid: ${Array.from(VALID_LOCAL_EMBEDDING_DTYPES).join(", ")}. Falling back to fp32.`
+  );
+  return DEFAULT_LOCAL_EMBEDDING_DTYPE;
+}
+
 // Define a type that matches the actual pipeline return value
 type FeatureExtractionPipeline = (
   texts: string[],
@@ -27,6 +67,12 @@ interface LocalEmbeddingOptions {
   allowRemoteModels?: boolean;
   queryPrefix?: string;
   queryPrefixMaxChars?: number;
+  /**
+   * ONNX dtype to load. Defaults to LOCAL_EMBEDDING_DTYPE env var, then "fp32".
+   * Use "q8" or "int8" to roughly quarter the on-disk + RAM footprint of
+   * larger multilingual models (Snowflake L v2, Qwen3 0.6B) at minor quality cost.
+   */
+  dtype?: string;
 }
 
 let cachedPipelineKey: string | null = null;
@@ -193,7 +239,8 @@ export function patchTokenizerMerges(tokenizerPath: string): boolean {
 
 async function loadPipelineWithPatch(
   modelId: string,
-  cacheDir: string
+  cacheDir: string,
+  dtype: LocalEmbeddingDtype
 ): Promise<FeatureExtractionPipeline> {
   const { pipeline } = await import("@huggingface/transformers");
   const preferredDevice = resolvePreferredDevice();
@@ -202,7 +249,7 @@ async function loadPipelineWithPatch(
     try {
       return (await pipeline("feature-extraction", modelId, {
         device,
-        dtype: "fp32",
+        dtype,
       })) as unknown as FeatureExtractionPipeline;
     } catch (error) {
       const message = String(error);
@@ -211,7 +258,7 @@ async function loadPipelineWithPatch(
         if (patchTokenizerMerges(tokenizerPath)) {
           return (await pipeline("feature-extraction", modelId, {
             device,
-            dtype: "fp32",
+            dtype,
           })) as unknown as FeatureExtractionPipeline;
         }
       }
@@ -258,6 +305,7 @@ async function getPipeline(options: LocalEmbeddingOptions): Promise<FeatureExtra
   const cacheDir = resolveCacheDir(options.cacheDir);
   const modelDir = resolveModelDir(options.modelDir);
   const allowRemoteModels = options.allowRemoteModels ?? !modelDir;
+  const dtype = resolveEmbeddingDtype(options.dtype);
 
   // Validate model completeness before attempting to load (prevents server crash)
   if (!allowRemoteModels) {
@@ -287,6 +335,7 @@ async function getPipeline(options: LocalEmbeddingOptions): Promise<FeatureExtra
     modelDir ?? "",
     allowRemoteModels ? "remote" : "local",
     preferredDevice,
+    dtype,
   ].join("|");
 
   if (cachedPipelinePromise && cachedPipelineKey === cacheKey) {
@@ -307,7 +356,7 @@ async function getPipeline(options: LocalEmbeddingOptions): Promise<FeatureExtra
       }
     }
 
-    return loadPipelineWithPatch(modelId, cacheDir);
+    return loadPipelineWithPatch(modelId, cacheDir, dtype);
   })();
 
   return cachedPipelinePromise;

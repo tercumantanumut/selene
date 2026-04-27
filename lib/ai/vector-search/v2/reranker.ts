@@ -20,6 +20,49 @@ let failedToLoad = false;
 let runtimeFallbackDevice: TransformerDevice | null = null;
 let lastPipelineDevice: TransformerDevice | null = null;
 
+/**
+ * Valid ONNX dtypes for the reranker text-classification pipeline.
+ * Mirrors the embedding-side type — kept local to avoid a cross-module import.
+ */
+type RerankerDtype =
+  | "fp32"
+  | "fp16"
+  | "q8"
+  | "int8"
+  | "uint8"
+  | "q4"
+  | "bnb4"
+  | "q4f16";
+
+const VALID_RERANKER_DTYPES: ReadonlySet<RerankerDtype> = new Set([
+  "fp32", "fp16", "q8", "int8", "uint8", "q4", "bnb4", "q4f16",
+]);
+
+const DEFAULT_RERANKER_DTYPE: RerankerDtype = "fp32";
+
+function resolveRerankerDtype(): RerankerDtype {
+  const candidate = process.env.LOCAL_RERANKER_DTYPE;
+  if (!candidate) return DEFAULT_RERANKER_DTYPE;
+  if (VALID_RERANKER_DTYPES.has(candidate as RerankerDtype)) {
+    return candidate as RerankerDtype;
+  }
+  console.warn(
+    `[Reranker] Invalid LOCAL_RERANKER_DTYPE "${candidate}". ` +
+    `Valid: ${Array.from(VALID_RERANKER_DTYPES).join(", ")}. Falling back to fp32.`
+  );
+  return DEFAULT_RERANKER_DTYPE;
+}
+
+/**
+ * Legacy reranker IDs whose HF repos do NOT ship ONNX exports.
+ * Routed silently to the corresponding `onnx-community/...-ONNX` build so
+ * existing user configs keep working after the registry cleanup.
+ */
+const LEGACY_RERANKER_ALIASES: Readonly<Record<string, string>> = {
+  "BAAI/bge-reranker-base": "onnx-community/bge-reranker-base-ONNX",
+  "BAAI/bge-reranker-large": "onnx-community/bge-reranker-v2-m3-ONNX",
+};
+
 function resolvePreferredDevice(): TransformerDevice {
   return resolvePreferredDeviceShared(runtimeFallbackDevice);
 }
@@ -69,6 +112,17 @@ function normalizeRerankModelId(rawModelId: string): string | null {
     return null;
   }
 
+  // Auto-redirect IDs whose HF repos lack ONNX (BAAI/bge-reranker-{base,large})
+  // to the official onnx-community ONNX builds. Without this, the pipeline load
+  // would fail with an opaque "model not found" error.
+  const aliasTarget = LEGACY_RERANKER_ALIASES[modelId];
+  if (aliasTarget) {
+    console.log(
+      `[Reranker] Aliasing legacy reranker ID "${modelId}" → "${aliasTarget}" (no ONNX in original repo)`
+    );
+    modelId = aliasTarget;
+  }
+
   return modelId || null;
 }
 
@@ -92,8 +146,9 @@ async function getPipeline(): Promise<any> {
       await configureEnv();
       const { pipeline } = await import("@huggingface/transformers");
       const preferredDevice = resolvePreferredDevice();
+      const dtype = resolveRerankerDtype();
 
-      console.log(`[Reranker] Loading model via Transformers.js: ${modelPath}`);
+      console.log(`[Reranker] Loading model via Transformers.js: ${modelPath} (dtype=${dtype})`);
 
       // Attempt to load as text-classification (standard for cross-encoders)
       let pipe: any;
@@ -101,7 +156,7 @@ async function getPipeline(): Promise<any> {
       try {
         pipe = await pipeline("text-classification", modelPath, {
           device: preferredDevice,
-          dtype: "fp32",
+          dtype,
         });
       } catch (error) {
         if (preferredDevice !== "cpu") {
@@ -111,7 +166,7 @@ async function getPipeline(): Promise<any> {
           );
           pipe = await pipeline("text-classification", modelPath, {
             device: "cpu",
-            dtype: "fp32",
+            dtype,
           });
           actualDevice = "cpu";
         } else {
