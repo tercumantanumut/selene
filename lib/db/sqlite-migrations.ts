@@ -3,6 +3,7 @@ import { initCoreTablesWith } from "./migrations/core-tables";
 import { initCharacterTablesWith } from "./migrations/character-tables";
 import { initChannelTablesWith } from "./migrations/channel-tables";
 import { initObservabilityTablesWith } from "./migrations/observability-tables";
+import { initLobbiesTablesWith } from "./migrations/lobbies-tables";
 import { initSkillsTablesWith, runSkillsMigrations } from "./migrations/skills-tables";
 import { initPluginWorkflowTablesWith } from "./migrations/plugin-workflow-tables";
 import { initDesignGalleryTablesWith } from "./migrations/design-gallery-tables";
@@ -23,6 +24,8 @@ export function initializeTables(sqlite: Database.Database): void {
   initCharacterTablesWith(sqlite);
   initChannelTablesWith(sqlite);
   initObservabilityTablesWith(sqlite);
+  // lobbies FK into agent_runs, so observability must initialize first.
+  initLobbiesTablesWith(sqlite);
   initSkillsTablesWith(sqlite);
   initPluginWorkflowTablesWith(sqlite);
   initDesignGalleryTablesWith(sqlite);
