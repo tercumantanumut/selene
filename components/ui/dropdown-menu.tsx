@@ -47,6 +47,33 @@ const DropdownMenuItem = React.forwardRef<
 ));
 DropdownMenuItem.displayName = DropdownMenuPrimitive.Item.displayName;
 
+// `DropdownMenuRadioGroup` + `DropdownMenuRadioItem` give Radix-managed
+// `role="menuitemradio"` + `aria-checked` semantics, which is what AT need
+// for "pick one of N" dropdown choices (ARIA 1.2). Use these instead of
+// `DropdownMenuItem` + manual `aria-pressed`, which is meaningless on a
+// menuitem and is silently ignored by screen readers.
+const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
+
+const DropdownMenuRadioItem = React.forwardRef<
+  React.ComponentRef<typeof DropdownMenuPrimitive.RadioItem>,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.RadioItem>
+>(({ className, children, ...props }, ref) => (
+  <DropdownMenuPrimitive.RadioItem
+    ref={ref}
+    className={cn(
+      "relative flex cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors",
+      "text-terminal-dark hover:bg-terminal-green/10 hover:text-terminal-green focus:bg-terminal-green/10 focus:text-terminal-green",
+      "data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&>svg]:size-4 [&>svg]:shrink-0",
+      "data-[state=checked]:bg-terminal-green/15 data-[state=checked]:text-terminal-green",
+      className
+    )}
+    {...props}
+  >
+    {children}
+  </DropdownMenuPrimitive.RadioItem>
+));
+DropdownMenuRadioItem.displayName = DropdownMenuPrimitive.RadioItem.displayName;
+
 const DropdownMenuSeparator = React.forwardRef<
   React.ComponentRef<typeof DropdownMenuPrimitive.Separator>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Separator>
@@ -82,6 +109,8 @@ export {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuLabel,
 };

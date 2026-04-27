@@ -69,4 +69,45 @@ describe("markMeasurementsOrphaned", () => {
     const ref2 = useDesignWorkspaceStore.getState().measurements;
     expect(ref2).toBe(ref1);
   });
+
+  it("applies ack correctly even when activeTool was cleared in the meantime", () => {
+    // Race coverage: the iframe acks resolution AFTER the user has switched
+    // away from the measure tool. The ack pipeline must still update the
+    // orphaned flags — measurement persistence is independent of activeTool.
+    const store = useDesignWorkspaceStore.getState();
+    store.addMeasurement(makeMeasurement("m1"));
+    store.addMeasurement(makeMeasurement("m2"));
+
+    // User picks the tool, draws, then switches back to null.
+    useDesignWorkspaceStore.getState().setActiveTool("measure");
+    useDesignWorkspaceStore.getState().setActiveTool(null);
+    expect(useDesignWorkspaceStore.getState().activeTool).toBeNull();
+
+    // Ack arrives after the tool switch — m1 unresolved, m2 resolved.
+    useDesignWorkspaceStore
+      .getState()
+      .markMeasurementsOrphaned(["m1"], ["m2"]);
+
+    const after = useDesignWorkspaceStore.getState().measurements;
+    expect(after.find((m) => m.id === "m1")?.orphaned).toBe(true);
+    // m2 was never orphaned, so resolved-set leaves it alone (false-flip
+    // only happens when previously orphaned). The reducer doesn't mutate a
+    // never-orphaned entry.
+    expect(after.find((m) => m.id === "m2")?.orphaned).toBeUndefined();
+
+    // Now flip m2 to orphaned then resolve, to confirm the resolved-set
+    // does correctly clear once it was previously set, even with no tool.
+    useDesignWorkspaceStore.getState().markMeasurementsOrphaned(["m2"], []);
+    expect(
+      useDesignWorkspaceStore
+        .getState()
+        .measurements.find((m) => m.id === "m2")?.orphaned,
+    ).toBe(true);
+    useDesignWorkspaceStore.getState().markMeasurementsOrphaned([], ["m2"]);
+    expect(
+      useDesignWorkspaceStore
+        .getState()
+        .measurements.find((m) => m.id === "m2")?.orphaned,
+    ).toBe(false);
+  });
 });

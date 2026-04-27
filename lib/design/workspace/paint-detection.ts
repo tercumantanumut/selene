@@ -91,6 +91,23 @@ export function pickGradientRepresentative(stops: Rgba[]): Rgba | null {
   return stops[mid];
 }
 
+/**
+ * Tier ordering for the eyedropper (mirrored verbatim in `tools-script.ts`'s
+ * `getEffectivePaint`):
+ *
+ *   Tier 1 walks the click target AND ALL ANCESTORS looking for the first
+ *   non-transparent solid background-color. This matches what the user
+ *   visually sees — an opaque parent painting over a child gradient is the
+ *   pixel they clicked, so we report the parent's solid first instead of
+ *   the child's gradient.
+ *
+ *   Tier 2 then considers the click target's (and ancestors') gradient(s).
+ *
+ * If the user wants the click target's own gradient (or any non-background
+ * paint) to override an ancestor solid, they can hold Shift while clicking
+ * to read the foreground color instead.
+ */
+
 /** Detect whether a `background-image` value is a CSS gradient. */
 export function isGradientBackgroundImage(value: string | null | undefined): boolean {
   if (!value) return false;

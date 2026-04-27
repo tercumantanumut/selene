@@ -43,6 +43,7 @@ import type {
   Measurement,
   PickedColor,
 } from "@/lib/design/workspace/types";
+import { pickedColorSourceShortLabel } from "@/lib/design/workspace/picked-color-display";
 import { useCharacter } from "./character-context";
 import { useChatLifecycleStatus } from "@/components/chat-provider";
 import { useOptionalDeepResearch } from "./deep-research-context";
@@ -133,22 +134,6 @@ function buildInspectChipLabel(element: {
     textContent: element.textContent,
     classes: element.className.trim().split(/\s+/).filter(Boolean).slice(0, 2),
   });
-}
-
-/** Short badge label for a picked colour's paint source. Mirrors the helper
- *  used in `design-properties-panel.tsx` so chips and panel stay consistent. */
-function pickedColorSourceShortLabel(source: PickedColor["source"]): string {
-  switch (source) {
-    case "background": return "bg";
-    case "foreground": return "fg";
-    case "border": return "border";
-    case "gradient": return "grad";
-    case "svg-fill": return "svg-fill";
-    case "svg-stroke": return "svg-stroke";
-    case "pseudo-before": return "::before";
-    case "pseudo-after": return "::after";
-    default: return source;
-  }
 }
 
 function buildMeasurementChipLabel(m: Measurement): string {
@@ -1822,7 +1807,7 @@ export const Composer: FC<{
                   style={{ backgroundColor: c.hex }}
                 />
                 <span>{c.hex}</span>
-                <span className="rounded-sm bg-pink-100 dark:bg-pink-900/60 px-1 text-[10px] uppercase tracking-tight">
+                <span className="rounded-sm bg-pink-100 dark:bg-pink-900/60 px-1 text-[11px] uppercase tracking-tight">
                   {pickedColorSourceShortLabel(c.source)}
                 </span>
                 <button

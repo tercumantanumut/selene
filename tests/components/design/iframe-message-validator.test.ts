@@ -59,7 +59,17 @@ function validMeasure() {
   };
 }
 
-function validColorPick(source: "background" | "foreground" | "border" = "background") {
+function validColorPick(
+  source:
+    | "background"
+    | "foreground"
+    | "border"
+    | "gradient"
+    | "svg-fill"
+    | "svg-stroke"
+    | "pseudo-before"
+    | "pseudo-after" = "background",
+) {
   return {
     type: "selene-tool-color-pick",
     source,
@@ -107,6 +117,28 @@ describe("validateIframeMessage — accepts well-formed payloads", () => {
     expect(validateIframeMessage(validColorPick("background"), NOW)?.type).toBe("selene-tool-color-pick");
     expect(validateIframeMessage(validColorPick("foreground"), NOW)?.type).toBe("selene-tool-color-pick");
     expect(validateIframeMessage(validColorPick("border"), NOW)?.type).toBe("selene-tool-color-pick");
+  });
+
+  it("accepts selene-tool-color-pick for the 5 tiered paint sources", () => {
+    // The eyedropper now reports gradient stops, SVG fill/stroke, and
+    // ::before/::after pseudo-element backgrounds. Each must round-trip
+    // through the validator with the correct narrowed source.
+    const tieredSources: Array<
+      "gradient" | "svg-fill" | "svg-stroke" | "pseudo-before" | "pseudo-after"
+    > = ["gradient", "svg-fill", "svg-stroke", "pseudo-before", "pseudo-after"];
+    for (const source of tieredSources) {
+      const result = validateIframeMessage(validColorPick(source), NOW);
+      expect(result?.type).toBe("selene-tool-color-pick");
+      if (result?.type === "selene-tool-color-pick") {
+        expect(result.source).toBe(source);
+      }
+    }
+  });
+
+  it("rejects selene-tool-color-pick with an unknown source enum", () => {
+    const bad = validColorPick();
+    (bad as unknown as { source: string }).source = "magic";
+    expect(validateIframeMessage(bad, NOW)).toBeNull();
   });
 
   it("accepts selene-tool-comment with createdAt at the boundary", () => {

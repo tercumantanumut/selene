@@ -450,6 +450,16 @@ export const TOOLS_SCRIPT = `
    *   'pseudo-before'   — backgroundColor or gradient on ::before
    *   'pseudo-after'    — backgroundColor or gradient on ::after
    * Falls back to white on a totally-transparent stack.
+   *
+   * Tier ordering rationale:
+   *   Tier 1 walks the click target AND ALL ANCESTORS looking for the first
+   *   non-transparent solid background-color. This matches what the user
+   *   visually sees — an opaque parent painting over a child gradient is the
+   *   pixel they clicked, so we report the parent's solid first instead of
+   *   the child's gradient. Tier 2 then considers the click target's (and
+   *   ancestors') gradient(s). If the user wants the click target's own
+   *   gradient (or any non-background paint) to override an ancestor solid,
+   *   they can hold Shift to read the foreground color instead.
    */
   function getEffectivePaint(el) {
     if (!el) return { rgba: { r: 255, g: 255, b: 255, a: 1 }, source: 'background' };
@@ -717,6 +727,12 @@ export const TOOLS_SCRIPT = `
   var measurementOverlaysById = Object.create(null);
   var measurementOrder = [];
   var MEASUREMENT_STROKE = '#3b82f6';
+  // Amber palette for orphaned measurements — keeps the in-iframe overlay
+  // consistent with the composer chip and side-panel chip, which both flag
+  // a stale/orphaned measurement in amber. Without this, the iframe view
+  // silently disappears while the chip + panel show amber, which is
+  // confusing.
+  var MEASUREMENT_STROKE_ORPHANED = '#f59e0b';
 
   function buildMeasurementOverlay(measurement) {
     var ns = 'http://www.w3.org/2000/svg';
@@ -767,7 +783,22 @@ export const TOOLS_SCRIPT = `
     var badge = document.createElement('div');
     badge.style.cssText = 'position:fixed;z-index:2147483645;pointer-events:none;background:' + MEASUREMENT_STROKE + ';color:#fff;font:10px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;padding:2px 5px;border-radius:3px;transform:translate(-50%,-50%);white-space:nowrap;font-weight:600;';
 
-    return { svg: svg, line: line, badge: badge };
+    return { svg: svg, line: line, badge: badge, markerStartFill: pathStart, markerEndFill: pathEnd };
+  }
+
+  function applyOverlayPaint(entry) {
+    var orphaned = !!(entry.measurement && entry.measurement.orphaned);
+    var stroke = orphaned ? MEASUREMENT_STROKE_ORPHANED : MEASUREMENT_STROKE;
+    entry.line.setAttribute('stroke', stroke);
+    // Drop opacity on orphaned overlays so they read as "stale" without
+    // visually competing with live measurements.
+    entry.svg.style.opacity = orphaned ? '0.5' : '1';
+    entry.badge.style.background = stroke;
+    entry.badge.style.opacity = orphaned ? '0.85' : '1';
+    // Repaint the SVG arrow markers — they're drawn with 'fill' rather than
+    // 'stroke', so we need to dive into the marker children.
+    if (entry.markerStartFill) entry.markerStartFill.setAttribute('fill', stroke);
+    if (entry.markerEndFill) entry.markerEndFill.setAttribute('fill', stroke);
   }
 
   function positionMeasurementOverlay(entry) {
@@ -795,9 +826,13 @@ export const TOOLS_SCRIPT = `
     } else {
       label = Math.round(euclidean) + 'px';
     }
+    if (entry.measurement && entry.measurement.orphaned) {
+      label += ' (stale)';
+    }
     entry.badge.textContent = label;
     entry.badge.style.left = ((fcx + tcx) / 2) + 'px';
     entry.badge.style.top = ((fcy + tcy) / 2) + 'px';
+    applyOverlayPaint(entry);
   }
 
   function mountMeasurementOverlay(m) {
@@ -806,7 +841,17 @@ export const TOOLS_SCRIPT = `
     try { fromEl = document.querySelector(m.from.selector); } catch (err) { /* invalid selector */ }
     try { toEl = document.querySelector(m.to.selector); } catch (err) { /* invalid selector */ }
     var built = buildMeasurementOverlay(m);
-    var entry = { measurement: m, fromEl: fromEl, toEl: toEl, svg: built.svg, line: built.line, badge: built.badge, mounted: false };
+    var entry = {
+      measurement: m,
+      fromEl: fromEl,
+      toEl: toEl,
+      svg: built.svg,
+      line: built.line,
+      badge: built.badge,
+      markerStartFill: built.markerStartFill,
+      markerEndFill: built.markerEndFill,
+      mounted: false
+    };
     if (fromEl && toEl) {
       measurementOverlayLayer.appendChild(built.svg);
       measurementOverlayLayer.appendChild(built.badge);
@@ -1051,8 +1096,9 @@ export const TOOLS_SCRIPT = `
     }
 
     if (activeTool === 'comment') {
-      // If click is inside an active input, ignore
-      if (commentInput && commentInput.wrap.contains(e.target)) return;
+      // (Note: clicks inside an active comment input are already filtered
+      // upstream — getEventTarget skips commentLayer descendants and the
+      // earlier "if (!target) return;" bails before we get here.)
       // Finalize any pending input first
       if (commentInput && commentInput.input.value.trim() && commentTarget) {
         finalizeComment();

@@ -10,8 +10,9 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -357,10 +358,21 @@ export function diffMeasurements(
  * `@container` queries, so we drive the breakpoints with a ResizeObserver
  * over the toolbar's own clientWidth.
  *
- *   roomy (>= 720px)        — every label visible (default)
- *   compact (>= 480, < 720) — tools become icon-only, breakpoint+theme keep labels
- *   tight (< 480)           — breakpoints + theme collapse into dropdowns
- *                              and tools stay icon-only
+ *   roomy   (>= 720px)        — full labels everywhere (default)
+ *   compact (>= 480, < 720)   — chrome (breakpoint + theme) labels stay,
+ *                               tools become icon-only
+ *   tight   (< 480 OR overflow) — chrome collapses into dropdowns AND
+ *                                 tools stay icon-only
+ *
+ * Threshold rationale:
+ *   The toolbar uses `flex-wrap`, so the absolute `clientWidth < 480` check
+ *   alone misses the case where a wider toolbar (e.g. ~600px preview column
+ *   with both sidebars open) wraps to a second row instead of collapsing.
+ *   We add a `scrollWidth > clientWidth + 4` overflow fallback (4px slop for
+ *   sub-pixel rounding): when overflow is observed we promote to at least
+ *   `compact`, and if the absolute width is also below 600px we promote to
+ *   `tight`. This catches the wrap case without requiring a full content-
+ *   width measurement pass in `roomy` mode.
  */
 type ToolbarDensity = "roomy" | "compact" | "tight";
 
@@ -374,11 +386,29 @@ function useToolbarDensity(): {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    const compute = (clientWidth: number, scrollWidth: number): ToolbarDensity => {
+      // Absolute-width tiers — same as before.
+      let next: ToolbarDensity =
+        clientWidth < 480 ? "tight" : clientWidth < 720 ? "compact" : "roomy";
+      // Overflow fallback — when flex-wrap kicks in (or content would
+      // overflow), force at least `compact`. If the toolbar is also narrower
+      // than ~600px, force `tight` so chrome collapses to dropdowns instead
+      // of wrapping onto a second row.
+      const overflowing = scrollWidth > clientWidth + 4;
+      if (overflowing) {
+        if (clientWidth < 600) {
+          next = "tight";
+        } else if (next === "roomy") {
+          next = "compact";
+        }
+      }
+      return next;
+    };
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      const w = entry.contentRect.width;
-      const next: ToolbarDensity = w < 480 ? "tight" : w < 720 ? "compact" : "roomy";
+      const target = entry.target as HTMLElement;
+      const next = compute(entry.contentRect.width, target.scrollWidth);
       setDensity((prev) => (prev === next ? prev : next));
     });
     ro.observe(el);
@@ -749,7 +779,13 @@ export function DesignPreviewFrame() {
 
   const inspectorEnabled = activeTool === "inspect";
   const { density: toolbarDensity, ref: toolbarRef } = useToolbarDensity();
-  const showLabels = toolbarDensity === "roomy";
+  // Tool buttons (Inspect / Measure / Pick / Comment) drop labels at compact
+  // — they're recognisable from their icons. Chrome controls (breakpoint +
+  // theme) keep labels through compact (they're text-driven choices) and
+  // only collapse to dropdowns at tight. See the JSDoc on
+  // `useToolbarDensity` for the full tier matrix.
+  const showToolLabels = toolbarDensity === "roomy";
+  const showChromeLabels = toolbarDensity !== "tight";
   const collapseToDropdowns = toolbarDensity === "tight";
 
   // Resolve the current theme + breakpoint metadata for dropdown trigger labels.
@@ -768,8 +804,12 @@ export function DesignPreviewFrame() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Toolbar — responsive: full labels at >=720px, icon-only tools at
-          >=480px, breakpoint + theme collapse to dropdowns below 480px. */}
+      {/* Toolbar — responsive density tiers:
+            roomy (>=720px)        — full labels everywhere
+            compact (>=480, <720)  — chrome (breakpoint+theme) labels stay,
+                                     tools become icon-only
+            tight (<480 or overflow) — chrome collapses to dropdowns AND
+                                       tools stay icon-only */}
       <div
         ref={toolbarRef}
         className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2"
@@ -791,23 +831,26 @@ export function DesignPreviewFrame() {
                 <span className="capitalize">{activeBreakpointMeta.name}</span>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" role="group" aria-label="Preview breakpoints">
+            <DropdownMenuContent align="start" aria-label="Preview breakpoints">
               <DropdownMenuLabel>Breakpoint</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {DESIGN_BREAKPOINTS.map((bp) => (
-                <DropdownMenuItem
-                  key={bp.name}
-                  onSelect={() => setBreakpoint(bp)}
-                  aria-pressed={selectedBreakpoint.name === bp.name}
-                  className="gap-1.5"
-                >
-                  {BREAKPOINT_ICONS[bp.name]}
-                  <span className="capitalize">{bp.name}</span>
-                  {bp.width > 0 && (
-                    <span className="ml-auto text-xs opacity-60">{bp.width}px</span>
-                  )}
-                </DropdownMenuItem>
-              ))}
+              <DropdownMenuRadioGroup
+                value={selectedBreakpoint.name}
+                onValueChange={(value) => {
+                  const next = DESIGN_BREAKPOINTS.find((bp) => bp.name === value);
+                  if (next) setBreakpoint(next);
+                }}
+              >
+                {DESIGN_BREAKPOINTS.map((bp) => (
+                  <DropdownMenuRadioItem key={bp.name} value={bp.name} className="gap-1.5">
+                    {BREAKPOINT_ICONS[bp.name]}
+                    <span className="capitalize">{bp.name}</span>
+                    {bp.width > 0 && (
+                      <span className="ml-auto text-xs opacity-60">{bp.width}px</span>
+                    )}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (
@@ -828,8 +871,8 @@ export function DesignPreviewFrame() {
                 className="gap-1.5"
               >
                 {BREAKPOINT_ICONS[bp.name]}
-                {showLabels && <span className="capitalize">{bp.name}</span>}
-                {showLabels && bp.width > 0 && (
+                {showChromeLabels && <span className="capitalize">{bp.name}</span>}
+                {showChromeLabels && bp.width > 0 && (
                   <span className="text-xs opacity-60">{bp.width}px</span>
                 )}
               </Button>
@@ -840,7 +883,7 @@ export function DesignPreviewFrame() {
         <div className="mx-1 h-5 w-px bg-border" />
 
         {/* Tools — always rendered as buttons (never collapsed into a dropdown);
-            labels drop below `roomy`. */}
+            labels drop below `roomy` (icon-only at compact + tight). */}
         <div className="flex items-center gap-2" role="group" aria-label="Design tools">
           <Button
             variant={inspectorEnabled ? "default" : "ghost"}
@@ -852,7 +895,7 @@ export function DesignPreviewFrame() {
             className="gap-1.5"
           >
             <Crosshair className="h-4 w-4" />
-            {showLabels && <span>Inspect</span>}
+            {showToolLabels && <span>Inspect</span>}
           </Button>
           <Button
             variant={activeTool === "measure" ? "default" : "ghost"}
@@ -864,7 +907,7 @@ export function DesignPreviewFrame() {
             className="gap-1.5"
           >
             <Ruler className="h-4 w-4" />
-            {showLabels && <span>Measure</span>}
+            {showToolLabels && <span>Measure</span>}
           </Button>
           <Button
             variant={activeTool === "eyedropper" ? "default" : "ghost"}
@@ -876,7 +919,7 @@ export function DesignPreviewFrame() {
             className="gap-1.5"
           >
             <Pipette className="h-4 w-4" />
-            {showLabels && <span>Pick</span>}
+            {showToolLabels && <span>Pick</span>}
           </Button>
           <Button
             variant={activeTool === "comment" ? "default" : "ghost"}
@@ -888,7 +931,7 @@ export function DesignPreviewFrame() {
             className="gap-1.5"
           >
             <MessageSquare className="h-4 w-4" />
-            {showLabels && <span>Comment</span>}
+            {showToolLabels && <span>Comment</span>}
           </Button>
         </div>
 
@@ -909,20 +952,27 @@ export function DesignPreviewFrame() {
                 <span>{activeThemeOption.label}</span>
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" role="group" aria-label="Preview theme">
+            <DropdownMenuContent align="end" aria-label="Preview theme">
               <DropdownMenuLabel>Preview theme</DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {PREVIEW_THEME_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.value}
-                  onSelect={() => setPreviewTheme(option.value)}
-                  aria-pressed={previewTheme === option.value}
-                  className="gap-1.5"
-                >
-                  {option.icon}
-                  <span>{option.label}</span>
-                </DropdownMenuItem>
-              ))}
+              <DropdownMenuRadioGroup
+                value={previewTheme}
+                onValueChange={(value) => {
+                  const next = PREVIEW_THEME_OPTIONS.find((o) => o.value === value);
+                  if (next) setPreviewTheme(next.value);
+                }}
+              >
+                {PREVIEW_THEME_OPTIONS.map((option) => (
+                  <DropdownMenuRadioItem
+                    key={option.value}
+                    value={option.value}
+                    className="gap-1.5"
+                  >
+                    {option.icon}
+                    <span>{option.label}</span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (
@@ -939,7 +989,7 @@ export function DesignPreviewFrame() {
                 className="gap-1.5"
               >
                 {option.icon}
-                {showLabels && <span>{option.label}</span>}
+                {showChromeLabels && <span>{option.label}</span>}
               </Button>
             ))}
           </div>

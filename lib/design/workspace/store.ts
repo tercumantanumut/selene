@@ -656,21 +656,29 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     if (unresolvedIds.length === 0 && resolvedIds.length === 0) return;
     const unresolvedSet = new Set(unresolvedIds);
     const resolvedSet = new Set(resolvedIds);
-    set({
-      comments: get().comments.map((entry) => {
-        if (unresolvedSet.has(entry.id)) {
-          // Mark stale if the iframe couldn't find a matching DOM node.
-          return entry.orphaned === true ? entry : { ...entry, orphaned: true };
-        }
-        if (resolvedSet.has(entry.id) && entry.orphaned === true) {
-          // Clear stale flag once the selector resolves again. Set to `false`
-          // explicitly (not `undefined`) so the cleared state round-trips
-          // through the session cache.
-          return { ...entry, orphaned: false };
-        }
-        return entry;
-      }),
+    const current = get().comments;
+    let changed = false;
+    const next = current.map((entry) => {
+      if (unresolvedSet.has(entry.id)) {
+        // Mark stale if the iframe couldn't find a matching DOM node.
+        if (entry.orphaned === true) return entry;
+        changed = true;
+        return { ...entry, orphaned: true };
+      }
+      if (resolvedSet.has(entry.id) && entry.orphaned === true) {
+        // Clear stale flag once the selector resolves again. Set to `false`
+        // explicitly (not `undefined`) so the cleared state round-trips
+        // through the session cache.
+        changed = true;
+        return { ...entry, orphaned: false };
+      }
+      return entry;
     });
+    // No-op short-circuit — preserve array reference so subscribers don't
+    // re-trigger sync effects on a redundant ack from the iframe (mirrors
+    // `markMeasurementsOrphaned` below).
+    if (!changed) return;
+    set({ comments: next });
   },
 
   markMeasurementsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => {
