@@ -109,6 +109,10 @@ import {
   shouldTreatStreamErrorAsCancellation,
 } from "./canonical-content";
 import { buildToolsForRequest } from "./tools-builder";
+import {
+  applyScopeToToolNames,
+  loadSoloStoryScopeForSession,
+} from "@/lib/lobbies/scope-injection";
 import { prepareMessagesForRequest } from "./message-prep";
 import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
@@ -716,6 +720,27 @@ export async function POST(req: Request) {
     const previouslyDiscoveredTools = new Set([...historicallyDiscoveredTools, ...metadataDiscoveredTools]);
     const allowedPluginNames = new Set(scopedPlugins.map((plugin) => plugin.name));
 
+    // ── Solo Story Mode: per-seat permission scope tightening (SPEC §7) ────────
+    // If this session is a soloStory worker run, the seat's snapshotted
+    // `permission_scope` narrows the tool surface for the duration of the
+    // request. Planner/synthesizer roles use an empty scope as a sentinel and
+    // therefore return null here (no tightening). MCP tool intersection
+    // happens inside buildToolsForRequest so it can run after MCP discovery.
+    const soloStoryScopeContext = await loadSoloStoryScopeForSession({
+      sessionId,
+      userId: dbUser.id,
+    });
+    const effectiveEnabledTools = soloStoryScopeContext
+      ? applyScopeToToolNames(enabledTools, soloStoryScopeContext.scope)
+      : enabledTools;
+    if (soloStoryScopeContext) {
+      console.log(
+        `[CHAT API] Solo Story scope applied: lobby=${soloStoryScopeContext.lobbyId} ` +
+          `card=${soloStoryScopeContext.cardId ?? "n/a"} role=${soloStoryScopeContext.role} ` +
+          `enabledTools ${enabledTools?.length ?? "?"} -> ${effectiveEnabledTools?.length ?? 0}`,
+      );
+    }
+
     const toolsResult = await buildToolsForRequest({
       sessionId,
       userId: dbUser.id,
@@ -723,7 +748,7 @@ export async function POST(req: Request) {
       characterAvatarUrl,
       characterAppearanceDescription,
       sessionMetadata,
-      enabledTools,
+      enabledTools: effectiveEnabledTools,
       previouslyDiscoveredTools,
       toolLoadingMode,
       devWorkspaceEnabled: appSettings.devWorkspaceEnabled ?? false,
@@ -735,6 +760,7 @@ export async function POST(req: Request) {
       provider: currentProvider,
       droppedImagesForProvider,
       designPreviewTheme,
+      soloStoryPermissionScope: soloStoryScopeContext?.scope,
     });
 
     const {
