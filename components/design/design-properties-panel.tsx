@@ -120,8 +120,19 @@ function MeasurementsSection({
       {measurements.map((m) => (
         <div key={m.id} className="space-y-1 rounded border border-border/50 bg-background/50 p-1.5 text-[11px]">
           <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground">
-              {m.from.selector} → {m.to.selector}
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="truncate font-mono text-[10px] text-muted-foreground">
+                {m.from.selector} → {m.to.selector}
+              </div>
+              {m.orphaned === true && (
+                <Badge
+                  variant="outline"
+                  className="px-1 py-0 text-[10px]"
+                  title="One or both selectors no longer match a live DOM node in the preview"
+                >
+                  stale
+                </Badge>
+              )}
             </div>
             <button
               onClick={() => onRemove(m.id)}
@@ -268,7 +279,7 @@ function PickedColorsSection({
               </Button>
             </div>
             <div
-              className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-muted-foreground"
+              className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] text-muted-foreground"
               title={`${c.element.tagName} · ${c.element.selector}`}
             >
               {c.element.tagName} · {c.element.selector}
@@ -327,7 +338,11 @@ function CommentsSection({
                 </Badge>
               )}
               {c.orphaned === true && (
-                <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                <Badge
+                  variant="outline"
+                  className="px-1 py-0 text-[10px]"
+                  title="Selector no longer matches a live DOM node in the preview"
+                >
                   stale
                 </Badge>
               )}
