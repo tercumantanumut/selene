@@ -7,7 +7,7 @@
  * All shapes are versioned so future migrations can fan out without breaking
  * existing rows. V1 is the only shape that ships with this feature.
  *
- * Constraints (from docs/solo-story-mode/spec.md §3):
+ * Constraints (from lib/lobbies/SPEC.md §3):
  *   - Permission scope V1 is tool-list only.
  *   - Card output is JSON in the LobbyCardOutputV1 shape — the synthesizer
  *     reads this exact shape across all approved cards.
