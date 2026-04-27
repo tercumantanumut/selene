@@ -692,7 +692,12 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     executionTime,
                     startedAt,
                     logId,
-                    isTruncated: false,
+                    // Reflect the actual outcome: `killed` is set when the child was
+                    // terminated via SIGTERM because it either timed out or exceeded
+                    // `maxOutputSize` (see lines 618 and 638). Both cases are forms of
+                    // truncation that downstream consumers (tool-result-stream-guard,
+                    // tool-result-utils, UI truncation indicators) must learn about.
+                    isTruncated: killed,
                     searchMetadata: fallbackReason
                         ? buildExecuteSearchMetadata({
                             originalCommand: command,
@@ -712,7 +717,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     exitCode: code,
                     error: finalResult.error,
                     logId,
-                    isTruncated: false,
+                    isTruncated: killed,
                     message: finalResult.success ? completedMessage : failedMessage,
                 });
 

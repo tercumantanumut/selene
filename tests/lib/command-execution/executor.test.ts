@@ -389,6 +389,60 @@ describe("isEBADFError", () => {
     });
 });
 
+// ── executeCommand truncation flag (end-to-end) ───────────────────────────────
+
+describe("executeCommand isTruncated flag", () => {
+    it("sets isTruncated=true when a command exceeds maxOutputSize", async () => {
+        // Write ~10 KB of stdout but cap the executor at 1 KB. The executor
+        // detects this mid-stream, kills the child with SIGTERM, and must
+        // surface the event via isTruncated so tool-result-stream-guard,
+        // tool-result-utils and UI indicators can act on it. Previously this
+        // flag was hardcoded to false, causing silent data loss.
+        const result = await executeCommand({
+            command: "node",
+            args: ["-e", "setInterval(() => process.stdout.write('x'.repeat(1024)), 5)"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 5000,
+            maxOutputSize: 1024,
+        });
+
+        expect(result.isTruncated).toBe(true);
+        // Process was terminated, so the command didn't succeed cleanly.
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+    });
+
+    it("sets isTruncated=true when a command is killed by timeout", async () => {
+        // Short timeout forces a SIGTERM — the `killed` flag covers both
+        // timeout and size-overrun kills, so isTruncated must be true here too.
+        const result = await executeCommand({
+            command: "node",
+            args: ["-e", "setInterval(() => {}, 10_000)"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 300,
+        });
+
+        expect(result.isTruncated).toBe(true);
+        expect(result.success).toBe(false);
+    });
+
+    it("sets isTruncated=false for a normal completed command", async () => {
+        const result = await executeCommand({
+            command: "node",
+            args: ["-e", "console.log('clean')"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 5000,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.stdout).toBe("clean");
+        expect(result.isTruncated).toBe(false);
+    });
+});
+
 // ── spawnWithFileCapture (unit) ───────────────────────────────────────────────
 
 describe("spawnWithFileCapture", () => {
@@ -447,6 +501,32 @@ describe("spawnWithFileCapture", () => {
             process.cwd(), env, 10_000, 50,
         );
         expect(result.stdout.length).toBeLessThanOrEqual(50);
+        // Regression: size-based clamping must be reported honestly so
+        // tool-result-stream-guard / UI indicators can react.
+        expect(result.truncated).toBe(true);
+        // `timedOut` is a separate cause; size-only truncation must not flip it.
+        expect(result.timedOut).toBe(false);
+    });
+
+    it("reports truncated=true when the child is killed by timeout", async () => {
+        const result = await spawnWithFileCapture(
+            "node", ["-e", "setInterval(() => {}, 10_000)"],
+            process.cwd(), env, 300 /* 300 ms */, 1048576,
+        );
+        expect(result.timedOut).toBe(true);
+        // Regression: timeout is a form of truncation — callers need a single
+        // authoritative signal without having to OR the two causes themselves.
+        expect(result.truncated).toBe(true);
+    });
+
+    it("reports truncated=false for a clean run under all limits", async () => {
+        const result = await spawnWithFileCapture(
+            "node", ["-e", "console.log('ok')"],
+            process.cwd(), env, 10_000, 1048576,
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.truncated).toBe(false);
+        expect(result.timedOut).toBe(false);
     });
 
     it("cleans up temp files after execution", async () => {
