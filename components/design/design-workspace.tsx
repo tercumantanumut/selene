@@ -19,8 +19,12 @@ export function DesignWorkspace({ sessionId }: DesignWorkspaceProps) {
       <DesignWorkspaceBridge sessionId={sessionId} />
       {!isOpen ? null : (
         <div className="flex h-full w-full overflow-hidden bg-background">
-          {/* Preview */}
-          <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Preview — `min-w-0` lets the flex-1 column actually shrink below
+              the toolbar's natural width, so the toolbar's ResizeObserver
+              fires and collapses controls into dropdowns. Without this the
+              column is bounded from below by its content (long toolbar) and
+              the right panel never gets squeezed. */}
+          <div className="flex flex-1 min-w-0 flex-col overflow-hidden">
             <DesignPreviewFrame />
           </div>
 

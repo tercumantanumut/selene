@@ -1,4 +1,5 @@
 import type { InspectMessageContext } from "@/lib/design/workspace/inspect-context";
+import type { DesignMessageContext } from "@/lib/design/workspace/design-context";
 
 export interface LivePromptEntry {
   id: string;
@@ -9,7 +10,10 @@ export interface LivePromptEntry {
     kind?: "generic" | "delegation_completion";
     delegationId?: string;
     delegateName?: string;
+    /** Legacy: pre-unification design payload covering inspect-only context. */
     inspectContext?: InspectMessageContext | null;
+    /** Unified design-workspace payload (inspect + measurements + colors). */
+    designContext?: DesignMessageContext | null;
   };
 }
 

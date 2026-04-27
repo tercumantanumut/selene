@@ -23,6 +23,7 @@ import type {
   InspectedElement,
   InspectorSelectPayload,
   MeasurementPayload,
+  MeasurementsResolvedPayload,
   PickedColor,
 } from "./types";
 
@@ -32,7 +33,8 @@ export type IframeMessage =
   | MeasurementPayload
   | ColorPickPayload
   | CommentPayload
-  | CommentsResolvedPayload;
+  | CommentsResolvedPayload
+  | MeasurementsResolvedPayload;
 
 const MAX_TEXT_LENGTH = 2000;
 const MAX_SELECTOR_LENGTH = 1000;
@@ -44,6 +46,11 @@ const COLOR_PICK_SOURCES: ReadonlyArray<PickedColor["source"]> = [
   "background",
   "foreground",
   "border",
+  "gradient",
+  "svg-fill",
+  "svg-stroke",
+  "pseudo-before",
+  "pseudo-after",
 ];
 
 function warnReject(type: string, reason: string): null {
@@ -157,6 +164,8 @@ export function validateIframeMessage(
       return validateComment(data, now);
     case "selene-tool-comments-resolved":
       return validateCommentsResolved(data);
+    case "selene-tool-measurements-resolved":
+      return validateMeasurementsResolved(data);
     default:
       return null;
   }
@@ -305,6 +314,133 @@ function validateCommentsResolved(
     resolved: data.resolved,
     unresolved: data.unresolved,
   };
+}
+
+function validateMeasurementsResolved(
+  data: Record<string, unknown>,
+): MeasurementsResolvedPayload | null {
+  if (!isStringArray(data.resolved)) {
+    return warnReject("selene-tool-measurements-resolved", "invalid resolved");
+  }
+  if (!isStringArray(data.unresolved)) {
+    return warnReject("selene-tool-measurements-resolved", "invalid unresolved");
+  }
+  return {
+    type: "selene-tool-measurements-resolved",
+    resolved: data.resolved,
+    unresolved: data.unresolved,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound (parent -> iframe) sync envelope validators
+// ---------------------------------------------------------------------------
+//
+// These don't ride the inbound IframeMessage union — they're used by the
+// parent at *send* time to assert we never post a malformed sync envelope to
+// the in-iframe handler (which would silently drop it).
+//
+// Validation is shape-only: ids must be strings, rects/distances must contain
+// finite numbers. Caps and content sanitization live in the store / sender.
+
+interface MeasurementSyncCommon {
+  id: string;
+  from: { selector: string; rect: IframeRect };
+  to: { selector: string; rect: IframeRect };
+  distances: { dx: number; dy: number; horizontal: number; vertical: number; euclidean: number };
+}
+
+export type MeasurementsSyncEnvelope =
+  | { type: "selene-tool-measurements-sync"; bootstrap: MeasurementSyncCommon[] }
+  | {
+      type: "selene-tool-measurements-sync";
+      diff: { added: MeasurementSyncCommon[]; removed: string[]; updated: MeasurementSyncCommon[] };
+    };
+
+function validateMeasurementSyncEntry(value: unknown): MeasurementSyncCommon | null {
+  if (!isObject(value)) return null;
+  if (!isNonEmptyString(value.id, MAX_SELECTOR_LENGTH)) return null;
+  const from = value.from;
+  if (!isObject(from)) return null;
+  if (!isNonEmptyString(from.selector, MAX_SELECTOR_LENGTH)) return null;
+  if (!validateRect(from.rect)) return null;
+  const to = value.to;
+  if (!isObject(to)) return null;
+  if (!isNonEmptyString(to.selector, MAX_SELECTOR_LENGTH)) return null;
+  if (!validateRect(to.rect)) return null;
+  const distances = value.distances;
+  if (!isObject(distances)) return null;
+  if (
+    !isFiniteNumber(distances.dx) ||
+    !isFiniteNumber(distances.dy) ||
+    !isFiniteNumber(distances.horizontal) ||
+    !isFiniteNumber(distances.vertical) ||
+    !isFiniteNumber(distances.euclidean)
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    from: { selector: from.selector, rect: from.rect },
+    to: { selector: to.selector, rect: to.rect },
+    distances: {
+      dx: distances.dx,
+      dy: distances.dy,
+      horizontal: distances.horizontal,
+      vertical: distances.vertical,
+      euclidean: distances.euclidean,
+    },
+  };
+}
+
+/**
+ * Validates a `selene-tool-measurements-sync` envelope from any direction.
+ * Accepts either `{ bootstrap: [...] }` or `{ diff: { added, removed, updated } }`.
+ * Returns the narrowed envelope on success, `null` on miss.
+ */
+export function validateMeasurementsSync(
+  data: unknown,
+): MeasurementsSyncEnvelope | null {
+  if (!isObject(data)) return null;
+  if (data.type !== "selene-tool-measurements-sync") return null;
+
+  if (Array.isArray(data.bootstrap)) {
+    const entries: MeasurementSyncCommon[] = [];
+    for (const raw of data.bootstrap) {
+      const entry = validateMeasurementSyncEntry(raw);
+      if (!entry) return warnReject("selene-tool-measurements-sync", "invalid bootstrap entry");
+      entries.push(entry);
+    }
+    return { type: "selene-tool-measurements-sync", bootstrap: entries };
+  }
+
+  if (isObject(data.diff)) {
+    const diff = data.diff;
+    if (!Array.isArray(diff.added)) return warnReject("selene-tool-measurements-sync", "invalid diff.added");
+    if (!Array.isArray(diff.removed) || !isStringArray(diff.removed)) {
+      return warnReject("selene-tool-measurements-sync", "invalid diff.removed");
+    }
+    if (!Array.isArray(diff.updated)) return warnReject("selene-tool-measurements-sync", "invalid diff.updated");
+
+    const added: MeasurementSyncCommon[] = [];
+    for (const raw of diff.added) {
+      const entry = validateMeasurementSyncEntry(raw);
+      if (!entry) return warnReject("selene-tool-measurements-sync", "invalid diff.added entry");
+      added.push(entry);
+    }
+    const updated: MeasurementSyncCommon[] = [];
+    for (const raw of diff.updated) {
+      const entry = validateMeasurementSyncEntry(raw);
+      if (!entry) return warnReject("selene-tool-measurements-sync", "invalid diff.updated entry");
+      updated.push(entry);
+    }
+    return {
+      type: "selene-tool-measurements-sync",
+      diff: { added, removed: diff.removed, updated },
+    };
+  }
+
+  return warnReject("selene-tool-measurements-sync", "missing bootstrap or diff");
 }
 
 /**

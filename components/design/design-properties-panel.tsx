@@ -158,6 +158,28 @@ function MeasurementsSection({
   );
 }
 
+/** Short, panel-friendly label for a PickedColor.source value. */
+function pickedColorSourceLabel(source: PickedColor["source"]): string {
+  switch (source) {
+    case "background":
+      return "bg";
+    case "foreground":
+      return "fg";
+    case "border":
+      return "border";
+    case "gradient":
+      return "grad";
+    case "svg-fill":
+      return "svg-fill";
+    case "svg-stroke":
+      return "svg-stroke";
+    case "pseudo-before":
+      return "::before";
+    case "pseudo-after":
+      return "::after";
+  }
+}
+
 function PickedColorsSection({
   colors,
   onRemove,
@@ -208,7 +230,7 @@ function PickedColorsSection({
                   aria-label={`Swatch ${c.hex}`}
                 />
                 <Badge variant="outline" className="px-1 py-0 text-[10px]">
-                  {c.source}
+                  {pickedColorSourceLabel(c.source)}
                 </Badge>
               </div>
               <button

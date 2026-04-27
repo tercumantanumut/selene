@@ -39,11 +39,19 @@ export const TOOLS_SCRIPT = `
   document.documentElement.appendChild(paddingBox);
   document.documentElement.appendChild(contentBox);
 
-  // Measure-mode anchor / overlay layer (also used by comment pins)
+  // Measure-mode anchor / transient overlay layer (live drag preview)
   var measureLayer = document.createElement('div');
   measureLayer.id = '__selene-measure-layer';
   measureLayer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483646;';
   document.documentElement.appendChild(measureLayer);
+
+  // Persistent measurement overlays — captured measurements survive tool
+  // toggles and re-anchor on iframe rebuild. Mirror the comment-pin pattern:
+  // separate layer below comments, parent owns truth, iframe acks resolution.
+  var measurementOverlayLayer = document.createElement('div');
+  measurementOverlayLayer.id = '__selene-measurement-overlay-layer';
+  measurementOverlayLayer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483645;';
+  document.documentElement.appendChild(measurementOverlayLayer);
 
   var commentLayer = document.createElement('div');
   commentLayer.id = '__selene-comment-layer';
@@ -171,9 +179,9 @@ export const TOOLS_SCRIPT = `
   function isToolElement(el) {
     if (!el) return false;
     if (el === overlay || el === tooltip || el === marginBox || el === paddingBox || el === contentBox) return true;
-    if (el === measureLayer || el === commentLayer) return true;
+    if (el === measureLayer || el === commentLayer || el === measurementOverlayLayer) return true;
     // Anything inside our overlay layers
-    if (measureLayer.contains(el) || commentLayer.contains(el)) return true;
+    if (measureLayer.contains(el) || commentLayer.contains(el) || measurementOverlayLayer.contains(el)) return true;
     return false;
   }
 
@@ -391,17 +399,132 @@ export const TOOLS_SCRIPT = `
   }
 
   function getEffectiveBackground(el) {
-    // Walk up through ancestors INCLUDING documentElement — Tailwind v4 themes
-    // commonly paint the page background on <html>, so a transparent <body>
-    // would otherwise fall through to the white fallback below.
+    // Legacy alias: returns the rgba portion of getEffectivePaint for code
+    // paths that don't care about the source tier. Kept so internal call
+    // sites that only need the colour (no surfacing of badge text) stay
+    // small.
+    return getEffectivePaint(el).rgba;
+  }
+
+  // SHARED WITH paint-detection.ts — keep these helpers in lock-step. The
+  // iframe script can't import the TS module at runtime (it's injected as a
+  // single self-contained <script>), so we duplicate. Tests live against the
+  // TS module.
+  function isGradientBgImage(v) {
+    if (!v) return false;
+    return /\\b(?:linear|radial|conic)-gradient\\s*\\(/i.test(v);
+  }
+
+  function parseGradientStops(bgImage) {
+    if (!bgImage) return [];
+    var stops = [];
+    var matches = bgImage.match(/rgba?\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+(?:\\s*,\\s*[0-9.]+)?\\s*\\)/g);
+    if (!matches) return [];
+    for (var i = 0; i < matches.length; i++) {
+      var parsed = rgbStringToRgba(matches[i]);
+      if (parsed) stops.push(parsed);
+    }
+    return stops;
+  }
+
+  function pickGradientRepresentative(stops) {
+    if (!stops || stops.length === 0) return null;
+    if (stops.length === 1) return stops[0];
+    if (stops.length === 2) {
+      return {
+        r: Math.round((stops[0].r + stops[1].r) / 2),
+        g: Math.round((stops[0].g + stops[1].g) / 2),
+        b: Math.round((stops[0].b + stops[1].b) / 2),
+        a: (stops[0].a + stops[1].a) / 2
+      };
+    }
+    return stops[Math.floor(stops.length / 2)];
+  }
+
+  /**
+   * Tiered paint detection: returns { rgba, source } where source is one of
+   *   'background'      — solid backgroundColor (current behaviour)
+   *   'gradient'        — middle stop of a CSS gradient
+   *   'svg-fill'        — SVG element fill (or first SVG ancestor's fill)
+   *   'svg-stroke'      — SVG element stroke
+   *   'pseudo-before'   — backgroundColor or gradient on ::before
+   *   'pseudo-after'    — backgroundColor or gradient on ::after
+   * Falls back to white on a totally-transparent stack.
+   */
+  function getEffectivePaint(el) {
+    if (!el) return { rgba: { r: 255, g: 255, b: 255, a: 1 }, source: 'background' };
+
+    // Tier 1 — solid background, walking up through ancestors INCLUDING
+    // documentElement (Tailwind v4 themes commonly paint on <html>).
     var current = el;
     while (current) {
       var cs = getComputedStyle(current);
       var rgba = rgbStringToRgba(cs.backgroundColor);
-      if (rgba && rgba.a > 0) return rgba;
+      if (rgba && rgba.a > 0) return { rgba: rgba, source: 'background' };
       current = current.parentElement;
     }
-    return { r: 255, g: 255, b: 255, a: 1 };
+
+    // Tier 2 — gradient on the element or any ancestor.
+    current = el;
+    while (current) {
+      var cs2 = getComputedStyle(current);
+      var bgImg = cs2.backgroundImage;
+      if (isGradientBgImage(bgImg)) {
+        var stops = parseGradientStops(bgImg);
+        var rep = pickGradientRepresentative(stops);
+        if (rep && rep.a > 0) return { rgba: rep, source: 'gradient' };
+      }
+      current = current.parentElement;
+    }
+
+    // Tier 3 — SVG fill / stroke. Walk up to the nearest SVG element when
+    // the click target is a non-SVG node nested inside an <svg> wrapper.
+    var svgRoot = null;
+    if (el instanceof SVGElement) svgRoot = el;
+    else if (el.closest) {
+      var maybe = el.closest('svg');
+      if (maybe) svgRoot = maybe;
+    }
+    if (svgRoot) {
+      // Prefer the click target itself if it has a meaningful fill/stroke,
+      // otherwise climb to the first ancestor that does.
+      var probes = [el instanceof SVGElement ? el : svgRoot];
+      if (probes[0] !== svgRoot) probes.push(svgRoot);
+      for (var p = 0; p < probes.length; p++) {
+        var probe = probes[p];
+        if (!probe) continue;
+        var psr = getComputedStyle(probe);
+        var fillRgba = rgbStringToRgba(psr.fill);
+        if (fillRgba && fillRgba.a > 0 && psr.fill !== 'none') {
+          return { rgba: fillRgba, source: 'svg-fill' };
+        }
+        var strokeRgba = rgbStringToRgba(psr.stroke);
+        if (strokeRgba && strokeRgba.a > 0 && psr.stroke !== 'none') {
+          return { rgba: strokeRgba, source: 'svg-stroke' };
+        }
+      }
+    }
+
+    // Tier 4 — pseudo-elements. ::before then ::after. Each can contribute
+    // either a solid backgroundColor or a gradient backgroundImage.
+    var pseudos = ['::before', '::after'];
+    for (var pi = 0; pi < pseudos.length; pi++) {
+      var pseudoCs = getComputedStyle(el, pseudos[pi]);
+      if (!pseudoCs) continue;
+      var pBg = rgbStringToRgba(pseudoCs.backgroundColor);
+      if (pBg && pBg.a > 0) {
+        return { rgba: pBg, source: pseudos[pi] === '::before' ? 'pseudo-before' : 'pseudo-after' };
+      }
+      if (isGradientBgImage(pseudoCs.backgroundImage)) {
+        var pStops = parseGradientStops(pseudoCs.backgroundImage);
+        var pRep = pickGradientRepresentative(pStops);
+        if (pRep && pRep.a > 0) {
+          return { rgba: pRep, source: pseudos[pi] === '::before' ? 'pseudo-before' : 'pseudo-after' };
+        }
+      }
+    }
+
+    return { rgba: { r: 255, g: 255, b: 255, a: 1 }, source: 'background' };
   }
 
   // --- Comment mode ---
@@ -586,6 +709,223 @@ export const TOOLS_SCRIPT = `
     } catch (err) { /* parent gone */ }
   }
 
+  // --- Persistent measurement overlays ---
+  // Mirrors the comment-pin pattern: each measurement is keyed by id and
+  // re-resolved against the current DOM on every parent->iframe sync. SVG
+  // arrows + a midpoint badge are rendered on the dedicated
+  // measurementOverlayLayer (below comments, above selection box).
+  var measurementOverlaysById = Object.create(null);
+  var measurementOrder = [];
+  var MEASUREMENT_STROKE = '#3b82f6';
+
+  function buildMeasurementOverlay(measurement) {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    svg.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;';
+
+    var defs = document.createElementNS(ns, 'defs');
+    // Arrow markers — one per direction so we can attach to start/end.
+    var markerStart = document.createElementNS(ns, 'marker');
+    markerStart.setAttribute('id', '__selene-arrow-start-' + measurement.id);
+    markerStart.setAttribute('viewBox', '0 0 10 10');
+    markerStart.setAttribute('refX', '5');
+    markerStart.setAttribute('refY', '5');
+    markerStart.setAttribute('markerWidth', '6');
+    markerStart.setAttribute('markerHeight', '6');
+    markerStart.setAttribute('orient', 'auto-start-reverse');
+    var pathStart = document.createElementNS(ns, 'path');
+    pathStart.setAttribute('d', 'M 10 0 L 0 5 L 10 10 z');
+    pathStart.setAttribute('fill', MEASUREMENT_STROKE);
+    markerStart.appendChild(pathStart);
+
+    var markerEnd = document.createElementNS(ns, 'marker');
+    markerEnd.setAttribute('id', '__selene-arrow-end-' + measurement.id);
+    markerEnd.setAttribute('viewBox', '0 0 10 10');
+    markerEnd.setAttribute('refX', '5');
+    markerEnd.setAttribute('refY', '5');
+    markerEnd.setAttribute('markerWidth', '6');
+    markerEnd.setAttribute('markerHeight', '6');
+    markerEnd.setAttribute('orient', 'auto');
+    var pathEnd = document.createElementNS(ns, 'path');
+    pathEnd.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+    pathEnd.setAttribute('fill', MEASUREMENT_STROKE);
+    markerEnd.appendChild(pathEnd);
+
+    defs.appendChild(markerStart);
+    defs.appendChild(markerEnd);
+    svg.appendChild(defs);
+
+    var line = document.createElementNS(ns, 'line');
+    line.setAttribute('stroke', MEASUREMENT_STROKE);
+    line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('marker-start', 'url(#__selene-arrow-start-' + measurement.id + ')');
+    line.setAttribute('marker-end', 'url(#__selene-arrow-end-' + measurement.id + ')');
+    svg.appendChild(line);
+
+    var badge = document.createElement('div');
+    badge.style.cssText = 'position:fixed;z-index:2147483645;pointer-events:none;background:' + MEASUREMENT_STROKE + ';color:#fff;font:10px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;padding:2px 5px;border-radius:3px;transform:translate(-50%,-50%);white-space:nowrap;font-weight:600;';
+
+    return { svg: svg, line: line, badge: badge };
+  }
+
+  function positionMeasurementOverlay(entry) {
+    if (!entry.fromEl || !entry.toEl) return;
+    var fr = entry.fromEl.getBoundingClientRect();
+    var tr = entry.toEl.getBoundingClientRect();
+    var fcx = fr.left + fr.width / 2;
+    var fcy = fr.top + fr.height / 2;
+    var tcx = tr.left + tr.width / 2;
+    var tcy = tr.top + tr.height / 2;
+    entry.line.setAttribute('x1', String(fcx));
+    entry.line.setAttribute('y1', String(fcy));
+    entry.line.setAttribute('x2', String(tcx));
+    entry.line.setAttribute('y2', String(tcy));
+    var dx = tcx - fcx;
+    var dy = tcy - fcy;
+    var euclidean = Math.sqrt(dx * dx + dy * dy);
+    var label;
+    // Axis-aligned segments get the "dx × dy" form; diagonal segments fall
+    // back to the euclidean magnitude.
+    if (Math.abs(dx) < 0.5) {
+      label = Math.round(Math.abs(dy)) + 'px';
+    } else if (Math.abs(dy) < 0.5) {
+      label = Math.round(Math.abs(dx)) + 'px';
+    } else {
+      label = Math.round(euclidean) + 'px';
+    }
+    entry.badge.textContent = label;
+    entry.badge.style.left = ((fcx + tcx) / 2) + 'px';
+    entry.badge.style.top = ((fcy + tcy) / 2) + 'px';
+  }
+
+  function mountMeasurementOverlay(m) {
+    if (measurementOverlaysById[m.id]) return;
+    var fromEl = null, toEl = null;
+    try { fromEl = document.querySelector(m.from.selector); } catch (err) { /* invalid selector */ }
+    try { toEl = document.querySelector(m.to.selector); } catch (err) { /* invalid selector */ }
+    var built = buildMeasurementOverlay(m);
+    var entry = { measurement: m, fromEl: fromEl, toEl: toEl, svg: built.svg, line: built.line, badge: built.badge, mounted: false };
+    if (fromEl && toEl) {
+      measurementOverlayLayer.appendChild(built.svg);
+      measurementOverlayLayer.appendChild(built.badge);
+      entry.mounted = true;
+      positionMeasurementOverlay(entry);
+    }
+    measurementOverlaysById[m.id] = entry;
+    measurementOrder.push(m.id);
+  }
+
+  function unmountMeasurementOverlay(id) {
+    var entry = measurementOverlaysById[id];
+    if (!entry) return;
+    if (entry.svg && entry.svg.parentNode) entry.svg.parentNode.removeChild(entry.svg);
+    if (entry.badge && entry.badge.parentNode) entry.badge.parentNode.removeChild(entry.badge);
+    delete measurementOverlaysById[id];
+    var idx = measurementOrder.indexOf(id);
+    if (idx !== -1) measurementOrder.splice(idx, 1);
+  }
+
+  function clearAllMeasurementOverlays() {
+    measurementOrder.slice().forEach(function(id) { unmountMeasurementOverlay(id); });
+    measurementOverlaysById = Object.create(null);
+    measurementOrder = [];
+  }
+
+  function applyMeasurementUpdate(m) {
+    var entry = measurementOverlaysById[m.id];
+    if (!entry) { mountMeasurementOverlay(m); return; }
+    // Re-resolve if either selector changed.
+    if (entry.measurement.from.selector !== m.from.selector) {
+      try { entry.fromEl = document.querySelector(m.from.selector); } catch (err) { entry.fromEl = null; }
+    }
+    if (entry.measurement.to.selector !== m.to.selector) {
+      try { entry.toEl = document.querySelector(m.to.selector); } catch (err) { entry.toEl = null; }
+    }
+    entry.measurement = m;
+    if (entry.fromEl && entry.toEl) {
+      if (!entry.mounted) {
+        measurementOverlayLayer.appendChild(entry.svg);
+        measurementOverlayLayer.appendChild(entry.badge);
+        entry.mounted = true;
+      }
+      positionMeasurementOverlay(entry);
+    } else if (entry.mounted) {
+      if (entry.svg.parentNode) entry.svg.parentNode.removeChild(entry.svg);
+      if (entry.badge.parentNode) entry.badge.parentNode.removeChild(entry.badge);
+      entry.mounted = false;
+    }
+  }
+
+  function bootstrapMeasurementOverlays(measurements) {
+    clearAllMeasurementOverlays();
+    if (!measurements || !measurements.length) { ackMeasurementResolution(); return; }
+    measurements.forEach(function(m) { mountMeasurementOverlay(m); });
+    ackMeasurementResolution();
+  }
+
+  function applyMeasurementsDiff(diff) {
+    var added = (diff && Array.isArray(diff.added)) ? diff.added : [];
+    var removed = (diff && Array.isArray(diff.removed)) ? diff.removed : [];
+    var updated = (diff && Array.isArray(diff.updated)) ? diff.updated : [];
+    removed.forEach(function(id) { unmountMeasurementOverlay(id); });
+    updated.forEach(function(m) { applyMeasurementUpdate(m); });
+    added.forEach(function(m) { mountMeasurementOverlay(m); });
+    ackMeasurementResolution();
+  }
+
+  function refreshLiveMeasurementPositions() {
+    measurementOrder.forEach(function(id) {
+      var entry = measurementOverlaysById[id];
+      if (!entry) return;
+      // Re-query if the cached element was unmounted (DOM mutation between
+      // syncs). Cheap: querySelector is only triggered when the cached node
+      // dropped out of the document.
+      if (entry.fromEl && !entry.fromEl.isConnected) {
+        try { entry.fromEl = document.querySelector(entry.measurement.from.selector); } catch (err) { entry.fromEl = null; }
+      }
+      if (entry.toEl && !entry.toEl.isConnected) {
+        try { entry.toEl = document.querySelector(entry.measurement.to.selector); } catch (err) { entry.toEl = null; }
+      }
+      if (entry.fromEl && entry.toEl) {
+        if (!entry.mounted) {
+          measurementOverlayLayer.appendChild(entry.svg);
+          measurementOverlayLayer.appendChild(entry.badge);
+          entry.mounted = true;
+        }
+        positionMeasurementOverlay(entry);
+      } else if (entry.mounted) {
+        if (entry.svg.parentNode) entry.svg.parentNode.removeChild(entry.svg);
+        if (entry.badge.parentNode) entry.badge.parentNode.removeChild(entry.badge);
+        entry.mounted = false;
+      }
+    });
+  }
+
+  function ackMeasurementResolution() {
+    var resolved = [];
+    var unresolved = [];
+    measurementOrder.forEach(function(id) {
+      var entry = measurementOverlaysById[id];
+      if (!entry) return;
+      var fromEl = null, toEl = null;
+      try { fromEl = document.querySelector(entry.measurement.from.selector); } catch (err) { fromEl = null; }
+      try { toEl = document.querySelector(entry.measurement.to.selector); } catch (err) { toEl = null; }
+      entry.fromEl = fromEl;
+      entry.toEl = toEl;
+      if (fromEl && toEl) resolved.push(id);
+      else unresolved.push(id);
+    });
+    try {
+      window.parent.postMessage({
+        type: 'selene-tool-measurements-resolved',
+        resolved: resolved,
+        unresolved: unresolved
+      }, '*');
+    } catch (err) { /* parent gone */ }
+  }
+
   // --- Cursor management ---
   function applyCursor() {
     if (activeTool === 'measure' || activeTool === 'eyedropper') {
@@ -627,10 +967,16 @@ export const TOOLS_SCRIPT = `
     }
 
     if (activeTool === 'eyedropper') {
-      var rgba = getEffectiveBackground(target);
-      var hex = rgbToHex(rgba);
+      var paint = getEffectivePaint(target);
+      var hex = rgbToHex(paint.rgba);
+      var sourceLabel = paint.source === 'gradient' ? ' • from gradient'
+        : paint.source === 'svg-fill' ? ' • SVG fill'
+        : paint.source === 'svg-stroke' ? ' • SVG stroke'
+        : paint.source === 'pseudo-before' ? ' • ::before'
+        : paint.source === 'pseudo-after' ? ' • ::after'
+        : '';
       var swatch = '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + hex + ';margin-right:6px;vertical-align:middle;border:1px solid rgba(255,255,255,0.4);"></span>';
-      showTooltip(swatch + escapeHtml(hex), e.clientX, e.clientY);
+      showTooltip(swatch + escapeHtml(hex + sourceLabel), e.clientX, e.clientY);
       return;
     }
 
@@ -687,11 +1033,12 @@ export const TOOLS_SCRIPT = `
 
     if (activeTool === 'eyedropper') {
       var pickForeground = !!e.shiftKey;
-      var bg = getEffectiveBackground(target);
+      var paintResult = getEffectivePaint(target);
+      var bg = paintResult.rgba;
       var cs = getComputedStyle(target);
       var fg = rgbStringToRgba(cs.color) || { r: 0, g: 0, b: 0, a: 1 };
       var picked = pickForeground ? fg : bg;
-      var source = pickForeground ? 'foreground' : 'background';
+      var source = pickForeground ? 'foreground' : paintResult.source;
       window.parent.postMessage({
         type: 'selene-tool-color-pick',
         source: source,
@@ -776,6 +1123,7 @@ export const TOOLS_SCRIPT = `
       rafPending = false;
       refreshSelectionOverlays();
       refreshLiveCommentPositions();
+      refreshLiveMeasurementPositions();
     });
   }
   window.addEventListener('scroll', scheduleRefresh, true);
@@ -818,6 +1166,13 @@ export const TOOLS_SCRIPT = `
         bootstrapCommentPins(e.data.comments);
       } else if (e.data.diff && typeof e.data.diff === 'object') {
         applyCommentDiff(e.data.diff);
+      }
+    } else if (t === 'selene-tool-measurements-sync') {
+      // Same envelope shape as comments — bootstrap or diff.
+      if (Array.isArray(e.data.bootstrap)) {
+        bootstrapMeasurementOverlays(e.data.bootstrap);
+      } else if (e.data.diff && typeof e.data.diff === 'object') {
+        applyMeasurementsDiff(e.data.diff);
       }
     }
   });

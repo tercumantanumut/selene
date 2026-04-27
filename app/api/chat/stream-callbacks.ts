@@ -98,7 +98,9 @@ export async function handleUndrainedQueueMessages(
     try {
       const orderingIndex = await nextOrderingIndex(sessionId);
       const promptCustom: Record<string, unknown> = {};
-      if (entry.metadata?.inspectContext) {
+      if (entry.metadata?.designContext) {
+        promptCustom.designContext = entry.metadata.designContext;
+      } else if (entry.metadata?.inspectContext) {
         promptCustom.inspectContext = entry.metadata.inspectContext;
       }
 

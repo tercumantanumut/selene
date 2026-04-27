@@ -10,6 +10,7 @@ import {
   sanitizeLivePromptContent,
 } from "@/lib/background-tasks/live-prompt-helpers";
 import { sanitizeInspectMessageContext } from "@/lib/design/workspace/inspect-context";
+import { sanitizeDesignContext } from "@/lib/design/workspace/design-context";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -32,7 +33,7 @@ export async function POST(req: Request, { params }: RouteParams) {
     // Suppress unused variable warning — dbUser validates the user exists
     void dbUser;
 
-    let body: { content?: unknown; inspectContext?: unknown };
+    let body: { content?: unknown; inspectContext?: unknown; designContext?: unknown };
     try {
       body = await req.json();
     } catch {
@@ -40,7 +41,13 @@ export async function POST(req: Request, { params }: RouteParams) {
     }
 
     const { content } = body;
-    const inspectContext = sanitizeInspectMessageContext(body.inspectContext);
+    // Prefer the unified `designContext` (carries inspect + measurements +
+    // colours). Legacy clients may still post `inspectContext`; sanitize that
+    // and drop it on the metadata too so old replays don't lose context.
+    const designContext = sanitizeDesignContext(body.designContext);
+    const inspectContext = designContext
+      ? null
+      : sanitizeInspectMessageContext(body.inspectContext);
 
     if (!content || typeof content !== "string" || !content.trim()) {
       return NextResponse.json({ error: "content is required" }, { status: 400 });
@@ -50,13 +57,19 @@ export async function POST(req: Request, { params }: RouteParams) {
     const stopIntent = hasStopIntent(sanitized);
     const entryId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+    const metadata = designContext
+      ? { designContext }
+      : inspectContext
+        ? { inspectContext }
+        : undefined;
+
     // appendToLivePromptQueueBySession resolves the active runId from the session index.
     // Returns false when no active run exists for this session — O(1), no DB round-trip.
     const queued = appendToLivePromptQueueBySession(sessionId, {
       id: entryId,
       content: sanitized,
       stopIntent,
-      metadata: inspectContext ? { inspectContext } : undefined,
+      metadata,
     });
 
     if (!queued) {

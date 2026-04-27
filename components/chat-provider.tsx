@@ -463,6 +463,18 @@ function isInspectContextMetadata(value: unknown): value is InspectContextMetada
   return Array.isArray(candidate.elements) && candidate.elements.length > 0;
 }
 
+/**
+ * Shallow predicate for the unified `designContext` metadata. Strict
+ * sanitisation lives server-side in `sanitizeDesignContext` — here we only
+ * validate enough shape to know the field is a non-empty object so we can
+ * forward it as-is to the wire.
+ */
+function isDesignContextMetadata(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return obj.source === "design-workspace" || typeof obj.version === "number";
+}
+
 type AttachmentAwarePending = PendingAttachment & {
   metadata?: AttachmentMetadata;
 };
@@ -597,18 +609,22 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
   const inspectContext = isInspectContextMetadata(existingCustom.inspectContext)
     ? existingCustom.inspectContext
     : undefined;
+  const designContext = isDesignContextMetadata(existingCustom.designContext)
+    ? existingCustom.designContext
+    : undefined;
 
   return {
     role: message.role,
     parts,
     metadata: {
       ...(message.metadata ?? {}),
-      ...((attachmentMetadata.length > 0 || inspectContext)
+      ...((attachmentMetadata.length > 0 || inspectContext || designContext)
         ? {
             custom: {
               ...existingCustom,
               ...(attachmentMetadata.length > 0 ? { attachments: attachmentMetadata } : {}),
               ...(inspectContext ? { inspectContext } : {}),
+              ...(designContext ? { designContext } : {}),
             },
           }
         : {}),

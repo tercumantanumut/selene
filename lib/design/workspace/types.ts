@@ -80,6 +80,12 @@ export interface Measurement {
   to: { selector: string; rect: { x: number; y: number; width: number; height: number } };
   distances: { dx: number; dy: number; horizontal: number; vertical: number; euclidean: number };
   createdAt: number;
+  /**
+   * Set to `true` by the parent in response to a `selene-tool-measurements-resolved`
+   * ack from the iframe when one of the endpoints' selectors no longer resolves
+   * to a live DOM node. Mirrors `DesignComment.orphaned` semantics.
+   */
+  orphaned?: boolean;
 }
 
 export interface PickedColor {
@@ -87,7 +93,15 @@ export interface PickedColor {
   hex: string;
   rgb: { r: number; g: number; b: number; a: number };
   hsl: { h: number; s: number; l: number; a: number };
-  source: "background" | "foreground" | "border";
+  source:
+    | "background"
+    | "foreground"
+    | "border"
+    | "gradient"
+    | "svg-fill"
+    | "svg-stroke"
+    | "pseudo-before"
+    | "pseudo-after";
   element: { selector: string; tagName: string };
   createdAt: number;
 }
@@ -150,6 +164,13 @@ export interface CommentPayload {
 /** Validated payload shape for `selene-tool-comments-resolved`. */
 export interface CommentsResolvedPayload {
   type: "selene-tool-comments-resolved";
+  resolved: string[];
+  unresolved: string[];
+}
+
+/** Validated payload shape for `selene-tool-measurements-resolved`. */
+export interface MeasurementsResolvedPayload {
+  type: "selene-tool-measurements-resolved";
   resolved: string[];
   unresolved: string[];
 }
@@ -230,4 +251,5 @@ export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   resolveComment: (id: string) => void;
   clearComments: () => void;
   markCommentsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => void;
+  markMeasurementsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => void;
 }

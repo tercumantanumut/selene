@@ -672,4 +672,28 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
       }),
     });
   },
+
+  markMeasurementsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => {
+    if (unresolvedIds.length === 0 && resolvedIds.length === 0) return;
+    const unresolvedSet = new Set(unresolvedIds);
+    const resolvedSet = new Set(resolvedIds);
+    const current = get().measurements;
+    let changed = false;
+    const next = current.map((entry) => {
+      if (unresolvedSet.has(entry.id)) {
+        if (entry.orphaned === true) return entry;
+        changed = true;
+        return { ...entry, orphaned: true };
+      }
+      if (resolvedSet.has(entry.id) && entry.orphaned === true) {
+        changed = true;
+        return { ...entry, orphaned: false };
+      }
+      return entry;
+    });
+    // No-op short-circuit — preserve array reference so subscribers don't
+    // re-trigger sync effects on a redundant ack from the iframe.
+    if (!changed) return;
+    set({ measurements: next });
+  },
 }));

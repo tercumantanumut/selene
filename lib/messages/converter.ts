@@ -459,6 +459,9 @@ function buildMessageCustomMetadata(
   if (dbMeta?.custom?.inspectContext) {
     customMetadata.inspectContext = dbMeta.custom.inspectContext;
   }
+  if (dbMeta?.custom?.designContext) {
+    customMetadata.designContext = dbMeta.custom.designContext;
+  }
 
   const existingAttachments = Array.isArray(dbMeta?.custom?.attachments)
     ? dbMeta?.custom?.attachments

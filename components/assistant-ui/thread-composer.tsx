@@ -22,6 +22,8 @@ import {
   MicIcon,
   CrosshairIcon,
   ImageOffIcon,
+  RulerIcon,
+  PipetteIcon,
 } from "lucide-react";
 import { resilientFetch, resilientPost } from "@/lib/utils/resilient-fetch";
 import { toast } from "sonner";
@@ -33,6 +35,14 @@ import {
   formatInspectSelectionLabel,
   type InspectMessageContext,
 } from "@/lib/design/workspace/inspect-context";
+import {
+  buildDesignContext,
+  type DesignMessageContext,
+} from "@/lib/design/workspace/design-context";
+import type {
+  Measurement,
+  PickedColor,
+} from "@/lib/design/workspace/types";
 import { useCharacter } from "./character-context";
 import { useChatLifecycleStatus } from "@/components/chat-provider";
 import { useOptionalDeepResearch } from "./deep-research-context";
@@ -91,7 +101,7 @@ interface QueuedMessage {
   id: string;
   content: string;
   mode: "chat" | "deep-research";
-  inspectContext?: InspectMessageContext | null;
+  designContext?: DesignMessageContext | null;
   // "queued-classic": waiting for run to end before replaying
   // "queued-live": currently being submitted to the live queue API
   // "injected-live": successfully delivered to the running model
@@ -125,8 +135,30 @@ function buildInspectChipLabel(element: {
   });
 }
 
-function buildUserMessageMetadata(inspectContext: InspectMessageContext | null) {
-  return inspectContext ? { custom: { inspectContext } } : undefined;
+/** Short badge label for a picked colour's paint source. Mirrors the helper
+ *  used in `design-properties-panel.tsx` so chips and panel stay consistent. */
+function pickedColorSourceShortLabel(source: PickedColor["source"]): string {
+  switch (source) {
+    case "background": return "bg";
+    case "foreground": return "fg";
+    case "border": return "border";
+    case "gradient": return "grad";
+    case "svg-fill": return "svg-fill";
+    case "svg-stroke": return "svg-stroke";
+    case "pseudo-before": return "::before";
+    case "pseudo-after": return "::after";
+    default: return source;
+  }
+}
+
+function buildMeasurementChipLabel(m: Measurement): string {
+  const dx = Math.round(m.distances?.dx ?? 0);
+  const dy = Math.round(m.distances?.dy ?? 0);
+  return `${Math.abs(dx)}×${Math.abs(dy)}px`;
+}
+
+function buildUserMessageMetadata(designContext: DesignMessageContext | null) {
+  return designContext ? { custom: { designContext } } : undefined;
 }
 
 function appendQueuedUserMessage(
@@ -137,7 +169,7 @@ function appendQueuedUserMessage(
   threadRuntime.append({
     role: "user",
     content: [{ type: "text", text: message.content }],
-    metadata: buildUserMessageMetadata(message.inspectContext ?? null),
+    metadata: buildUserMessageMetadata(message.designContext ?? null),
   });
 }
 
@@ -216,13 +248,20 @@ export const Composer: FC<{
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [activeVoiceTranscript, setActiveVoiceTranscript] = useState<ActiveVoiceTranscript | null>(null);
 
-  // Design workspace inspect state — for attaching inspect context on send
+  // Design workspace inspect / measurement / colour state — surfaced as
+  // composer chips and serialised onto outbound messages as `designContext`.
   const inspectorEnabled = useDesignWorkspaceStore((s) => s.inspectorEnabled);
   const selectedElements = useDesignWorkspaceStore((s) => s.selectedElements);
   const activeComponentId = useDesignWorkspaceStore((s) => s.activeComponentId);
   const designComponents = useDesignWorkspaceStore((s) => s.components);
   const removeSelectedElement = useDesignWorkspaceStore((s) => s.removeSelectedElement);
   const clearSelectedElements = useDesignWorkspaceStore((s) => s.clearSelectedElements);
+  const designMeasurements = useDesignWorkspaceStore((s) => s.measurements);
+  const designPickedColors = useDesignWorkspaceStore((s) => s.pickedColors);
+  const removeMeasurement = useDesignWorkspaceStore((s) => s.removeMeasurement);
+  const clearMeasurements = useDesignWorkspaceStore((s) => s.clearMeasurements);
+  const removePickedColor = useDesignWorkspaceStore((s) => s.removePickedColor);
+  const clearPickedColors = useDesignWorkspaceStore((s) => s.clearPickedColors);
 
   const inspectContext = useMemo((): InspectMessageContext | null => {
     if (!inspectorEnabled || selectedElements.length === 0) return null;
@@ -235,6 +274,39 @@ export const Composer: FC<{
       sessionId,
     });
   }, [inspectorEnabled, selectedElements, activeComponentId, designComponents, sessionId]);
+
+  const designContext = useMemo((): DesignMessageContext | null => {
+    const component = activeComponentId
+      ? designComponents.find((c) => c.id === activeComponentId) ?? null
+      : null;
+    return buildDesignContext({
+      inspect: inspectContext,
+      measurements: designMeasurements,
+      pickedColors: designPickedColors,
+      component: component ? { id: component.id, name: component.name } : null,
+      sessionId,
+    });
+  }, [
+    inspectContext,
+    designMeasurements,
+    designPickedColors,
+    activeComponentId,
+    designComponents,
+    sessionId,
+  ]);
+
+  const clearDesignContextOnSend = useCallback(() => {
+    if (selectedElements.length > 0) clearSelectedElements();
+    if (designMeasurements.length > 0) clearMeasurements();
+    if (designPickedColors.length > 0) clearPickedColors();
+  }, [
+    selectedElements.length,
+    designMeasurements.length,
+    designPickedColors.length,
+    clearSelectedElements,
+    clearMeasurements,
+    clearPickedColors,
+  ]);
 
   // Attempt to inject a message into the currently active run's live prompt queue.
   // The server resolves the active runId from the session index — no runId needed on the client.
@@ -253,7 +325,7 @@ export const Composer: FC<{
   //
   // Returns true if successfully queued, false if all retries failed.
   const queueLivePromptForActiveRun = useCallback(
-    async (content: string, inspectCtx?: InspectMessageContext | null): Promise<boolean> => {
+    async (content: string, designCtx?: DesignMessageContext | null): Promise<boolean> => {
       const MAX_RETRIES = 8;
       const BASE_DELAY_MS = 200;
       const MAX_DELAY_MS = 3200;
@@ -270,7 +342,7 @@ export const Composer: FC<{
         try {
           const { data, status } = await resilientPost<{ queued: boolean; reason?: string }>(
             `/api/sessions/${sessionId}/live-prompt-queue`,
-            { content, ...(inspectCtx ? { inspectContext: inspectCtx } : {}) },
+            { content, ...(designCtx ? { designContext: designCtx } : {}) },
             { timeout: 5_000, retries: 0 }
           );
 
@@ -924,12 +996,12 @@ export const Composer: FC<{
               id: msgId,
               content: expandedMessage,
               mode: "chat",
-              inspectContext,
+              designContext,
               status: "queued-live",
             }]);
 
             // Fire injection in the background; chip lifecycle driven by result
-            void queueLivePromptForActiveRun(expandedMessage, inspectContext).then(injected => {
+            void queueLivePromptForActiveRun(expandedMessage, designContext).then(injected => {
               if (injected) {
                 // Successfully delivered — show brief confirmation then remove chip
                 setQueuedMessages(prev =>
@@ -953,7 +1025,7 @@ export const Composer: FC<{
               id: msgId,
               content: expandedMessage,
               mode: isDeepResearchMode ? "deep-research" : "chat",
-              inspectContext,
+              designContext,
               status: "queued-classic",
             }]);
           }
@@ -966,11 +1038,11 @@ export const Composer: FC<{
         if (captureSession.isUnifiedSession) {
           captureSession.endSession();
         }
-        // Clear inspect selections after queuing
-        if (inspectContext) clearSelectedElements();
+        // Clear design-context selections after queuing
+        if (designContext) clearDesignContextOnSend();
       } else {
-        if (inspectContext) {
-          // Use threadRuntime.append() to include inspect metadata (composer.send() doesn't support metadata)
+        if (designContext) {
+          // Use threadRuntime.append() to include design-context metadata (composer.send() doesn't support metadata)
           const composerAttachments = (threadRuntime.composer.getState().attachments ?? []).filter(
             (a): a is CompleteAttachment =>
               a.status.type === "complete" || a.status.type === "requires-action",
@@ -979,10 +1051,10 @@ export const Composer: FC<{
             role: "user",
             content: [{ type: "text", text: expandedMessage }],
             attachments: composerAttachments,
-            metadata: buildUserMessageMetadata(inspectContext),
+            metadata: buildUserMessageMetadata(designContext),
           });
           if (hasAttachments) threadRuntime.composer.clearAttachments();
-          clearSelectedElements();
+          clearDesignContextOnSend();
         } else {
           threadRuntime.composer.setText(expandedMessage);
           threadRuntime.composer.send();
@@ -1013,8 +1085,10 @@ export const Composer: FC<{
       lastTranscriptRef,
       wasAiEnhancedRef,
       captureSession,
-      inspectContext,
-      clearSelectedElements,
+      designContext,
+      clearDesignContextOnSend,
+      queueLivePromptForActiveRun,
+      sessionId,
     ]
   );
 
@@ -1125,7 +1199,7 @@ export const Composer: FC<{
         role: "user",
         content: finalComposerText ? [{ type: "text", text: finalComposerText }] : [],
         attachments: [...composerAttachments, ...inlineAttachments],
-        metadata: buildUserMessageMetadata(inspectContext),
+        metadata: buildUserMessageMetadata(designContext),
       });
 
       tiptapRef.current?.clear();
@@ -1136,7 +1210,7 @@ export const Composer: FC<{
       }
       // End unified capture session after send (don't clear attachments — already sent)
       if (captureSession.isUnifiedSession) captureSession.endSession();
-      if (inspectContext) clearSelectedElements();
+      if (designContext) clearDesignContextOnSend();
     },
     [
       attachmentCount,
@@ -1148,8 +1222,8 @@ export const Composer: FC<{
       isQueueBlocked,
       t,
       threadRuntime,
-      inspectContext,
-      clearSelectedElements,
+      designContext,
+      clearDesignContextOnSend,
     ]
   );
 
@@ -1685,6 +1759,86 @@ export const Composer: FC<{
               <button
                 type="button"
                 onClick={clearSelectedElements}
+                className="text-[11px] font-mono text-muted-foreground hover:text-red-500 transition-colors ml-1"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Measurement chips — picked rulers between two inspected elements */}
+        {designMeasurements.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-terminal-dark/10">
+            <RulerIcon className="size-3 text-emerald-500 shrink-0" />
+            <span className="text-[11px] font-mono text-muted-foreground mr-1">Measure:</span>
+            {designMeasurements.map((m) => (
+              <span
+                key={m.id}
+                className={cn(
+                  "inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[11px] font-mono",
+                  m.orphaned
+                    ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300"
+                    : "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+                )}
+                title={m.orphaned ? "Target element no longer present" : undefined}
+              >
+                {buildMeasurementChipLabel(m)}
+                <button
+                  type="button"
+                  onClick={() => removeMeasurement(m.id)}
+                  className="ml-0.5 text-emerald-400 hover:text-red-500 transition-colors"
+                  aria-label="Remove measurement"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </span>
+            ))}
+            {designMeasurements.length > 1 && (
+              <button
+                type="button"
+                onClick={clearMeasurements}
+                className="text-[11px] font-mono text-muted-foreground hover:text-red-500 transition-colors ml-1"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Colour-picker chips — swatch + hex + paint source pill */}
+        {designPickedColors.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-terminal-dark/10">
+            <PipetteIcon className="size-3 text-pink-500 shrink-0" />
+            <span className="text-[11px] font-mono text-muted-foreground mr-1">Colors:</span>
+            {designPickedColors.map((c) => (
+              <span
+                key={c.id}
+                className="inline-flex items-center gap-1 rounded bg-pink-50 dark:bg-pink-950/40 border border-pink-200 dark:border-pink-800 px-1.5 py-0.5 text-[11px] font-mono text-pink-700 dark:text-pink-300"
+              >
+                <span
+                  aria-hidden="true"
+                  className="inline-block size-3 rounded-sm border border-black/20"
+                  style={{ backgroundColor: c.hex }}
+                />
+                <span>{c.hex}</span>
+                <span className="rounded-sm bg-pink-100 dark:bg-pink-900/60 px-1 text-[10px] uppercase tracking-tight">
+                  {pickedColorSourceShortLabel(c.source)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePickedColor(c.id)}
+                  className="ml-0.5 text-pink-400 hover:text-red-500 transition-colors"
+                  aria-label={`Remove ${c.hex}`}
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </span>
+            ))}
+            {designPickedColors.length > 1 && (
+              <button
+                type="button"
+                onClick={clearPickedColors}
                 className="text-[11px] font-mono text-muted-foreground hover:text-red-500 transition-colors ml-1"
               >
                 Clear all

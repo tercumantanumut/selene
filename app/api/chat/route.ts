@@ -563,7 +563,9 @@ export async function POST(req: Request) {
         ...((lastMessage.metadata?.custom?.attachments ?? []).filter((attachment): attachment is NonNullable<typeof attachment> => !!attachment)),
         ...((lastMessage.experimental_attachments ?? []).filter((attachment): attachment is NonNullable<typeof attachment> => !!attachment)),
       ];
-      const persistedInspectContext = (lastMessage.metadata?.custom as Record<string, unknown> | undefined)?.inspectContext ?? null;
+      const lastCustom = lastMessage.metadata?.custom as Record<string, unknown> | undefined;
+      const persistedDesignContext = lastCustom?.designContext ?? null;
+      const persistedInspectContext = lastCustom?.inspectContext ?? null;
       const extractedContent = await extractContent(messageForDB);
       const normalizedContent: unknown[] = Array.isArray(extractedContent)
         ? extractedContent
@@ -573,6 +575,7 @@ export async function POST(req: Request) {
       const userMessageIndex = await nextOrderingIndex(sessionId);
       const customMetadata: Record<string, unknown> = {};
       if (persistedAttachments.length > 0) customMetadata.attachments = persistedAttachments;
+      if (persistedDesignContext) customMetadata.designContext = persistedDesignContext;
       if (persistedInspectContext) customMetadata.inspectContext = persistedInspectContext;
       const result = await createMessage({
         ...(isValidUUID && { id: lastMessage.id }),

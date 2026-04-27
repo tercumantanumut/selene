@@ -8,6 +8,14 @@ import { rehydrateComponentCode } from "@/components/design/design-workspace-bri
 import { TOOLS_SCRIPT } from "@/lib/design/workspace/tools-script";
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Monitor,
   Tablet,
   Smartphone,
@@ -264,6 +272,9 @@ function makeId(prefix: string): string {
 /** Window during which a burst of comment changes is coalesced into one diff. */
 const COMMENTS_SYNC_DEBOUNCE_MS = 50;
 
+/** Window during which a burst of measurement changes is coalesced. */
+const MEASUREMENTS_SYNC_DEBOUNCE_MS = 50;
+
 /** Compute the diff between the parent's current `comments` and the iframe's
  * last-synced view of that list. */
 function diffComments(
@@ -298,6 +309,87 @@ function diffComments(
   return { added, removed, updated };
 }
 
+/**
+ * Compute the diff between the parent's current `measurements` and the
+ * iframe's last-synced view. Mirrors `diffComments`. A measurement is
+ * considered "updated" when either endpoint selector or any distance value
+ * changes — we re-anchor in-place rather than removing+adding.
+ */
+export function diffMeasurements(
+  current: Measurement[],
+  previous: Map<string, Measurement>,
+): {
+  added: Measurement[];
+  removed: string[];
+  updated: Measurement[];
+} {
+  const added: Measurement[] = [];
+  const updated: Measurement[] = [];
+  const seen = new Set<string>();
+  for (const measurement of current) {
+    seen.add(measurement.id);
+    const prev = previous.get(measurement.id);
+    if (!prev) {
+      added.push(measurement);
+    } else if (
+      prev.from.selector !== measurement.from.selector ||
+      prev.to.selector !== measurement.to.selector ||
+      prev.distances.dx !== measurement.distances.dx ||
+      prev.distances.dy !== measurement.distances.dy ||
+      prev.distances.horizontal !== measurement.distances.horizontal ||
+      prev.distances.vertical !== measurement.distances.vertical ||
+      prev.distances.euclidean !== measurement.distances.euclidean ||
+      prev.orphaned !== measurement.orphaned
+    ) {
+      updated.push(measurement);
+    }
+  }
+  const removed: string[] = [];
+  previous.forEach((_, id) => {
+    if (!seen.has(id)) removed.push(id);
+  });
+  return { added, removed, updated };
+}
+
+/**
+ * Toolbar density tiers — narrower than the chosen threshold collapses
+ * controls progressively. Tailwind v3 (this codebase) has no
+ * `@container` queries, so we drive the breakpoints with a ResizeObserver
+ * over the toolbar's own clientWidth.
+ *
+ *   roomy (>= 720px)        — every label visible (default)
+ *   compact (>= 480, < 720) — tools become icon-only, breakpoint+theme keep labels
+ *   tight (< 480)           — breakpoints + theme collapse into dropdowns
+ *                              and tools stay icon-only
+ */
+type ToolbarDensity = "roomy" | "compact" | "tight";
+
+function useToolbarDensity(): {
+  density: ToolbarDensity;
+  ref: React.RefObject<HTMLDivElement | null>;
+} {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [density, setDensity] = useState<ToolbarDensity>("roomy");
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const w = entry.contentRect.width;
+      const next: ToolbarDensity = w < 480 ? "tight" : w < 720 ? "compact" : "roomy";
+      setDensity((prev) => (prev === next ? prev : next));
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, []);
+
+  return { density, ref };
+}
+
 export function DesignPreviewFrame() {
   const activeComponentId = useDesignWorkspaceStore((s) => s.activeComponentId);
   const previewHtml = useDesignWorkspaceStore((s) => s.previewHtml);
@@ -313,7 +405,9 @@ export function DesignPreviewFrame() {
   const addPickedColor = useDesignWorkspaceStore((s) => s.addPickedColor);
   const addComment = useDesignWorkspaceStore((s) => s.addComment);
   const markCommentsOrphaned = useDesignWorkspaceStore((s) => s.markCommentsOrphaned);
+  const markMeasurementsOrphaned = useDesignWorkspaceStore((s) => s.markMeasurementsOrphaned);
   const comments = useDesignWorkspaceStore((s) => s.comments);
+  const measurements = useDesignWorkspaceStore((s) => s.measurements);
 
   // Auto-compile Tailwind components when switching or on first load
   useCompileTailwindPreview();
@@ -334,6 +428,11 @@ export function DesignPreviewFrame() {
   const lastSyncedCommentsRef = useRef<Map<string, DesignComment>>(new Map());
   const commentsSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCommentsRef = useRef<DesignComment[] | null>(null);
+
+  // Same pattern for measurements — see comment-sync block above.
+  const lastSyncedMeasurementsRef = useRef<Map<string, Measurement>>(new Map());
+  const measurementsSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingMeasurementsRef = useRef<Measurement[] | null>(null);
 
   const flushCommentsDiff = useCallback(() => {
     commentsSyncTimerRef.current = null;
@@ -377,6 +476,52 @@ export function DesignPreviewFrame() {
       const snapshot = new Map<string, DesignComment>();
       for (const c of list) snapshot.set(c.id, c);
       lastSyncedCommentsRef.current = snapshot;
+    },
+    [postToIframe],
+  );
+
+  // --- Measurements sync (mirrors comments) ---
+  const flushMeasurementsDiff = useCallback(() => {
+    measurementsSyncTimerRef.current = null;
+    const next = pendingMeasurementsRef.current;
+    pendingMeasurementsRef.current = null;
+    if (!next) return;
+    const diff = diffMeasurements(next, lastSyncedMeasurementsRef.current);
+    if (diff.added.length === 0 && diff.removed.length === 0 && diff.updated.length === 0) {
+      return;
+    }
+    postToIframe({ type: "selene-tool-measurements-sync", diff });
+    const snapshot = new Map<string, Measurement>();
+    for (const m of next) snapshot.set(m.id, m);
+    lastSyncedMeasurementsRef.current = snapshot;
+  }, [postToIframe]);
+
+  const scheduleMeasurementsDiff = useCallback(
+    (next: Measurement[]) => {
+      pendingMeasurementsRef.current = next;
+      if (measurementsSyncTimerRef.current !== null) {
+        clearTimeout(measurementsSyncTimerRef.current);
+      }
+      measurementsSyncTimerRef.current = setTimeout(
+        flushMeasurementsDiff,
+        MEASUREMENTS_SYNC_DEBOUNCE_MS,
+      );
+    },
+    [flushMeasurementsDiff],
+  );
+
+  const bootstrapMeasurementsToIframe = useCallback(
+    (list: Measurement[]) => {
+      if (measurementsSyncTimerRef.current !== null) {
+        clearTimeout(measurementsSyncTimerRef.current);
+        measurementsSyncTimerRef.current = null;
+      }
+      pendingMeasurementsRef.current = null;
+      lastSyncedMeasurementsRef.current = new Map();
+      postToIframe({ type: "selene-tool-measurements-sync", bootstrap: list });
+      const snapshot = new Map<string, Measurement>();
+      for (const m of list) snapshot.set(m.id, m);
+      lastSyncedMeasurementsRef.current = snapshot;
     },
     [postToIframe],
   );
@@ -429,12 +574,18 @@ export function DesignPreviewFrame() {
           );
           return;
         }
+        // Selection of which channel's RGB/hex/hsl to record:
+        // - foreground (Shift-click) → message.foreground
+        // - border / gradient / svg-* / pseudo-* → message.picked, since the
+        //   detected paint is the picked colour in those tiers (the iframe
+        //   already wrote the same rgba to .picked).
+        // - background → message.background (legacy default).
         const sourceData =
           message.source === "foreground"
             ? message.foreground
-            : message.source === "border"
-              ? message.picked
-              : message.background;
+            : message.source === "background"
+              ? message.background
+              : message.picked;
         const picked: PickedColor = {
           id: makeId("c"),
           hex: sourceData.hex,
@@ -473,6 +624,11 @@ export function DesignPreviewFrame() {
         markCommentsOrphaned(message.unresolved, message.resolved);
         return;
       }
+
+      if (message.type === "selene-tool-measurements-resolved") {
+        markMeasurementsOrphaned(message.unresolved, message.resolved);
+        return;
+      }
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
@@ -481,6 +637,7 @@ export function DesignPreviewFrame() {
     addMeasurement,
     addPickedColor,
     markCommentsOrphaned,
+    markMeasurementsOrphaned,
     setSelectedElements,
     toggleSelectedElement,
   ]);
@@ -505,12 +662,21 @@ export function DesignPreviewFrame() {
     scheduleCommentsDiff(comments);
   }, [comments, scheduleCommentsDiff]);
 
+  // Same loop for measurements.
+  useEffect(() => {
+    scheduleMeasurementsDiff(measurements);
+  }, [measurements, scheduleMeasurementsDiff]);
+
   // Cancel any pending debounce when the component unmounts.
   useEffect(() => {
     return () => {
       if (commentsSyncTimerRef.current !== null) {
         clearTimeout(commentsSyncTimerRef.current);
         commentsSyncTimerRef.current = null;
+      }
+      if (measurementsSyncTimerRef.current !== null) {
+        clearTimeout(measurementsSyncTimerRef.current);
+        measurementsSyncTimerRef.current = null;
       }
     };
   }, []);
@@ -576,9 +742,21 @@ export function DesignPreviewFrame() {
     const state = useDesignWorkspaceStore.getState();
     postToIframe({ type: "selene-tool-set-active", tool: state.activeTool });
     bootstrapCommentsToIframe(state.comments);
-  }, [postToIframe, bootstrapCommentsToIframe]);
+    // Bootstrap measurements after comments — resolve order is deterministic
+    // for the iframe ack pipeline.
+    bootstrapMeasurementsToIframe(state.measurements);
+  }, [postToIframe, bootstrapCommentsToIframe, bootstrapMeasurementsToIframe]);
 
   const inspectorEnabled = activeTool === "inspect";
+  const { density: toolbarDensity, ref: toolbarRef } = useToolbarDensity();
+  const showLabels = toolbarDensity === "roomy";
+  const collapseToDropdowns = toolbarDensity === "tight";
+
+  // Resolve the current theme + breakpoint metadata for dropdown trigger labels.
+  const activeThemeOption =
+    PREVIEW_THEME_OPTIONS.find((o) => o.value === previewTheme) ?? PREVIEW_THEME_OPTIONS[0];
+  const activeBreakpointMeta = selectedBreakpoint;
+  const activeBreakpointIcon = BREAKPOINT_ICONS[selectedBreakpoint.name];
 
   if (!activeComponentId) {
     return (
@@ -590,88 +768,182 @@ export function DesignPreviewFrame() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Breakpoint toolbar */}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2" role="tablist" aria-label="Preview breakpoints">
-        {DESIGN_BREAKPOINTS.map((bp) => (
+      {/* Toolbar — responsive: full labels at >=720px, icon-only tools at
+          >=480px, breakpoint + theme collapse to dropdowns below 480px. */}
+      <div
+        ref={toolbarRef}
+        className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2"
+        role="toolbar"
+        aria-label="Design preview toolbar"
+      >
+        {/* Breakpoints */}
+        {collapseToDropdowns ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                aria-label={`Breakpoint: ${activeBreakpointMeta.name}`}
+                title={`Breakpoint: ${activeBreakpointMeta.name}`}
+              >
+                {activeBreakpointIcon}
+                <span className="capitalize">{activeBreakpointMeta.name}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" role="group" aria-label="Preview breakpoints">
+              <DropdownMenuLabel>Breakpoint</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {DESIGN_BREAKPOINTS.map((bp) => (
+                <DropdownMenuItem
+                  key={bp.name}
+                  onSelect={() => setBreakpoint(bp)}
+                  aria-pressed={selectedBreakpoint.name === bp.name}
+                  className="gap-1.5"
+                >
+                  {BREAKPOINT_ICONS[bp.name]}
+                  <span className="capitalize">{bp.name}</span>
+                  {bp.width > 0 && (
+                    <span className="ml-auto text-xs opacity-60">{bp.width}px</span>
+                  )}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div
+            className="flex items-center gap-2"
+            role="group"
+            aria-label="Preview breakpoints"
+          >
+            {DESIGN_BREAKPOINTS.map((bp) => (
+              <Button
+                key={bp.name}
+                variant={selectedBreakpoint.name === bp.name ? "default" : "ghost"}
+                size="sm"
+                aria-pressed={selectedBreakpoint.name === bp.name}
+                aria-label={bp.width ? `${bp.name} breakpoint (${bp.width}px)` : `${bp.name} mode`}
+                title={bp.width ? `${bp.name} (${bp.width}px)` : bp.name}
+                onClick={() => setBreakpoint(bp)}
+                className="gap-1.5"
+              >
+                {BREAKPOINT_ICONS[bp.name]}
+                {showLabels && <span className="capitalize">{bp.name}</span>}
+                {showLabels && bp.width > 0 && (
+                  <span className="text-xs opacity-60">{bp.width}px</span>
+                )}
+              </Button>
+            ))}
+          </div>
+        )}
+
+        <div className="mx-1 h-5 w-px bg-border" />
+
+        {/* Tools — always rendered as buttons (never collapsed into a dropdown);
+            labels drop below `roomy`. */}
+        <div className="flex items-center gap-2" role="group" aria-label="Design tools">
           <Button
-            key={bp.name}
-            variant={selectedBreakpoint.name === bp.name ? "default" : "ghost"}
+            variant={inspectorEnabled ? "default" : "ghost"}
             size="sm"
-            role="tab"
-            aria-selected={selectedBreakpoint.name === bp.name}
-            aria-label={bp.width ? `${bp.name} breakpoint (${bp.width}px)` : `${bp.name} mode`}
-            onClick={() => setBreakpoint(bp)}
+            aria-label="Toggle element inspector"
+            aria-pressed={inspectorEnabled}
+            title="Inspect"
+            onClick={() => setActiveTool(activeTool === "inspect" ? null : "inspect")}
             className="gap-1.5"
           >
-            {BREAKPOINT_ICONS[bp.name]}
-            <span className="capitalize">{bp.name}</span>
-            {bp.width > 0 && <span className="text-xs opacity-60">{bp.width}px</span>}
+            <Crosshair className="h-4 w-4" />
+            {showLabels && <span>Inspect</span>}
           </Button>
-        ))}
-        <div className="mx-1 h-5 w-px bg-border" />
-        <Button
-          variant={inspectorEnabled ? "default" : "ghost"}
-          size="sm"
-          aria-label="Toggle element inspector"
-          aria-pressed={inspectorEnabled}
-          onClick={() => setActiveTool(activeTool === "inspect" ? null : "inspect")}
-          className="gap-1.5"
-        >
-          <Crosshair className="h-4 w-4" />
-          <span>Inspect</span>
-        </Button>
-        <div className="mx-1 h-5 w-px bg-border" />
-        <Button
-          variant={activeTool === "measure" ? "default" : "ghost"}
-          size="sm"
-          aria-label="Measure (M)"
-          aria-pressed={activeTool === "measure"}
-          title="Measure (M)"
-          onClick={() => setActiveTool(activeTool === "measure" ? null : "measure")}
-          className="gap-1.5"
-        >
-          <Ruler className="h-4 w-4" />
-          <span>Measure</span>
-        </Button>
-        <Button
-          variant={activeTool === "eyedropper" ? "default" : "ghost"}
-          size="sm"
-          aria-label="Pick color (I)"
-          aria-pressed={activeTool === "eyedropper"}
-          title="Pick color (I)"
-          onClick={() => setActiveTool(activeTool === "eyedropper" ? null : "eyedropper")}
-          className="gap-1.5"
-        >
-          <Pipette className="h-4 w-4" />
-          <span>Pick</span>
-        </Button>
-        <Button
-          variant={activeTool === "comment" ? "default" : "ghost"}
-          size="sm"
-          aria-label="Comment (C)"
-          aria-pressed={activeTool === "comment"}
-          title="Comment (C)"
-          onClick={() => setActiveTool(activeTool === "comment" ? null : "comment")}
-          className="gap-1.5"
-        >
-          <MessageSquare className="h-4 w-4" />
-          <span>Comment</span>
-        </Button>
-        <div className="mx-1 h-5 w-px bg-border" />
-        {PREVIEW_THEME_OPTIONS.map((option) => (
           <Button
-            key={option.value}
-            variant={previewTheme === option.value ? "default" : "ghost"}
+            variant={activeTool === "measure" ? "default" : "ghost"}
             size="sm"
-            aria-label={`${option.label} preview theme`}
-            aria-pressed={previewTheme === option.value}
-            onClick={() => setPreviewTheme(option.value)}
+            aria-label="Measure (M)"
+            aria-pressed={activeTool === "measure"}
+            title="Measure (M)"
+            onClick={() => setActiveTool(activeTool === "measure" ? null : "measure")}
             className="gap-1.5"
           >
-            {option.icon}
-            <span>{option.label}</span>
+            <Ruler className="h-4 w-4" />
+            {showLabels && <span>Measure</span>}
           </Button>
-        ))}
+          <Button
+            variant={activeTool === "eyedropper" ? "default" : "ghost"}
+            size="sm"
+            aria-label="Pick color (I)"
+            aria-pressed={activeTool === "eyedropper"}
+            title="Pick color (I)"
+            onClick={() => setActiveTool(activeTool === "eyedropper" ? null : "eyedropper")}
+            className="gap-1.5"
+          >
+            <Pipette className="h-4 w-4" />
+            {showLabels && <span>Pick</span>}
+          </Button>
+          <Button
+            variant={activeTool === "comment" ? "default" : "ghost"}
+            size="sm"
+            aria-label="Comment (C)"
+            aria-pressed={activeTool === "comment"}
+            title="Comment (C)"
+            onClick={() => setActiveTool(activeTool === "comment" ? null : "comment")}
+            className="gap-1.5"
+          >
+            <MessageSquare className="h-4 w-4" />
+            {showLabels && <span>Comment</span>}
+          </Button>
+        </div>
+
+        <div className="mx-1 h-5 w-px bg-border" />
+
+        {/* Theme selector */}
+        {collapseToDropdowns ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                aria-label={`Preview theme: ${activeThemeOption.label}`}
+                title={`Theme: ${activeThemeOption.label}`}
+              >
+                {activeThemeOption.icon}
+                <span>{activeThemeOption.label}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" role="group" aria-label="Preview theme">
+              <DropdownMenuLabel>Preview theme</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {PREVIEW_THEME_OPTIONS.map((option) => (
+                <DropdownMenuItem
+                  key={option.value}
+                  onSelect={() => setPreviewTheme(option.value)}
+                  aria-pressed={previewTheme === option.value}
+                  className="gap-1.5"
+                >
+                  {option.icon}
+                  <span>{option.label}</span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div className="flex items-center gap-2" role="group" aria-label="Preview theme">
+            {PREVIEW_THEME_OPTIONS.map((option) => (
+              <Button
+                key={option.value}
+                variant={previewTheme === option.value ? "default" : "ghost"}
+                size="sm"
+                aria-label={`${option.label} preview theme`}
+                aria-pressed={previewTheme === option.value}
+                title={`${option.label} theme`}
+                onClick={() => setPreviewTheme(option.value)}
+                className="gap-1.5"
+              >
+                {option.icon}
+                {showLabels && <span>{option.label}</span>}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Preview area — measured container */}

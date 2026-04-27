@@ -239,7 +239,9 @@ async function runHandler(
       const orderingIndex = await nextOrderingIndex(sessionId);
 
       const promptCustom: Record<string, unknown> = {};
-      if (prompt.metadata?.inspectContext) {
+      if (prompt.metadata?.designContext) {
+        promptCustom.designContext = prompt.metadata.designContext;
+      } else if (prompt.metadata?.inspectContext) {
         promptCustom.inspectContext = prompt.metadata.inspectContext;
       }
       if (prompt.metadata?.kind === "delegation_completion") {

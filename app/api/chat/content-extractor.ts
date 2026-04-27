@@ -14,6 +14,7 @@ import {
   reinsertPasteBlocks,
 } from "./content-sanitizer";
 import { sanitizeInspectMessageContext, buildInspectPromptText } from "@/lib/design/workspace/inspect-context";
+import { sanitizeDesignContext, formatDesignContextPrompt } from "@/lib/design/workspace/design-context";
 import { reconcileToolCallPairs, toModelToolResultOutput, normalizeToolCallInput } from "./tool-call-utils";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -92,6 +93,7 @@ type MessageInput = {
     custom?: {
       attachments?: AttachmentPathMetadata[];
       inspectContext?: unknown;
+      designContext?: unknown;
     };
   };
 };
@@ -520,15 +522,24 @@ export async function extractContent(
   convertUserImagesToBase64 = false,
   sessionId?: string,
 ): Promise<string | ModelContentPart[]> {
-  const inspectContext = sanitizeInspectMessageContext(msg.metadata?.custom?.inspectContext);
-  const inspectPromptText = buildInspectPromptText(inspectContext);
+  // Prefer the unified `designContext` payload (which carries inspect +
+  // measurements + colours) and fall back to the legacy `inspectContext` shape
+  // for messages saved before the unification.
+  const designContext = sanitizeDesignContext(msg.metadata?.custom?.designContext);
+  const designPromptText = formatDesignContextPrompt(designContext);
+  const legacyInspectContext = designContext
+    ? null
+    : sanitizeInspectMessageContext(msg.metadata?.custom?.inspectContext);
+  const legacyInspectPromptText = buildInspectPromptText(legacyInspectContext);
+  const designSidecarText = designPromptText ?? legacyInspectPromptText;
+
   const hasStructuredParts = Array.isArray(msg.parts) && msg.parts.length > 0;
   const hasMetadataAttachments = Array.isArray(msg.metadata?.custom?.attachments)
     && msg.metadata.custom.attachments.length > 0;
   const hasExperimentalAttachments = Array.isArray(msg.experimental_attachments)
     && msg.experimental_attachments.length > 0;
   const hasStructuredContent =
-    hasStructuredParts || hasMetadataAttachments || hasExperimentalAttachments || Boolean(inspectPromptText);
+    hasStructuredParts || hasMetadataAttachments || hasExperimentalAttachments || Boolean(designSidecarText);
   if (!hasStructuredContent) {
     const directContent = getStringContent(msg.content, sessionId);
     if (directContent) {
@@ -536,9 +547,9 @@ export async function extractContent(
     }
   }
 
-  if (inspectPromptText && !hasStructuredParts && !hasMetadataAttachments && !hasExperimentalAttachments) {
+  if (designSidecarText && !hasStructuredParts && !hasMetadataAttachments && !hasExperimentalAttachments) {
     const directContent = getStringContent(msg.content, sessionId);
-    return directContent ? `${inspectPromptText}\n\n${directContent}` : inspectPromptText;
+    return directContent ? `${designSidecarText}\n\n${directContent}` : designSidecarText;
   }
 
   const isUserMessage = msg.role === "user";
@@ -558,8 +569,8 @@ export async function extractContent(
     const contentParts: ModelContentPart[] = [];
     let hasExplicitTextPart = false;
 
-    if (inspectPromptText) {
-      contentParts.push({ type: "text", text: inspectPromptText });
+    if (designSidecarText) {
+      contentParts.push({ type: "text", text: designSidecarText });
     }
 
     for (const part of msg.parts) {
@@ -740,7 +751,7 @@ export async function extractContent(
       const isBase64Placeholder = trimmedDirectContent === BASE64_IMAGE_PLACEHOLDER;
       if (trimmedDirectContent && !isBase64Placeholder) {
         const directTextPart = { type: "text", text: trimmedDirectContent } satisfies ModelContentPart;
-        if (inspectPromptText && contentParts.length > 0) {
+        if (designSidecarText && contentParts.length > 0) {
           contentParts.splice(1, 0, directTextPart);
         } else {
           contentParts.unshift(directTextPart);
@@ -779,8 +790,8 @@ export async function extractContent(
     const seenAttachmentUrls = new Set<string>();
     const contentParts: ModelContentPart[] = [];
 
-    if (inspectPromptText) {
-      contentParts.push({ type: "text", text: inspectPromptText });
+    if (designSidecarText) {
+      contentParts.push({ type: "text", text: designSidecarText });
     }
 
     if (typeof msg.content === "string" && msg.content) {

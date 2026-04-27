@@ -3,6 +3,10 @@ import {
   buildInspectPromptText,
   sanitizeInspectMessageContext,
 } from "@/lib/design/workspace/inspect-context";
+import {
+  formatDesignContextPrompt,
+  sanitizeDesignContext,
+} from "@/lib/design/workspace/design-context";
 
 function sanitizeDelegationCompletionEntry(entry: LivePromptEntry): string {
   // The entry content already contains the full <delegation-result> XML
@@ -20,13 +24,23 @@ function buildDelegationCompletionInstruction(entries: LivePromptEntry[]): strin
 }
 
 function buildGenericInstructionText(entry: LivePromptEntry, index: number): string {
-  const inspectContext = sanitizeInspectMessageContext(entry.metadata?.inspectContext);
-  const inspectPromptText = buildInspectPromptText(inspectContext);
+  // Prefer the unified `designContext` (inspect + measurements + colours).
+  // Fall back to the legacy `inspectContext` shape for entries serialised
+  // before the unification.
+  const designContext = sanitizeDesignContext(entry.metadata?.designContext);
+  const designPromptText = formatDesignContextPrompt(designContext);
+  const legacyInspectPromptText = designContext
+    ? null
+    : buildInspectPromptText(
+        sanitizeInspectMessageContext(entry.metadata?.inspectContext),
+      );
+  const sidecarText = designPromptText ?? legacyInspectPromptText;
+
   const messageText = sanitizeLivePromptContent(entry.content);
   const lines = [`Instruction ${index + 1}:`];
 
-  if (inspectPromptText) {
-    lines.push(inspectPromptText);
+  if (sidecarText) {
+    lines.push(sidecarText);
   }
 
   lines.push(`Message: ${messageText}`);
