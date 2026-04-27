@@ -13,8 +13,12 @@ import {
   extractPasteBlocks,
   reinsertPasteBlocks,
 } from "./content-sanitizer";
-import { sanitizeInspectMessageContext, buildInspectPromptText } from "@/lib/design/workspace/inspect-context";
-import { sanitizeDesignContext, formatDesignContextPrompt } from "@/lib/design/workspace/design-context";
+import { sanitizeInspectMessageContext } from "@/lib/design/workspace/inspect-context";
+import {
+  formatDesignContextPrompt,
+  mergeDesignContext,
+  sanitizeDesignContext,
+} from "@/lib/design/workspace/design-context";
 import { reconcileToolCallPairs, toModelToolResultOutput, normalizeToolCallInput } from "./tool-call-utils";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -524,14 +528,16 @@ export async function extractContent(
 ): Promise<string | ModelContentPart[]> {
   // Prefer the unified `designContext` payload (which carries inspect +
   // measurements + colours) and fall back to the legacy `inspectContext` shape
-  // for messages saved before the unification.
-  const designContext = sanitizeDesignContext(msg.metadata?.custom?.designContext);
+  // for messages saved before the unification. When both fields co-exist we
+  // merge instead of branching: a measurements-only `designContext` would
+  // otherwise silently drop a populated legacy `inspectContext`.
+  const sanitizedDesign = sanitizeDesignContext(msg.metadata?.custom?.designContext);
+  const legacyInspect = sanitizeInspectMessageContext(msg.metadata?.custom?.inspectContext);
+  const designContext = mergeDesignContext(sanitizedDesign, { inspect: legacyInspect });
   const designPromptText = formatDesignContextPrompt(designContext);
-  const legacyInspectContext = designContext
-    ? null
-    : sanitizeInspectMessageContext(msg.metadata?.custom?.inspectContext);
-  const legacyInspectPromptText = buildInspectPromptText(legacyInspectContext);
-  const designSidecarText = designPromptText ?? legacyInspectPromptText;
+  // After merging, anything legacy carries is already inside `designContext`;
+  // no separate inspect sidecar text is needed.
+  const designSidecarText = designPromptText;
 
   const hasStructuredParts = Array.isArray(msg.parts) && msg.parts.length > 0;
   const hasMetadataAttachments = Array.isArray(msg.metadata?.custom?.attachments)

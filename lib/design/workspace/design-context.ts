@@ -13,8 +13,9 @@
  *   - Numeric fields are coerced to finite numbers (NaN/Infinity → 0).
  */
 import type { DesignComponent, Measurement, PickedColor } from "./types";
-import type { InspectMessageContext } from "./inspect-context";
+import type { InspectMessageContext, InspectSelection } from "./inspect-context";
 import {
+  MAX_INSPECT_SELECTIONS,
   buildInspectMessageContext,
   buildInspectPromptText,
   sanitizeInspectMessageContext,
@@ -26,6 +27,15 @@ const MAX_HEX_LEN = 16;
 const MAX_TAGNAME_LEN = 40;
 export const MAX_DESIGN_CONTEXT_MEASUREMENTS = 8;
 export const MAX_DESIGN_CONTEXT_COLORS = 8;
+
+/**
+ * Validates a CSS hex color string. Accepts `#rgb`, `#rrggbb`, and `#rrggbbaa`
+ * (case-insensitive). Used by the colour sanitiser to drop free-form strings
+ * (e.g. `"banana"`, `"red"`, `"#xyz"`) before they reach the LLM prompt.
+ */
+export function isValidHex(hex: string): boolean {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(hex);
+}
 
 export interface DesignContextMeasurement {
   id: string;
@@ -98,6 +108,11 @@ function buildColorContext(c: PickedColor): DesignContextColor | null {
   const selector = clampStr(c.element?.selector, MAX_SELECTOR_LEN);
   const tagName = clampStr(c.element?.tagName, MAX_TAGNAME_LEN);
   if (!hex || !selector) return null;
+  // Mirror the sanitiser: drop colours whose hex doesn't match the regex.
+  // Anything reaching this function should already be well-formed (it comes
+  // from the in-app colour-pick flow), but the guard prevents stale store
+  // entries from leaking into the LLM prompt.
+  if (!isValidHex(hex)) return null;
   return {
     id: clampStr(c.id, 64) || `c-${hex}-${selector}`,
     hex,
@@ -205,6 +220,11 @@ export function sanitizeDesignContext(value: unknown): DesignMessageContext | nu
           const hex = clampStr(candidate.hex, MAX_HEX_LEN);
           const selector = clampStr(candidate.selector, MAX_SELECTOR_LEN);
           if (!hex || !selector) return null;
+          // Drop free-form strings (e.g. "banana", "red", "#xyz") before they
+          // can reach `formatDesignContextPrompt`. We never coerce to a
+          // fallback colour — silently swapping bad input for `#000000`
+          // would hide the upstream bug.
+          if (!isValidHex(hex)) return null;
           const allowedSources: ReadonlyArray<PickedColor["source"]> = [
             "background",
             "foreground",
@@ -253,6 +273,63 @@ export function sanitizeDesignContext(value: unknown): DesignMessageContext | nu
     measurements: measurements.length > 0 ? measurements : undefined,
     pickedColors: pickedColors.length > 0 ? pickedColors : undefined,
   };
+}
+
+/**
+ * Merge a unified `DesignMessageContext` with a legacy standalone
+ * `InspectMessageContext`.
+ *
+ * Older clients posted `metadata.custom.inspectContext` only; current clients
+ * post `metadata.custom.designContext` (which carries inspect + measurements +
+ * colours together). During the transition both fields can co-exist, and a
+ * naive "designContext wins, ignore legacy" branch silently dropped the
+ * legacy inspect data when the new payload happened to omit its inspect
+ * section (e.g. a measurements-only `designContext`). This helper preserves
+ * the legacy inspect data in that case so no context is lost.
+ *
+ * Rules:
+ *   - both null → null
+ *   - primary null, legacy non-empty → wrap legacy.inspect in a fresh design
+ *     context (same shape callers further down the pipe expect)
+ *   - primary has inspect → primary unchanged (designContext wins)
+ *   - primary missing/empty inspect, legacy has inspect → primary with
+ *     legacy.inspect spliced in
+ *   - otherwise → primary unchanged
+ *
+ * Inspect selections are capped at `MAX_INSPECT_SELECTIONS` to mirror the
+ * cap applied at build time.
+ */
+export function mergeDesignContext(
+  primary: DesignMessageContext | null,
+  legacy: { inspect?: InspectMessageContext | null } | null,
+): DesignMessageContext | null {
+  const legacyInspect = legacy?.inspect ?? null;
+  const legacyHasElements = !!legacyInspect && legacyInspect.elements.length > 0;
+
+  if (!primary) {
+    if (!legacyHasElements) return null;
+    const elements: InspectSelection[] = legacyInspect!.elements.slice(0, MAX_INSPECT_SELECTIONS);
+    return {
+      version: DESIGN_CONTEXT_VERSION,
+      source: "design-workspace",
+      sessionId: legacyInspect!.sessionId,
+      componentId: legacyInspect!.componentId,
+      componentName: legacyInspect!.componentName,
+      capturedAt: legacyInspect!.selectedAt,
+      inspect: { ...legacyInspect!, elements },
+    };
+  }
+
+  const primaryInspectEmpty = !primary.inspect || primary.inspect.elements.length === 0;
+  if (primaryInspectEmpty && legacyHasElements) {
+    const elements: InspectSelection[] = legacyInspect!.elements.slice(0, MAX_INSPECT_SELECTIONS);
+    return {
+      ...primary,
+      inspect: { ...legacyInspect!, elements },
+    };
+  }
+
+  return primary;
 }
 
 /**

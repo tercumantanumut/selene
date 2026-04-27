@@ -114,4 +114,52 @@ describe("validateMeasurementsSync (parent -> iframe)", () => {
       }),
     ).toBeNull();
   });
+
+  // Defence-in-depth shape-drift cases the *parent* could accidentally
+  // produce when refactoring the message shape. The outbound post sites in
+  // `components/design/design-preview-frame.tsx` now run the envelope
+  // through this validator before posting; these tests pin down the
+  // rejected shapes so a future shape change can't sneak past.
+  describe("rejects shapes the parent could accidentally produce", () => {
+    it("rejects { kind: 'bootstrap', payload: undefined } (wrong field names)", () => {
+      expect(
+        validateMeasurementsSync({ kind: "bootstrap", payload: undefined }),
+      ).toBeNull();
+    });
+
+    it("rejects { kind: 'diff', payload: { ... } } (no `type` field)", () => {
+      expect(
+        validateMeasurementsSync({
+          kind: "diff",
+          payload: { added: [], removed: [], updated: [] },
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects diff where `updated` is the wrong type", () => {
+      expect(
+        validateMeasurementsSync({
+          type: "selene-tool-measurements-sync",
+          diff: { added: [], removed: [], updated: "wrong-type" },
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects an envelope with no bootstrap and no diff", () => {
+      expect(
+        validateMeasurementsSync({
+          type: "selene-tool-measurements-sync",
+        }),
+      ).toBeNull();
+    });
+
+    it("rejects diff with non-array `added`", () => {
+      expect(
+        validateMeasurementsSync({
+          type: "selene-tool-measurements-sync",
+          diff: { added: "nope", removed: [], updated: [] },
+        }),
+      ).toBeNull();
+    });
+  });
 });

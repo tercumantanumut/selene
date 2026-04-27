@@ -1,10 +1,10 @@
 import type { LivePromptEntry } from "./live-prompt-queue-registry";
 import {
-  buildInspectPromptText,
   sanitizeInspectMessageContext,
 } from "@/lib/design/workspace/inspect-context";
 import {
   formatDesignContextPrompt,
+  mergeDesignContext,
   sanitizeDesignContext,
 } from "@/lib/design/workspace/design-context";
 
@@ -24,17 +24,14 @@ function buildDelegationCompletionInstruction(entries: LivePromptEntry[]): strin
 }
 
 function buildGenericInstructionText(entry: LivePromptEntry, index: number): string {
-  // Prefer the unified `designContext` (inspect + measurements + colours).
-  // Fall back to the legacy `inspectContext` shape for entries serialised
-  // before the unification.
-  const designContext = sanitizeDesignContext(entry.metadata?.designContext);
-  const designPromptText = formatDesignContextPrompt(designContext);
-  const legacyInspectPromptText = designContext
-    ? null
-    : buildInspectPromptText(
-        sanitizeInspectMessageContext(entry.metadata?.inspectContext),
-      );
-  const sidecarText = designPromptText ?? legacyInspectPromptText;
+  // Merge the unified `designContext` (inspect + measurements + colours)
+  // with any legacy standalone `inspectContext`. A measurements-only design
+  // payload would otherwise silently drop a populated legacy inspect when
+  // both fields co-exist.
+  const sanitizedDesign = sanitizeDesignContext(entry.metadata?.designContext);
+  const legacyInspect = sanitizeInspectMessageContext(entry.metadata?.inspectContext);
+  const designContext = mergeDesignContext(sanitizedDesign, { inspect: legacyInspect });
+  const sidecarText = formatDesignContextPrompt(designContext);
 
   const messageText = sanitizeLivePromptContent(entry.content);
   const lines = [`Instruction ${index + 1}:`];

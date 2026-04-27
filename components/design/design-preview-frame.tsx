@@ -35,7 +35,10 @@ import type {
   Measurement,
   PickedColor,
 } from "@/lib/design/workspace/types";
-import { validateIframeMessage } from "@/lib/design/workspace/iframe-messages";
+import {
+  validateIframeMessage,
+  validateMeasurementsSync,
+} from "@/lib/design/workspace/iframe-messages";
 
 const BREAKPOINT_ICONS: Record<string, ReactNode> = {
   responsive: <Maximize className="h-4 w-4" />,
@@ -520,7 +523,16 @@ export function DesignPreviewFrame() {
     if (diff.added.length === 0 && diff.removed.length === 0 && diff.updated.length === 0) {
       return;
     }
-    postToIframe({ type: "selene-tool-measurements-sync", diff });
+    // Defence-in-depth: assert the envelope shape before posting so we
+    // never send a malformed sync that the iframe handler would silently
+    // drop. Skip the post (and the snapshot update) on validation miss so
+    // the next diff cycle retries against the same baseline.
+    const envelope = { type: "selene-tool-measurements-sync" as const, diff };
+    if (!validateMeasurementsSync(envelope)) {
+      console.warn("[DesignPreviewFrame] dropped invalid measurements-sync diff");
+      return;
+    }
+    postToIframe(envelope);
     const snapshot = new Map<string, Measurement>();
     for (const m of next) snapshot.set(m.id, m);
     lastSyncedMeasurementsRef.current = snapshot;
@@ -548,7 +560,16 @@ export function DesignPreviewFrame() {
       }
       pendingMeasurementsRef.current = null;
       lastSyncedMeasurementsRef.current = new Map();
-      postToIframe({ type: "selene-tool-measurements-sync", bootstrap: list });
+      // Same defence-in-depth as `flushMeasurementsDiff`: validate the
+      // bootstrap envelope before posting. On miss, skip the send and
+      // leave `lastSyncedMeasurementsRef` empty so the next diff cycle
+      // resyncs against an empty baseline (matching the iframe's view).
+      const envelope = { type: "selene-tool-measurements-sync" as const, bootstrap: list };
+      if (!validateMeasurementsSync(envelope)) {
+        console.warn("[DesignPreviewFrame] dropped invalid measurements-sync bootstrap");
+        return;
+      }
+      postToIframe(envelope);
       const snapshot = new Map<string, Measurement>();
       for (const m of list) snapshot.set(m.id, m);
       lastSyncedMeasurementsRef.current = snapshot;

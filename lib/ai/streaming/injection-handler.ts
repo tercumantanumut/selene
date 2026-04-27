@@ -31,6 +31,7 @@
 import { createMessage, updateMessage } from "@/lib/db/queries";
 import { nextOrderingIndex } from "@/lib/session/message-ordering";
 import type { LivePromptEntry } from "@/lib/background-tasks/live-prompt-queue-registry";
+import { mergeDesignContext } from "@/lib/design/workspace/design-context";
 import {
   emitInjectedUserMessageChunk,
   type InjectedUserMessagePayload,
@@ -239,10 +240,15 @@ async function runHandler(
       const orderingIndex = await nextOrderingIndex(sessionId);
 
       const promptCustom: Record<string, unknown> = {};
-      if (prompt.metadata?.designContext) {
-        promptCustom.designContext = prompt.metadata.designContext;
-      } else if (prompt.metadata?.inspectContext) {
-        promptCustom.inspectContext = prompt.metadata.inspectContext;
+      // Merge legacy `inspectContext` into the unified `designContext` so a
+      // measurements-only design payload doesn't drop a populated legacy
+      // inspect on persistence.
+      const merged = mergeDesignContext(
+        prompt.metadata?.designContext ?? null,
+        { inspect: prompt.metadata?.inspectContext ?? null },
+      );
+      if (merged) {
+        promptCustom.designContext = merged;
       }
       if (prompt.metadata?.kind === "delegation_completion") {
         if (prompt.metadata.delegationId) {

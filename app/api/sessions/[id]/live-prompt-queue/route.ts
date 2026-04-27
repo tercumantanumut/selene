@@ -10,7 +10,7 @@ import {
   sanitizeLivePromptContent,
 } from "@/lib/background-tasks/live-prompt-helpers";
 import { sanitizeInspectMessageContext } from "@/lib/design/workspace/inspect-context";
-import { sanitizeDesignContext } from "@/lib/design/workspace/design-context";
+import { mergeDesignContext, sanitizeDesignContext } from "@/lib/design/workspace/design-context";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -41,13 +41,14 @@ export async function POST(req: Request, { params }: RouteParams) {
     }
 
     const { content } = body;
-    // Prefer the unified `designContext` (carries inspect + measurements +
-    // colours). Legacy clients may still post `inspectContext`; sanitize that
-    // and drop it on the metadata too so old replays don't lose context.
-    const designContext = sanitizeDesignContext(body.designContext);
-    const inspectContext = designContext
-      ? null
-      : sanitizeInspectMessageContext(body.inspectContext);
+    // Merge the unified `designContext` with any legacy `inspectContext`.
+    // Old clients post `inspectContext` only; current clients post
+    // `designContext`. When both are present, branching ("designContext
+    // wins") used to silently drop a populated legacy inspect when the new
+    // payload happened to lack its inspect section. Merging preserves it.
+    const sanitizedDesign = sanitizeDesignContext(body.designContext);
+    const legacyInspect = sanitizeInspectMessageContext(body.inspectContext);
+    const designContext = mergeDesignContext(sanitizedDesign, { inspect: legacyInspect });
 
     if (!content || typeof content !== "string" || !content.trim()) {
       return NextResponse.json({ error: "content is required" }, { status: 400 });
@@ -57,11 +58,7 @@ export async function POST(req: Request, { params }: RouteParams) {
     const stopIntent = hasStopIntent(sanitized);
     const entryId = `live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const metadata = designContext
-      ? { designContext }
-      : inspectContext
-        ? { inspectContext }
-        : undefined;
+    const metadata = designContext ? { designContext } : undefined;
 
     // appendToLivePromptQueueBySession resolves the active runId from the session index.
     // Returns false when no active run exists for this session — O(1), no DB round-trip.

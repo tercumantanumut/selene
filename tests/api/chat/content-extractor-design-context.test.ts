@@ -118,11 +118,13 @@ describe("extractContent — designContext integration", () => {
     expect(text).not.toContain("[Colors]");
   });
 
-  it("designContext wins when both designContext and inspectContext are present", async () => {
+  it("dual-payload merge: designContext lacks inspect → legacy inspectContext is merged in (not dropped)", async () => {
     // Build a design context that ONLY carries a measurement (no inspect),
-    // alongside a legacy inspectContext. The unified payload should take
-    // priority and the legacy one should be ignored — preventing two
-    // overlapping inspect blocks in the prompt.
+    // alongside a legacy inspectContext. Previously the branch behaviour
+    // ("designContext wins, legacy ignored") silently dropped the legacy
+    // inspect data. The merge helper preserves it: the prompt block now
+    // surfaces BOTH the measurement (from primary) and the inspect (from
+    // legacy) without duplicating sections.
     const designContext = buildDesignContext({
       inspect: null,
       measurements: [makeMeasurement()],
@@ -145,9 +147,65 @@ describe("extractContent — designContext integration", () => {
 
     expect(typeof result).toBe("string");
     const text = result as string;
-    // The designContext branch wins → measurements present, inspect absent.
+    // Both sections must appear after the merge — neither side is dropped.
     expect(text).toContain("[Measurements]");
-    expect(text).not.toContain("[Inspect");
+    expect(text).toContain("[Inspect");
+    // Inspect appears only once (no duplication).
+    const inspectMatches = text.match(/\[Inspect/g) ?? [];
+    expect(inspectMatches.length).toBe(1);
+  });
+
+  it("dual-payload merge: designContext already has inspect → primary wins, legacy ignored", async () => {
+    // When the unified payload carries its own inspect data, we keep it as
+    // the source of truth and discard the legacy. This pins the precedence
+    // rule.
+    const designContext = buildDesignContext({
+      inspect: makeInspect(),
+      measurements: [makeMeasurement()],
+      pickedColors: [],
+      component: { id: "comp-1", name: "Hero" },
+      sessionId: "s1",
+    });
+
+    // Build a *different* legacy inspect so we can detect which one wins.
+    const legacy = buildInspectMessageContext({
+      selectedElements: [
+        {
+          id: "footer",
+          selector: "#footer",
+          tagName: "footer",
+          className: "site-footer",
+          textContent: "Bye",
+          boundingRect: { x: 0, y: 200, width: 100, height: 50 },
+          computedStyles: {
+            width: "100px",
+            height: "50px",
+            padding: "0",
+            margin: "0",
+            display: "block",
+            position: "static",
+            color: "rgb(0, 0, 0)",
+            backgroundColor: "rgb(255, 255, 255)",
+            fontSize: "16px",
+            fontFamily: "sans-serif",
+          },
+        },
+      ],
+      component: { id: "comp-2", name: "Footer" },
+      sessionId: "s1",
+    });
+
+    const result = await extractContent({
+      role: "user",
+      content: "Done?",
+      metadata: { custom: { designContext, inspectContext: legacy } },
+    });
+
+    expect(typeof result).toBe("string");
+    const text = result as string;
+    // Primary inspect (#hero) wins; legacy inspect (#footer) is discarded.
+    expect(text).toContain("#hero");
+    expect(text).not.toContain("#footer");
   });
 
   it("snapshot of the full formatted prompt block locks in size/shape", async () => {

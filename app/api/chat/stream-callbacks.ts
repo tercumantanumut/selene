@@ -24,6 +24,7 @@ import { nextOrderingIndex } from "@/lib/session/message-ordering";
 import { addDelegationCompletion } from "@/lib/ai/tools/delegation-completion-store";
 import { runStopHooks } from "@/lib/plugins/hook-integration";
 import { buildInterruptionMessage, buildInterruptionMetadata } from "@/lib/messages/interruption";
+import { mergeDesignContext } from "@/lib/design/workspace/design-context";
 import type { DBContentPart } from "@/lib/messages/converter";
 import {
   type StepLike,
@@ -98,10 +99,15 @@ export async function handleUndrainedQueueMessages(
     try {
       const orderingIndex = await nextOrderingIndex(sessionId);
       const promptCustom: Record<string, unknown> = {};
-      if (entry.metadata?.designContext) {
-        promptCustom.designContext = entry.metadata.designContext;
-      } else if (entry.metadata?.inspectContext) {
-        promptCustom.inspectContext = entry.metadata.inspectContext;
+      // Merge legacy `inspectContext` into the unified `designContext` so a
+      // measurements-only design payload doesn't drop a populated legacy
+      // inspect on persistence.
+      const merged = mergeDesignContext(
+        entry.metadata?.designContext ?? null,
+        { inspect: entry.metadata?.inspectContext ?? null },
+      );
+      if (merged) {
+        promptCustom.designContext = merged;
       }
 
       await createMessage({
