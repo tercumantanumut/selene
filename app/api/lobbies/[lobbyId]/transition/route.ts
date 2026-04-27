@@ -1,0 +1,179 @@
+/**
+ * Route 5 — Lobby state transition.
+ *
+ *   POST /api/lobbies/:lobbyId/transition
+ *     { action: "ready_roster" | "accept_plan" | "enter_review"
+ *             | "start_synthesis" | "complete_synthesis"
+ *             | "abort",
+ *       expectedVersion: number,
+ *       ...action-specific params }
+ *
+ * The action discriminator selects which `transitionLobby...` service to
+ * invoke. Service layer enforces every guard from SPEC §5.
+ *
+ * Note: `planner_succeeded` is NOT exposed here — it's an internal
+ * orchestrator transition triggered from the planner's run completion
+ * callback (see Sprint 4).
+ */
+
+import { z } from "zod";
+
+import {
+  completeSynthesis,
+  transitionLobbyAbort,
+  transitionLobbyAcceptPlan,
+  transitionLobbyEnterReview,
+  transitionLobbyReadyRoster,
+  transitionLobbyStartSynthesis,
+} from "@/lib/lobbies/services";
+import {
+  assertLobbyOwnershipAndVersion,
+  errorResponse,
+  expectedVersionField,
+  isAuthResponse,
+  mapMutationResult,
+  parseBody,
+  permissionScopeV1Schema,
+  withLobbyAuth,
+} from "@/lib/lobbies/api-helpers";
+
+type RouteParams = { params: Promise<{ lobbyId: string }> };
+
+// ---------------------------------------------------------------------------
+// Body schemas — one per action so zod can do structural validation.
+// ---------------------------------------------------------------------------
+
+const baseFields = {
+  expectedVersion: expectedVersionField,
+};
+
+const transitionBodySchema = z.discriminatedUnion("action", [
+  z.object({
+    ...baseFields,
+    action: z.literal("ready_roster"),
+    plannerScope: permissionScopeV1Schema.optional(),
+    plannerCharacterId: z.string().min(1).optional(),
+  }),
+  z.object({
+    ...baseFields,
+    action: z.literal("accept_plan"),
+  }),
+  z.object({
+    ...baseFields,
+    action: z.literal("enter_review"),
+  }),
+  z.object({
+    ...baseFields,
+    action: z.literal("start_synthesis"),
+    synthesizerScope: permissionScopeV1Schema.optional(),
+    synthesizerCharacterId: z.string().min(1).optional(),
+  }),
+  z.object({
+    ...baseFields,
+    action: z.literal("complete_synthesis"),
+    synthesisRunId: z.string().min(1),
+    /**
+     * SPEC §5: complete_synthesis stores the final artifact id on the
+     * lobby. The orchestration layer (Sprint 4) creates the artifact and
+     * passes its id here. Required.
+     */
+    outputArtifactId: z.string().min(1),
+  }),
+  z.object({
+    ...baseFields,
+    action: z.literal("abort"),
+    /**
+     * SPEC §5: cancel = stop now; wait = drain then stop; abandon =
+     * mark aborted and ignore late callbacks.
+     */
+    mode: z.enum(["cancel", "wait", "abandon"]).default("cancel"),
+    reason: z.string().max(500).optional(),
+  }),
+]);
+
+// ---------------------------------------------------------------------------
+
+export async function POST(req: Request, { params }: RouteParams) {
+  const ctx = await withLobbyAuth(req);
+  if (isAuthResponse(ctx)) return ctx;
+
+  try {
+    const { lobbyId } = await params;
+    const parsed = await parseBody(req, transitionBodySchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data;
+
+    switch (body.action) {
+      case "ready_roster": {
+        const result = await transitionLobbyReadyRoster({
+          lobbyId,
+          userId: ctx.userId,
+          expectedLobbyVersion: body.expectedVersion,
+          plannerScope: body.plannerScope,
+          plannerCharacterId: body.plannerCharacterId,
+        });
+        return mapMutationResult(result);
+      }
+      case "accept_plan": {
+        const result = await transitionLobbyAcceptPlan({
+          lobbyId,
+          userId: ctx.userId,
+          expectedLobbyVersion: body.expectedVersion,
+        });
+        return mapMutationResult(result);
+      }
+      case "enter_review": {
+        // The service layer doesn't take userId/expectedVersion (it's
+        // shared with the orchestrator). Gate ownership + version here.
+        const ownership = await assertLobbyOwnershipAndVersion({
+          lobbyId,
+          userId: ctx.userId,
+          expectedVersion: body.expectedVersion,
+        });
+        if (!ownership.ok) return ownership.response;
+        const result = await transitionLobbyEnterReview({
+          lobbyId,
+          actorUserId: ctx.userId,
+        });
+        return mapMutationResult(result);
+      }
+      case "start_synthesis": {
+        const result = await transitionLobbyStartSynthesis({
+          lobbyId,
+          userId: ctx.userId,
+          expectedLobbyVersion: body.expectedVersion,
+          synthesizerScope: body.synthesizerScope,
+          synthesizerCharacterId: body.synthesizerCharacterId,
+        });
+        return mapMutationResult(result);
+      }
+      case "complete_synthesis": {
+        // Same shared-with-orchestrator caveat as enter_review.
+        const ownership = await assertLobbyOwnershipAndVersion({
+          lobbyId,
+          userId: ctx.userId,
+          expectedVersion: body.expectedVersion,
+        });
+        if (!ownership.ok) return ownership.response;
+        const result = await completeSynthesis({
+          lobbyId,
+          synthesisRunId: body.synthesisRunId,
+          outputArtifactId: body.outputArtifactId,
+        });
+        return mapMutationResult(result);
+      }
+      case "abort": {
+        const result = await transitionLobbyAbort({
+          lobbyId,
+          userId: ctx.userId,
+          expectedLobbyVersion: body.expectedVersion,
+          mode: body.mode,
+          reason: body.reason,
+        });
+        return mapMutationResult(result);
+      }
+    }
+  } catch (error) {
+    return errorResponse(error, "Failed to transition lobby");
+  }
+}

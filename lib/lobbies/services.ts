@@ -157,6 +157,164 @@ export function findDependencyCycle(
 }
 
 // ---------------------------------------------------------------------------
+// Replace dependencies + cycle check (transactional)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sentinel thrown from inside the cycle-checked dep replacement to roll
+ * back the transaction. Caught at the boundary and converted to a
+ * structured `INVARIANT_VIOLATION` envelope.
+ */
+export class DependencyCycleError extends Error {
+  constructor(public readonly cycle: string[]) {
+    super(`Dependency cycle detected: ${cycle.join(" -> ")}`);
+    this.name = "DependencyCycleError";
+  }
+}
+
+/**
+ * Atomically replace a card's dependency list AND verify the resulting
+ * graph stays acyclic. The two operations MUST happen in the same
+ * transaction; otherwise a concurrent reader could observe a transient
+ * cyclic state, and rolling back via a follow-up "restore" write opens a
+ * write-skew window.
+ *
+ * Guards (SPEC §3 #6/#13):
+ *   - card belongs to lobby,
+ *   - no self-dependency,
+ *   - all `dependsOnCardId` belong to the same lobby,
+ *   - resulting graph is acyclic.
+ *
+ * Cycle detection runs against the projected post-swap graph; on a cycle
+ * we throw `DependencyCycleError` to roll back the in-tx DELETE and
+ * convert it to `INVARIANT_VIOLATION` outside the transaction.
+ *
+ * Note: dependency edits don't emit a dedicated `dependencies.replaced`
+ * event in V1 (the next state-affecting transition will fire its own
+ * event). Add one here later if the UI needs to react in real time.
+ */
+export async function replaceDependenciesForCardWithCycleCheck(input: {
+  lobbyId: string;
+  cardId: string;
+  dependencies: Array<{ dependsOnCardId: string; optional?: boolean }>;
+}): Promise<MutationResult<LobbyCardDependency[]>> {
+  try {
+    return db.transaction((tx): MutationResult<LobbyCardDependency[]> => {
+      const [card] = tx
+        .select()
+        .from(lobbyCards)
+        .where(
+          and(
+            eq(lobbyCards.id, input.cardId),
+            eq(lobbyCards.lobbyId, input.lobbyId),
+          ),
+        )
+        .limit(1)
+        .all();
+      if (!card) {
+        return {
+          ok: false,
+          reason: "NOT_FOUND",
+          message: `Card ${input.cardId} not found in lobby ${input.lobbyId}.`,
+        };
+      }
+
+      // Self-dependency check.
+      for (const dep of input.dependencies) {
+        if (dep.dependsOnCardId === input.cardId) {
+          return {
+            ok: false,
+            reason: "INVARIANT_VIOLATION",
+            message: `Card ${input.cardId} cannot depend on itself.`,
+          };
+        }
+      }
+
+      // Same-lobby check for every target.
+      if (input.dependencies.length > 0) {
+        const ids = input.dependencies.map((d) => d.dependsOnCardId);
+        const targets = tx
+          .select()
+          .from(lobbyCards)
+          .where(
+            and(
+              eq(lobbyCards.lobbyId, input.lobbyId),
+              inArray(lobbyCards.id, ids),
+            ),
+          )
+          .all();
+        if (targets.length !== new Set(ids).size) {
+          return {
+            ok: false,
+            reason: "INVARIANT_VIOLATION",
+            message:
+              "One or more dependency targets are not cards in the same lobby.",
+          };
+        }
+      }
+
+      // Drop existing deps for this card so the cycle check sees the
+      // candidate post-swap graph.
+      tx.delete(lobbyCardDependencies)
+        .where(eq(lobbyCardDependencies.cardId, input.cardId))
+        .run();
+
+      const remainingDeps = tx
+        .select()
+        .from(lobbyCardDependencies)
+        .where(eq(lobbyCardDependencies.lobbyId, input.lobbyId))
+        .all();
+
+      const projectedDeps = [
+        ...remainingDeps,
+        ...input.dependencies.map((d) => ({
+          cardId: input.cardId,
+          dependsOnCardId: d.dependsOnCardId,
+        })),
+      ];
+
+      const allCards = tx
+        .select({ id: lobbyCards.id })
+        .from(lobbyCards)
+        .where(eq(lobbyCards.lobbyId, input.lobbyId))
+        .all();
+
+      const cycle = findDependencyCycle(allCards, projectedDeps);
+      if (cycle) {
+        // Throw to roll back the DELETE we already issued.
+        throw new DependencyCycleError(cycle);
+      }
+
+      const inserted: LobbyCardDependency[] = [];
+      for (const dep of input.dependencies) {
+        const [row] = tx
+          .insert(lobbyCardDependencies)
+          .values({
+            lobbyId: input.lobbyId,
+            cardId: input.cardId,
+            dependsOnCardId: dep.dependsOnCardId,
+            optional: dep.optional ?? false,
+          })
+          .returning()
+          .all();
+        inserted.push(row);
+      }
+
+      return { ok: true, row: inserted };
+    });
+  } catch (err) {
+    if (err instanceof DependencyCycleError) {
+      return {
+        ok: false,
+        reason: "INVARIANT_VIOLATION",
+        message: err.message,
+      };
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Card readiness recomputation
 // ---------------------------------------------------------------------------
 
