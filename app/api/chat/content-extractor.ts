@@ -35,6 +35,33 @@ const MAX_BASE64_BYTES = 4.5 * 1024 * 1024;
 const BASE64_OVERHEAD = 1.37;
 const MAX_ATTACHMENT_TEXT_CHARS = 20_000;
 
+// --- @-mention v2 (vector-aware mentions) ---------------------------------
+// Each mention contributes either (a) a single semantic chunk pulled from
+// the vector index, or (b) the entire small file the user picked. The full
+// list is capped per-message to stay under context-window budgets.
+const MAX_VECTOR_MENTION_SNIPPET_CHARS = 4_000;
+const MAX_VECTOR_MENTION_FILE_CHARS = 20_000;
+const MAX_VECTOR_MENTION_TOTAL_CHARS = 60_000;
+
+type VectorMentionSnippet = {
+  text: string;
+  startLine?: number;
+  endLine?: number;
+  score?: number;
+  chunkIndex?: number;
+};
+
+type VectorMention = {
+  id?: string;
+  kind: "file" | "chunk";
+  characterId?: string;
+  folderId?: string;
+  relativePath: string;
+  filePath?: string;
+  displayLabel?: string;
+  snippet?: VectorMentionSnippet;
+};
+
 type AttachmentPathMetadata = {
   name?: string;
   contentType?: string;
@@ -98,6 +125,7 @@ type MessageInput = {
       attachments?: AttachmentPathMetadata[];
       inspectContext?: unknown;
       designContext?: unknown;
+      vectorMentions?: VectorMention[];
     };
   };
 };
@@ -520,6 +548,114 @@ function pushToolCallAndResult(
   }
 }
 
+/**
+ * Format a single vector @-mention into a text content part.
+ *
+ * Mirrors `formatDocumentAttachmentContext` so the LLM sees the same
+ * `[…]\n<text>` shape that document attachments produce. The marker line
+ * doubles as a citation hint — models will routinely reference the path
+ * back when summarising.
+ */
+function formatVectorMentionText(
+  mention: VectorMention,
+  resolvedText: string,
+): string {
+  const range =
+    mention.snippet?.startLine != null && mention.snippet?.endLine != null
+      ? `:L${mention.snippet.startLine}-${mention.snippet.endLine}`
+      : "";
+  const kindLabel = mention.kind === "file" ? "Vector file" : "Vector chunk";
+  const header = `[${kindLabel}: ${mention.relativePath}${range}]`;
+  return `${header}\n${resolvedText}`;
+}
+
+/**
+ * Resolve a vector @-mention to the literal text the LLM should see.
+ *
+ * - kind="chunk": use the snippet text the picker captured at compose-time.
+ * - kind="file":  read the file from disk (capped) when an absolute path is
+ *                 known. If reading fails, fall back to the snippet (if any),
+ *                 then to a stub line.
+ *
+ * Each mention is independently capped; the caller enforces a per-message
+ * total budget.
+ */
+async function resolveVectorMentionText(mention: VectorMention): Promise<string | null> {
+  if (mention.kind === "chunk") {
+    const text = mention.snippet?.text?.trim();
+    if (!text) return null;
+    return text.length > MAX_VECTOR_MENTION_SNIPPET_CHARS
+      ? `${text.slice(0, MAX_VECTOR_MENTION_SNIPPET_CHARS)}\n…[snippet truncated]`
+      : text;
+  }
+
+  // kind === "file"
+  if (mention.filePath) {
+    try {
+      const raw = await fs.readFile(mention.filePath, "utf8");
+      if (raw.length > MAX_VECTOR_MENTION_FILE_CHARS) {
+        return `${raw.slice(0, MAX_VECTOR_MENTION_FILE_CHARS)}\n…[file truncated at ${MAX_VECTOR_MENTION_FILE_CHARS} chars]`;
+      }
+      return raw;
+    } catch (err) {
+      console.warn(`[extractContent] vector mention file read failed: ${mention.filePath}`, err);
+    }
+  }
+
+  const fallback = mention.snippet?.text?.trim();
+  if (fallback) {
+    return fallback.length > MAX_VECTOR_MENTION_SNIPPET_CHARS
+      ? `${fallback.slice(0, MAX_VECTOR_MENTION_SNIPPET_CHARS)}\n…[snippet truncated]`
+      : fallback;
+  }
+
+  return null;
+}
+
+/**
+ * Append vector @-mentions to `contentParts` as text parts. Skips silently
+ * when `mentions` is empty/undefined. Total injected text is capped to
+ * `MAX_VECTOR_MENTION_TOTAL_CHARS`; once the budget is exhausted, the
+ * remaining mentions are summarised in a single trailing marker so the LLM
+ * still knows they were referenced.
+ */
+async function injectVectorMentions(
+  contentParts: ModelContentPart[],
+  mentions: VectorMention[] | undefined,
+): Promise<void> {
+  if (!mentions || mentions.length === 0) return;
+
+  let used = 0;
+  let dropped: VectorMention[] = [];
+
+  for (const mention of mentions) {
+    const text = await resolveVectorMentionText(mention);
+    if (!text) {
+      dropped.push(mention);
+      continue;
+    }
+
+    const formatted = formatVectorMentionText(mention, text);
+    if (used + formatted.length > MAX_VECTOR_MENTION_TOTAL_CHARS) {
+      dropped.push(mention);
+      continue;
+    }
+
+    contentParts.push({ type: "text", text: formatted });
+    used += formatted.length;
+  }
+
+  if (dropped.length > 0) {
+    const list = dropped
+      .map((m) => `${m.relativePath}${m.snippet?.startLine != null ? `:L${m.snippet.startLine}-${m.snippet.endLine ?? ""}` : ""}`)
+      .join(", ");
+    contentParts.push({
+      type: "text",
+      text: `[Vector mentions skipped to stay under context budget: ${list}]`,
+    });
+  }
+}
+
 export async function extractContent(
   msg: MessageInput,
   includeUrlHelpers = false,
@@ -544,8 +680,11 @@ export async function extractContent(
     && msg.metadata.custom.attachments.length > 0;
   const hasExperimentalAttachments = Array.isArray(msg.experimental_attachments)
     && msg.experimental_attachments.length > 0;
+  const hasVectorMentions = Array.isArray(msg.metadata?.custom?.vectorMentions)
+    && msg.metadata.custom.vectorMentions.length > 0;
   const hasStructuredContent =
-    hasStructuredParts || hasMetadataAttachments || hasExperimentalAttachments || Boolean(designSidecarText);
+    hasStructuredParts || hasMetadataAttachments || hasExperimentalAttachments
+    || hasVectorMentions || Boolean(designSidecarText);
   if (!hasStructuredContent) {
     const directContent = getStringContent(msg.content, sessionId);
     if (directContent) {
@@ -553,7 +692,7 @@ export async function extractContent(
     }
   }
 
-  if (designSidecarText && !hasStructuredParts && !hasMetadataAttachments && !hasExperimentalAttachments) {
+  if (designSidecarText && !hasStructuredParts && !hasMetadataAttachments && !hasExperimentalAttachments && !hasVectorMentions) {
     const directContent = getStringContent(msg.content, sessionId);
     return directContent ? `${designSidecarText}\n\n${directContent}` : designSidecarText;
   }
@@ -778,6 +917,10 @@ export async function extractContent(
       }
     }
 
+    // v2 @-mention vector chunks: inject after attachments so file content
+    // is grouped together and the user's typed prompt comes first.
+    await injectVectorMentions(contentParts, msg.metadata?.custom?.vectorMentions);
+
     const normalizedParts = reconcileToolCallPairs(contentParts);
     if (normalizedParts.length === 0) {
       return "[Message content not available]";
@@ -790,7 +933,8 @@ export async function extractContent(
 
   if (
     (msg.experimental_attachments && Array.isArray(msg.experimental_attachments)) ||
-    (msg.metadata?.custom?.attachments && Array.isArray(msg.metadata.custom.attachments))
+    (msg.metadata?.custom?.attachments && Array.isArray(msg.metadata.custom.attachments)) ||
+    hasVectorMentions
   ) {
     const attachmentLookup = buildAttachmentLookup(msg);
     const seenAttachmentUrls = new Set<string>();
@@ -844,6 +988,9 @@ export async function extractContent(
     for (const attachment of msg.experimental_attachments ?? []) {
       await processAttachment(attachment);
     }
+
+    // v2 @-mention vector chunks: same as the parts-path injection above.
+    await injectVectorMentions(contentParts, msg.metadata?.custom?.vectorMentions);
 
     if (contentParts.length > 0) {
       if (contentParts.length === 1 && contentParts[0].type === "text") {

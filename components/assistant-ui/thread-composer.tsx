@@ -61,7 +61,7 @@ import { providerRejectsInlineImages } from "@/lib/ai/provider-types";
 import { ContextWindowIndicator } from "./context-window-indicator";
 import { ModelSelector } from "./model-selector";
 import { ActiveDelegationsIndicator } from "./active-delegations-indicator";
-import FileMentionAutocomplete from "./file-mention-autocomplete";
+import FileMentionAutocomplete, { type MentionSelection } from "./file-mention-autocomplete";
 import { ComposerAttachment } from "./thread-message-components";
 import { ComposerActionBar } from "./composer-action-bar";
 import { buildSimpleComposerSubmission } from "./composer-submit";
@@ -103,11 +103,37 @@ interface QueuedMessage {
   content: string;
   mode: "chat" | "deep-research";
   designContext?: DesignMessageContext | null;
+  vectorMentions?: ComposerVectorMention[];
   // "queued-classic": waiting for run to end before replaying
   // "queued-live": currently being submitted to the live queue API
   // "injected-live": successfully delivered to the running model
   // "fallback": live injection failed, will replay after run ends
   status: "queued-classic" | "queued-live" | "injected-live" | "fallback";
+}
+
+/**
+ * v2 @-mention payload kept alongside `inputValue`. Each mention is paired
+ * with a literal `@<displayLabel>` marker in the textarea; if the user
+ * deletes the marker, the mention is dropped from this list (see effect
+ * below). At submit time the list is forwarded to the API as
+ * `metadata.custom.vectorMentions` and resolved server-side by
+ * `injectVectorMentions` in `app/api/chat/content-extractor.ts`.
+ */
+interface ComposerVectorMention {
+  id: string;
+  kind: "file" | "chunk";
+  characterId: string;
+  folderId?: string;
+  relativePath: string;
+  filePath: string;
+  displayLabel: string;
+  snippet?: {
+    text: string;
+    startLine?: number;
+    endLine?: number;
+    score?: number;
+    chunkIndex?: number;
+  };
 }
 
 type VoiceTranscriptPhase = "polishing" | "swap" | "stable";
@@ -142,8 +168,19 @@ function buildMeasurementChipLabel(m: Measurement): string {
   return `${Math.abs(dx)}×${Math.abs(dy)}px`;
 }
 
-function buildUserMessageMetadata(designContext: DesignMessageContext | null) {
-  return designContext ? { custom: { designContext } } : undefined;
+function buildUserMessageMetadata(
+  designContext: DesignMessageContext | null,
+  vectorMentions?: ComposerVectorMention[],
+) {
+  const hasDesign = !!designContext;
+  const hasMentions = Array.isArray(vectorMentions) && vectorMentions.length > 0;
+  if (!hasDesign && !hasMentions) return undefined;
+  return {
+    custom: {
+      ...(hasDesign ? { designContext } : {}),
+      ...(hasMentions ? { vectorMentions } : {}),
+    },
+  };
 }
 
 function appendQueuedUserMessage(
@@ -154,7 +191,7 @@ function appendQueuedUserMessage(
   threadRuntime.append({
     role: "user",
     content: [{ type: "text", text: message.content }],
-    metadata: buildUserMessageMetadata(message.designContext ?? null),
+    metadata: buildUserMessageMetadata(message.designContext ?? null, message.vectorMentions),
   });
 }
 
@@ -232,6 +269,8 @@ export const Composer: FC<{
 
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [activeVoiceTranscript, setActiveVoiceTranscript] = useState<ActiveVoiceTranscript | null>(null);
+  // v2 @-mention payloads (file refs and semantic chunks) staged for the next send.
+  const [pendingMentions, setPendingMentions] = useState<ComposerVectorMention[]>([]);
 
   // Design workspace inspect / measurement / colour state — surfaced as
   // composer chips and serialised onto outbound messages as `designContext`.
@@ -982,6 +1021,7 @@ export const Composer: FC<{
               content: expandedMessage,
               mode: "chat",
               designContext,
+              vectorMentions: pendingMentions.length > 0 ? [...pendingMentions] : undefined,
               status: "queued-live",
             }]);
 
@@ -1011,6 +1051,7 @@ export const Composer: FC<{
               content: expandedMessage,
               mode: isDeepResearchMode ? "deep-research" : "chat",
               designContext,
+              vectorMentions: pendingMentions.length > 0 ? [...pendingMentions] : undefined,
               status: "queued-classic",
             }]);
           }
@@ -1025,9 +1066,13 @@ export const Composer: FC<{
         }
         // Clear design-context selections after queuing
         if (designContext) clearDesignContextOnSend();
+        if (pendingMentions.length > 0) setPendingMentions([]);
       } else {
-        if (designContext) {
-          // Use threadRuntime.append() to include design-context metadata (composer.send() doesn't support metadata)
+        const hasMentions = pendingMentions.length > 0;
+        if (designContext || hasMentions) {
+          // composer.send() can't carry metadata — when we need to forward
+          // designContext or v2 vector mentions, fall back to the explicit
+          // append path so the API receives `metadata.custom.*`.
           const composerAttachments = (threadRuntime.composer.getState().attachments ?? []).filter(
             (a): a is CompleteAttachment =>
               a.status.type === "complete" || a.status.type === "requires-action",
@@ -1036,10 +1081,11 @@ export const Composer: FC<{
             role: "user",
             content: [{ type: "text", text: expandedMessage }],
             attachments: composerAttachments,
-            metadata: buildUserMessageMetadata(designContext),
+            metadata: buildUserMessageMetadata(designContext, pendingMentions),
           });
           if (hasAttachments) threadRuntime.composer.clearAttachments();
-          clearDesignContextOnSend();
+          if (designContext) clearDesignContextOnSend();
+          if (hasMentions) setPendingMentions([]);
         } else {
           threadRuntime.composer.setText(expandedMessage);
           threadRuntime.composer.send();
@@ -1074,6 +1120,7 @@ export const Composer: FC<{
       clearDesignContextOnSend,
       queueLivePromptForActiveRun,
       sessionId,
+      pendingMentions,
     ]
   );
 
@@ -1268,12 +1315,51 @@ export const Composer: FC<{
   }, [clearTiptapDraft]);
 
   const handleInsertMention = useCallback(
-    (mention: string, atIndex: number, queryLength: number) => {
+    (
+      displayLabel: string,
+      atIndex: number,
+      queryLength: number,
+      selection: MentionSelection,
+    ) => {
       const before = inputValue.slice(0, atIndex);
       const after = inputValue.slice(atIndex + 1 + queryLength);
-      const newValue = `${before}@${mention} ${after}`;
+      const newValue = `${before}@${displayLabel} ${after}`;
       setInputValue(newValue);
-      const newCursor = atIndex + mention.length + 2;
+
+      // Stash the structured mention so the submit handler can forward it
+      // as `metadata.custom.vectorMentions`. We DON'T encode any payload
+      // into the textarea text — the marker is purely a visual hook the
+      // user can delete to remove the mention.
+      const newMention: ComposerVectorMention =
+        selection.kind === "file"
+          ? {
+              id: `vm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              kind: "file",
+              characterId: character?.id ?? "",
+              folderId: selection.file.folderId,
+              relativePath: selection.file.relativePath,
+              filePath: selection.file.filePath,
+              displayLabel,
+            }
+          : {
+              id: `vm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              kind: "chunk",
+              characterId: character?.id ?? "",
+              folderId: selection.chunk.folderId,
+              relativePath: selection.chunk.relativePath,
+              filePath: selection.chunk.filePath,
+              displayLabel,
+              snippet: {
+                text: selection.chunk.text,
+                startLine: selection.chunk.startLine,
+                endLine: selection.chunk.endLine,
+                score: selection.chunk.score,
+                chunkIndex: selection.chunk.chunkIndex,
+              },
+            };
+      setPendingMentions((prev) => [...prev, newMention]);
+
+      const newCursor = atIndex + displayLabel.length + 2;
       updateCursorPosition(newCursor);
       requestAnimationFrame(() => {
         if (inputRef.current) {
@@ -1282,8 +1368,39 @@ export const Composer: FC<{
         }
       });
     },
-    [inputValue, updateCursorPosition]
+    [inputValue, updateCursorPosition, character?.id]
   );
+
+  // Reconcile mentions: when the user deletes a `@<label>` text marker,
+  // drop the corresponding mention payload so we don't leak stale context.
+  useEffect(() => {
+    if (pendingMentions.length === 0) return;
+    setPendingMentions((prev) => {
+      const filtered = prev.filter((m) => inputValue.includes(`@${m.displayLabel}`));
+      return filtered.length === prev.length ? prev : filtered;
+    });
+  }, [inputValue, pendingMentions.length]);
+
+  const removePendingMention = useCallback((id: string) => {
+    setPendingMentions((prev) => {
+      const m = prev.find((x) => x.id === id);
+      if (!m) return prev;
+      // Remove the corresponding `@<label> ` marker (including trailing space).
+      setInputValue((text) => {
+        const marker = `@${m.displayLabel} `;
+        const idx = text.indexOf(marker);
+        if (idx === -1) {
+          // Try without trailing space (last token)
+          const bare = `@${m.displayLabel}`;
+          const bareIdx = text.indexOf(bare);
+          if (bareIdx === -1) return text;
+          return text.slice(0, bareIdx) + text.slice(bareIdx + bare.length);
+        }
+        return text.slice(0, idx) + text.slice(idx + marker.length);
+      });
+      return prev.filter((x) => x.id !== id);
+    });
+  }, [setInputValue]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1692,6 +1809,28 @@ export const Composer: FC<{
 
         <div className="flex flex-wrap gap-2 p-2 empty:hidden">
           <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
+          {pendingMentions.map((m) => (
+            <div
+              key={m.id}
+              title={m.kind === "chunk" ? `${m.relativePath} • semantic snippet` : m.relativePath}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-mono",
+                "bg-blue-50 text-blue-900 border border-blue-200",
+                "dark:bg-blue-950/40 dark:text-blue-200 dark:border-blue-900",
+              )}
+            >
+              <span className="opacity-60">{m.kind === "file" ? "@" : "@~"}</span>
+              <span className="truncate max-w-[18ch]">{m.displayLabel}</span>
+              <button
+                type="button"
+                className="opacity-60 hover:opacity-100"
+                onClick={() => removePendingMention(m.id)}
+                aria-label={`Remove mention ${m.displayLabel}`}
+              >
+                <XIcon className="size-3" />
+              </button>
+            </div>
+          ))}
         </div>
 
         {/*
