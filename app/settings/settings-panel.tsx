@@ -75,6 +75,7 @@ interface SettingsPanelProps {
   section: SettingsSection;
   formState: FormState;
   setFormState: React.Dispatch<React.SetStateAction<FormState>>;
+  reloadSettings: () => Promise<void>;
   antigravityAuth: { isAuthenticated: boolean; email?: string; expiresAt?: number } | null;
   antigravityLoading: boolean;
   onAntigravityLogin: () => void;
@@ -213,6 +214,7 @@ export function SettingsPanel({
   section,
   formState,
   setFormState,
+  reloadSettings,
   antigravityAuth,
   antigravityLoading,
   onAntigravityLogin,
@@ -502,7 +504,11 @@ export function SettingsPanel({
   if (section === "preferences") {
     return (
       <div className={settingsSectionShellClassName}>
-        <PreferencesSection formState={formState} updateField={updateField} />
+        <PreferencesSection
+          formState={formState}
+          updateField={updateField}
+          reloadSettings={reloadSettings}
+        />
       </div>
     );
   }

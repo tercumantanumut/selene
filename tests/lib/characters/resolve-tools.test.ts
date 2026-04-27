@@ -19,12 +19,26 @@ function buildSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     llmProvider: "anthropic",
     localUserId: "test-user",
     localUserEmail: "test@test.com",
+    appLanguage: "en",
     theme: "dark",
     vectorDBEnabled: false,
     webScraperProvider: "firecrawl",
     ...overrides,
   } as AppSettings;
 }
+
+describe("buildSettings", () => {
+  it("preserves persisted language overrides across rebuilds", () => {
+    const english = buildSettings({ appLanguage: "en" });
+    expect(english.appLanguage).toBe("en");
+
+    const reloaded = buildSettings({ ...english, appLanguage: "tr" });
+    expect(reloaded.appLanguage).toBe("tr");
+
+    const reopened = buildSettings({ ...reloaded });
+    expect(reopened.appLanguage).toBe("tr");
+  });
+});
 
 /**
  * Ghost OS is conditionally added on macOS only (process.platform === "darwin").

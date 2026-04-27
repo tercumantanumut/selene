@@ -8,6 +8,7 @@ import type { VoiceSettingsFields } from "@/lib/settings/voice-settings-fields";
 export type LlmProvider = "anthropic" | "openrouter" | "antigravity" | "codex" | "kimi" | "minimax" | "ollama" | "claudecode" | "blackboxai" | "deepseek" | "vllm";
 
 interface AppSettingsPublic {
+  appLanguage?: "en" | "tr";
   llmProvider: LlmProvider;
   anthropicApiKey?: string;
   openrouterApiKey?: string;
@@ -108,6 +109,7 @@ interface AppSettingsPublic {
 export type SettingsSection = "api-keys" | "models" | "vector-search" | "comfyui" | "preferences" | "memory" | "mcp" | "plugins" | "voice";
 
 export interface FormState {
+  appLanguage: "en" | "tr";
   llmProvider: LlmProvider;
   anthropicApiKey: string;
   openrouterApiKey: string;
@@ -249,6 +251,7 @@ export interface FormState {
 }
 
 export const DEFAULT_FORM_STATE: FormState = {
+  appLanguage: "en",
   llmProvider: "anthropic",
   anthropicApiKey: "",
   openrouterApiKey: "",
@@ -382,6 +385,7 @@ export const DEFAULT_FORM_STATE: FormState = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildFormStateFromData(data: Record<string, any>): FormState {
   return {
+    appLanguage: data.appLanguage === "tr" ? "tr" : "en",
     llmProvider: data.llmProvider || "anthropic",
     anthropicApiKey: data.anthropicApiKey || "",
     openrouterApiKey: data.openrouterApiKey || "",

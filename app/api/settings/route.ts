@@ -57,6 +57,7 @@ export async function PUT(request: NextRequest) {
       llmProvider: newProvider,
       ollamaBaseUrl: body.ollamaBaseUrl !== undefined ? body.ollamaBaseUrl : currentSettings.ollamaBaseUrl,
       vllmBaseUrl: body.vllmBaseUrl !== undefined ? body.vllmBaseUrl : currentSettings.vllmBaseUrl,
+      appLanguage: body.appLanguage !== undefined ? body.appLanguage : currentSettings.appLanguage,
       theme: body.theme ?? currentSettings.theme,
       chatWorkspaceMode:
         body.chatWorkspaceMode === "browser-tabs" || body.chatWorkspaceMode === "sidebar"

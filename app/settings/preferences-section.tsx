@@ -15,6 +15,7 @@ import type { FormState } from "./settings-types";
 interface PreferencesSectionProps {
   formState: FormState;
   updateField: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
+  reloadSettings: () => Promise<void>;
 }
 
 function CategoryFilterBar({
@@ -79,7 +80,7 @@ function NoneOptionButton({
   );
 }
 
-export function PreferencesSection({ formState, updateField }: PreferencesSectionProps) {
+export function PreferencesSection({ formState, updateField, reloadSettings }: PreferencesSectionProps) {
   const t = useTranslations("settings");
   const router = useRouter();
   const currentLocale = useLocale() as Locale;
@@ -114,6 +115,7 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
           toast.error(errorMessage);
           return;
         }
+        await reloadSettings();
         // Re-render server components with the new locale — no full page reload,
         // which avoids Electron/Chrome protocol-upgrade edge cases.
         router.refresh();

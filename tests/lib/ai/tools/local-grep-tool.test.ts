@@ -38,12 +38,8 @@ const pathValidationMock = vi.hoisted(() => ({
   validateSyncFolderPath: vi.fn(async (folderPath: string) => ({ normalizedPath: folderPath, error: null })),
 }));
 
-const sessionQueriesMock = vi.hoisted(() => ({
-  getSession: vi.fn(async () => null),
-}));
-
-const workspaceTypesMock = vi.hoisted(() => ({
-  getWorkspaceInfo: vi.fn(() => null),
+const workspaceMetadataMock = vi.hoisted(() => ({
+  resolveSessionWorkspaceInfo: vi.fn(async () => null),
 }));
 
 vi.mock("@/lib/vectordb/accessible-sync-folders", () => ({
@@ -54,12 +50,12 @@ vi.mock("@/lib/vectordb/path-validation", () => ({
   validateSyncFolderPath: pathValidationMock.validateSyncFolderPath,
 }));
 
-vi.mock("@/lib/db/queries", () => ({
-  getSession: sessionQueriesMock.getSession,
+vi.mock("@/lib/workspace/metadata", () => ({
+  resolveSessionWorkspaceInfo: workspaceMetadataMock.resolveSessionWorkspaceInfo,
 }));
 
-vi.mock("@/lib/workspace/types", () => ({
-  getWorkspaceInfo: workspaceTypesMock.getWorkspaceInfo,
+vi.mock("@/lib/ai/filesystem/path-utils", () => ({
+  isOtherWorktreePath: vi.fn(() => false),
 }));
 
 import { createLocalGrepTool } from "@/lib/ai/ripgrep/tool";
@@ -70,8 +66,7 @@ describe("localGrep tool contract", () => {
     settingsMock.state.settings.localGrepEnabled = true;
     ripgrepMock.isRipgrepAvailable.mockReturnValue(true);
     syncFolderMock.getAccessibleSyncFolders.mockResolvedValue([]);
-    sessionQueriesMock.getSession.mockResolvedValue(null);
-    workspaceTypesMock.getWorkspaceInfo.mockReturnValue(null);
+    workspaceMetadataMock.resolveSessionWorkspaceInfo.mockResolvedValue(null);
     pathValidationMock.validateSyncFolderPath.mockImplementation(async (folderPath: string) => ({
       normalizedPath: folderPath,
       error: null,
@@ -182,10 +177,7 @@ describe("localGrep tool contract", () => {
   });
 
   it("prefers workspace path when no explicit paths are provided", async () => {
-    sessionQueriesMock.getSession.mockResolvedValue({
-      metadata: { workspaceInfo: { status: "active", worktreePath: "/worktree" } },
-    });
-    workspaceTypesMock.getWorkspaceInfo.mockReturnValue({
+    workspaceMetadataMock.resolveSessionWorkspaceInfo.mockResolvedValue({
       status: "active",
       worktreePath: "/worktree",
     });
@@ -215,10 +207,7 @@ describe("localGrep tool contract", () => {
   });
 
   it("retries with synced folders in same call when workspace search has zero matches", async () => {
-    sessionQueriesMock.getSession.mockResolvedValue({
-      metadata: { workspaceInfo: { status: "active", worktreePath: "/worktree" } },
-    });
-    workspaceTypesMock.getWorkspaceInfo.mockReturnValue({
+    workspaceMetadataMock.resolveSessionWorkspaceInfo.mockResolvedValue({
       status: "active",
       worktreePath: "/worktree",
     });

@@ -20,6 +20,10 @@ import { addSyncFolder } from "@/lib/vectordb/sync-service";
 import { runGitCommand } from "@/lib/workspace/git-runner";
 import { cleanupWorkspace } from "@/lib/workspace/cleanup";
 import { recordWorkspaceCreate } from "@/lib/workspace/metrics";
+import {
+  updateWorkspaceLifecycleMetadata,
+  writeWorkspaceInfo,
+} from "@/lib/workspace/metadata";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -378,12 +382,11 @@ async function handleCreate(
   };
 
   // Persist to session metadata
-  await updateSession(sessionId, {
-    metadata: {
-      ...metadata,
-      workspaceInfo,
-    },
-  });
+  const persistedWorkspaceInfo = await writeWorkspaceInfo(
+    sessionId,
+    workspaceInfo,
+    "workspace-tool:create"
+  );
 
   recordWorkspaceCreate();
 
@@ -393,9 +396,9 @@ async function handleCreate(
     workspace: {
       branch,
       baseBranch: resolvedBaseBranch,
-      worktreePath,
-      status: "active",
-      syncFolderId,
+      worktreePath: persistedWorkspaceInfo.worktreePath,
+      status: persistedWorkspaceInfo.status,
+      syncFolderId: persistedWorkspaceInfo.syncFolderId,
     },
     hint: `The worktree is at "${worktreePath}". File tools (readFile, editFile, writeFile, localGrep) can now access this path. Use executeCommand for git operations and builds. When done, use workspace tool with action "delete" to clean up.`,
   };
@@ -470,16 +473,14 @@ async function handleStatus(sessionId: string) {
     }
 
     // Update metadata with latest counts
-    await updateSession(sessionId, {
-      metadata: {
-        ...metadata,
-        workspaceInfo: {
-          ...workspaceInfo,
-          changedFiles,
-          lastSyncedAt: new Date().toISOString(),
-        },
+    await updateWorkspaceLifecycleMetadata(
+      sessionId,
+      {
+        changedFiles,
+        lastSyncedAt: new Date().toISOString(),
       },
-    });
+      "workspace-tool:status"
+    );
   }
 
   return {
@@ -513,18 +514,14 @@ async function handleUpdateMetadata(sessionId: string, input: WorkspaceInput) {
   if (input.prStatus !== undefined) updates.prStatus = input.prStatus;
   if (input.status !== undefined) updates.status = input.status;
 
-  const updatedWorkspaceInfo: WorkspaceInfo = {
-    ...workspaceInfo,
-    ...updates,
-    lastSyncedAt: new Date().toISOString(),
-  };
-
-  await updateSession(sessionId, {
-    metadata: {
-      ...metadata,
-      workspaceInfo: updatedWorkspaceInfo,
+  const updatedWorkspaceInfo = await updateWorkspaceLifecycleMetadata(
+    sessionId,
+    {
+      ...updates,
+      lastSyncedAt: new Date().toISOString(),
     },
-  });
+    "workspace-tool:update-metadata"
+  );
 
   return {
     status: "success" as const,

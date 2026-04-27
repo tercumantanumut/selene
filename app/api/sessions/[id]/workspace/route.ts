@@ -17,6 +17,10 @@ import { isEBADFError, spawnWithFileCapture } from "@/lib/spawn-utils";
 import { GitService } from "@/lib/workspace/git-service";
 import { getSyncFolders } from "@/lib/vectordb/sync-folder-crud";
 import { runGitCommand } from "@/lib/workspace/git-runner";
+import {
+  updateWorkspaceLifecycleMetadata,
+  writeWorkspaceInfo,
+} from "@/lib/workspace/metadata";
 import type {
   WorkspaceInfo,
   WorkspaceStatus,
@@ -70,7 +74,6 @@ function isValidBranchName(name: string): boolean {
   );
 }
 
-const WORKSPACE_TYPES = new Set<WorkspaceInfo["type"]>(["worktree", "local", "clone"]);
 const WORKSPACE_STATUSES = new Set<WorkspaceInfo["status"]>([
   "active",
   "changes-ready",
@@ -91,18 +94,6 @@ function sanitizeWorkspacePatch(payload: unknown): Partial<WorkspaceInfo> {
   const body = payload as Record<string, unknown>;
   const safePayload: Partial<WorkspaceInfo> = {};
 
-  if (typeof body.type === "string" && WORKSPACE_TYPES.has(body.type as WorkspaceInfo["type"])) {
-    safePayload.type = body.type as WorkspaceInfo["type"];
-  }
-  if (typeof body.branch === "string" && isValidBranchName(body.branch)) {
-    safePayload.branch = body.branch;
-  }
-  if (typeof body.baseBranch === "string" && isValidBranchName(body.baseBranch)) {
-    safePayload.baseBranch = body.baseBranch;
-  }
-  if (typeof body.worktreePath === "string") {
-    safePayload.worktreePath = body.worktreePath;
-  }
   if (typeof body.repoUrl === "string") {
     safePayload.repoUrl = body.repoUrl;
   }
@@ -129,9 +120,6 @@ function sanitizeWorkspacePatch(payload: unknown): Partial<WorkspaceInfo> {
   }
   if (typeof body.lastSyncedAt === "string") {
     safePayload.lastSyncedAt = body.lastSyncedAt;
-  }
-  if (typeof body.syncFolderId === "string") {
-    safePayload.syncFolderId = body.syncFolderId;
   }
 
   return safePayload;
@@ -702,19 +690,19 @@ export async function PATCH(
     const safePayload = sanitizeWorkspacePatch(await req.json());
 
     const existingMetadata = (session.metadata as Record<string, unknown>) || {};
-    const existingWorkspaceInfo = getWorkspaceInfo(existingMetadata) || {};
+    if (!getWorkspaceInfo(existingMetadata)) {
+      return NextResponse.json(
+        { error: "No workspace exists for this session." },
+        { status: 404 }
+      );
+    }
 
-    const mergedWorkspaceInfo = {
-      ...existingWorkspaceInfo,
-      ...safePayload,
-    };
-
-    const mergedMetadata = {
-      ...existingMetadata,
-      workspaceInfo: mergedWorkspaceInfo,
-    };
-
-    const updated = await updateSession(id, { metadata: mergedMetadata });
+    const mergedWorkspaceInfo = await updateWorkspaceLifecycleMetadata(
+      id,
+      safePayload,
+      "workspace-route:patch"
+    );
+    const updated = await getSession(id);
 
     return NextResponse.json({
       workspace: mergedWorkspaceInfo,
@@ -817,7 +805,7 @@ export async function POST(
 async function handleEnableGit(
   sessionId: string,
   session: Awaited<ReturnType<typeof getSession>>,
-  metadata: Record<string, unknown>,
+  _metadata: Record<string, unknown>,
   folderPath?: string,
 ) {
   if (!folderPath || !isValidWorktreePath(folderPath)) {
@@ -857,13 +845,13 @@ async function handleEnableGit(
     lastSyncedAt: new Date().toISOString(),
   };
 
-  const updatedMetadata = {
-    ...metadata,
+  const persistedWorkspaceInfo = await writeWorkspaceInfo(
+    sessionId,
     workspaceInfo,
-  };
-
-  const updatedSession = await updateSession(sessionId, { metadata: updatedMetadata });
-  const workspaceStatus = await buildWorkspaceStatus(workspaceInfo);
+    "workspace-route:enable-git"
+  );
+  const updatedSession = await getSession(sessionId);
+  const workspaceStatus = await buildWorkspaceStatus(persistedWorkspaceInfo);
 
   return NextResponse.json({
     workspace: workspaceStatus,
@@ -873,7 +861,7 @@ async function handleEnableGit(
 
 async function handleRefreshStatus(
   sessionId: string,
-  metadata: Record<string, unknown>,
+  _metadata: Record<string, unknown>,
   workspaceInfo: WorkspaceInfo
 ) {
   if (!workspaceInfo.worktreePath) {
@@ -890,17 +878,16 @@ async function handleRefreshStatus(
     lastSyncedAt: new Date().toISOString(),
   };
 
-  const updatedMetadata = {
-    ...metadata,
-    workspaceInfo: updatedWorkspaceInfo,
-  };
-
-  await updateSession(sessionId, { metadata: updatedMetadata });
+  const persistedWorkspaceInfo = await updateWorkspaceLifecycleMetadata(
+    sessionId,
+    updatedWorkspaceInfo,
+    "workspace-route:refresh-status"
+  );
 
   return NextResponse.json({
     workspace: {
       ...workspaceStatus,
-      ...updatedWorkspaceInfo,
+      ...persistedWorkspaceInfo,
     },
   });
 }
@@ -1162,7 +1149,7 @@ async function handleCommit(
 
 async function handlePush(
   sessionId: string,
-  metadata: Record<string, unknown>,
+  _metadata: Record<string, unknown>,
   workspaceInfo: WorkspaceInfo,
 ) {
   if (!workspaceInfo.worktreePath) {
@@ -1194,16 +1181,15 @@ async function handlePush(
       ...workspaceInfo,
       lastSyncedAt: new Date().toISOString(),
     };
-    await updateSession(sessionId, {
-      metadata: {
-        ...metadata,
-        workspaceInfo: updatedWorkspaceInfo,
-      },
-    });
+    const persistedWorkspaceInfo = await updateWorkspaceLifecycleMetadata(
+      sessionId,
+      updatedWorkspaceInfo,
+      "workspace-route:push"
+    );
 
     return NextResponse.json({
       success: true,
-      workspace: await buildWorkspaceStatus(updatedWorkspaceInfo),
+      workspace: await buildWorkspaceStatus(persistedWorkspaceInfo),
     });
   } catch (error) {
     console.error("Failed to push:", error);
@@ -1245,7 +1231,7 @@ async function handlePushBaseBranch(workspaceInfo: WorkspaceInfo) {
 async function handlePushAndCreatePR(
   sessionId: string,
   session: Awaited<ReturnType<typeof getSession>>,
-  metadata: Record<string, unknown>,
+  _metadata: Record<string, unknown>,
   workspaceInfo: WorkspaceInfo,
 ) {
   if (!workspaceInfo.worktreePath) {
@@ -1460,18 +1446,17 @@ async function handlePushAndCreatePR(
     lastSyncedAt: new Date().toISOString(),
   };
 
-  await updateSession(sessionId, {
-    metadata: {
-      ...metadata,
-      workspaceInfo: updatedWorkspaceInfo,
-    },
-  });
+  const persistedWorkspaceInfo = await updateWorkspaceLifecycleMetadata(
+    sessionId,
+    updatedWorkspaceInfo,
+    "workspace-route:push-and-create-pr"
+  );
 
   return NextResponse.json({
     success: true,
     created: pullRequest.state == null,
-    workspace: await buildWorkspaceStatus(updatedWorkspaceInfo),
-    prUrl: updatedWorkspaceInfo.prUrl,
-    prNumber: updatedWorkspaceInfo.prNumber,
+    workspace: await buildWorkspaceStatus(persistedWorkspaceInfo),
+    prUrl: persistedWorkspaceInfo.prUrl,
+    prNumber: persistedWorkspaceInfo.prNumber,
   });
 }
