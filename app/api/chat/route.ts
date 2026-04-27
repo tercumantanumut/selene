@@ -112,6 +112,7 @@ import { buildToolsForRequest } from "./tools-builder";
 import {
   applyScopeToToolNames,
   loadSoloStoryScopeForSession,
+  shouldApplyScopeTightening,
 } from "@/lib/lobbies/scope-injection";
 import { prepareMessagesForRequest } from "./message-prep";
 import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
@@ -492,6 +493,17 @@ export async function POST(req: Request) {
     // during warmup are preserved and carried into the real runId key.
     promoteLivePromptQueueToRunId(sessionId, agentRun.id);
 
+    // ── Solo Story Mode snapshot lookup (SPEC §7 + §8) ─────────────────────────
+    // Loaded once here so the registered task carries lobbyId/cardId for SSE
+    // routing AND the tool-builder injection downstream can reuse the same
+    // context without a second DB query. Returns null for non-soloStory
+    // sessions; non-null even when the scope is empty (planner / synthesizer
+    // sentinel) so SSE consumers still get the lobby tag.
+    const soloStoryScopeContext = await loadSoloStoryScopeForSession({
+      sessionId,
+      userId: dbUser.id,
+    });
+
     const isDelegation = sessionMetadata?.isDelegation === true;
     const chatTask: ChatTask = {
       type: "chat",
@@ -504,6 +516,8 @@ export async function POST(req: Request) {
       pipelineName: "chat",
       triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : isDelegation ? "delegation" : "chat",
       messageCount: messages.length,
+      lobbyId: soloStoryScopeContext?.lobbyId,
+      cardId: soloStoryScopeContext?.cardId,
       metadata: isScheduledRun || isChannelSource || isDelegation
         ? {
             ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
@@ -721,22 +735,25 @@ export async function POST(req: Request) {
     const allowedPluginNames = new Set(scopedPlugins.map((plugin) => plugin.name));
 
     // ── Solo Story Mode: per-seat permission scope tightening (SPEC §7) ────────
-    // If this session is a soloStory worker run, the seat's snapshotted
-    // `permission_scope` narrows the tool surface for the duration of the
-    // request. Planner/synthesizer roles use an empty scope as a sentinel and
-    // therefore return null here (no tightening). MCP tool intersection
-    // happens inside buildToolsForRequest so it can run after MCP discovery.
-    const soloStoryScopeContext = await loadSoloStoryScopeForSession({
-      sessionId,
-      userId: dbUser.id,
-    });
-    const effectiveEnabledTools = soloStoryScopeContext
-      ? applyScopeToToolNames(enabledTools, soloStoryScopeContext.scope)
+    // Reuse the `soloStoryScopeContext` loaded earlier (right after the agent
+    // run was created) so we hit the DB exactly once per request. Worker roles
+    // carry a non-empty allowedTools list; planner / synthesizer roles use an
+    // empty list as a sentinel meaning "no tightening" — `shouldApplyScopeTightening`
+    // gates that here. MCP tool intersection happens inside `buildToolsForRequest`
+    // (after MCP discovery) and is gated on `soloStoryPermissionScope` being
+    // present, which is fine: passing an empty-allowedTools scope through still
+    // yields a no-op intersection.
+    const applyScopeTightening =
+      soloStoryScopeContext !== null &&
+      shouldApplyScopeTightening(soloStoryScopeContext.scope);
+    const effectiveEnabledTools = applyScopeTightening
+      ? applyScopeToToolNames(enabledTools, soloStoryScopeContext!.scope)
       : enabledTools;
     if (soloStoryScopeContext) {
       console.log(
         `[CHAT API] Solo Story scope applied: lobby=${soloStoryScopeContext.lobbyId} ` +
           `card=${soloStoryScopeContext.cardId ?? "n/a"} role=${soloStoryScopeContext.role} ` +
+          `tightening=${applyScopeTightening} ` +
           `enabledTools ${enabledTools?.length ?? "?"} -> ${effectiveEnabledTools?.length ?? 0}`,
       );
     }

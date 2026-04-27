@@ -50,15 +50,23 @@ export type SoloStoryScopeContext = {
 
 /**
  * Look up the soloStory snapshot attached to the most recent active soloStory
- * `agent_runs` row for `sessionId`. Returns `null` when:
- *   - no such row exists (this is not a soloStory session); or
- *   - the snapshot exists but its `allowedTools` is empty
- *     (planner / synthesizer "no tightening" sentinel).
+ * `agent_runs` row for `sessionId`. Returns `null` when no such row exists
+ * (this is not a soloStory session).
+ *
+ * Unlike a tool-tightening helper, this returns the full context — including
+ * the lobbyId / cardId / role — even when the snapshot's `allowedTools` is
+ * empty. Empty-list snapshots ("no tightening" sentinels written by the
+ * planner / synthesizer) still need their lobbyId tagged onto SSE events so
+ * the lobby UI can route progress updates back to the right card.
  *
  * The query is intentionally narrow: only `running` rows whose pipeline name
  * begins with `solo_story.` are considered. This matches `insertSoloStoryRunInTx`
  * in `lib/lobbies/services.ts` and avoids accidental matches on unrelated
  * `agent_runs` rows that may have been authored by other features.
+ *
+ * Tool-tightening callers must additionally check
+ * `shouldApplyScopeTightening(context.scope)` before filtering — empty scopes
+ * are pass-throughs.
  */
 export async function loadSoloStoryScopeForSession(input: {
   sessionId: string;
@@ -87,10 +95,6 @@ export async function loadSoloStoryScopeForSession(input: {
   const snapshot = extractSoloStorySnapshot(raw);
   if (!snapshot) return null;
 
-  // Empty allowedTools is the planner/synthesizer "no tightening" sentinel.
-  // Returning null lets the caller short-circuit without a redundant filter pass.
-  if (snapshot.permissionScope.allowedTools.length === 0) return null;
-
   return {
     scope: snapshot.permissionScope,
     lobbyId: snapshot.lobbyId,
@@ -98,6 +102,17 @@ export async function loadSoloStoryScopeForSession(input: {
     seatId: snapshot.seatId,
     role: snapshot.role,
   };
+}
+
+/**
+ * `true` when the seat's permission scope should narrow the request's tool
+ * surface. Empty `allowedTools` is the planner / synthesizer sentinel and
+ * means "leave the character's enabled tools untouched".
+ */
+export function shouldApplyScopeTightening(
+  scope: LobbyPermissionScopeV1,
+): boolean {
+  return scope.allowedTools.length > 0;
 }
 
 function extractSoloStorySnapshot(
