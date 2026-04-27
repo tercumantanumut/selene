@@ -47,17 +47,14 @@ vi.mock("@/lib/vectordb/sync-service", () => ({
 }));
 vi.mock("@/lib/ai/file-tree", () => fileTreeMocks);
 
-import { clearPromptEnhancementSession } from "@/lib/ai/prompt-enhancement-llm";
 import { enhancePromptWithLLM } from "@/lib/ai/prompt-enhancement-v2";
 
-describe("enhancePromptWithLLM session-scoped memory behavior", () => {
+describe("enhancePromptWithLLM stateless memory behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    clearPromptEnhancementSession("enhance:session-a");
-    clearPromptEnhancementSession("enhance:session-b");
   });
 
-  it("avoids re-injecting unchanged memory in the same session", async () => {
+  it("injects memories on every call (stateless contract)", async () => {
     await enhancePromptWithLLM("Improve this task", "char-1", {
       sessionId: "session-a",
       sessionMetadata: { sessionProvider: "codex", sessionUtilityModel: "gpt-5.1-codex" },
@@ -73,11 +70,13 @@ describe("enhancePromptWithLLM session-scoped memory behavior", () => {
     const firstPrompt = aiMocks.generateText.mock.calls[0][0].messages.at(-1).content as string;
     const secondPrompt = aiMocks.generateText.mock.calls[1][0].messages.at(-1).content as string;
 
-    expect(firstPrompt).toContain("## User Preferences & Context");
+    // Under the stateless contract both calls must include the memory block.
+    // The normalizer still dedups duplicate bullets within a single payload.
+    expect(firstPrompt).toContain("<memories");
     expect(firstPrompt.match(/- Keep outputs concise/g)?.length).toBe(1);
 
-    expect(secondPrompt).not.toContain("## User Preferences & Context");
-    expect(secondPrompt).not.toContain("- Keep outputs concise");
+    expect(secondPrompt).toContain("<memories");
+    expect(secondPrompt.match(/- Keep outputs concise/g)?.length).toBe(1);
   });
 
   it("keeps memory injection isolated across different sessions", async () => {
@@ -94,8 +93,29 @@ describe("enhancePromptWithLLM session-scoped memory behavior", () => {
     const firstPrompt = aiMocks.generateText.mock.calls[0][0].messages.at(-1).content as string;
     const secondPrompt = aiMocks.generateText.mock.calls[1][0].messages.at(-1).content as string;
 
-    expect(firstPrompt).toContain("## User Preferences & Context");
-    expect(secondPrompt).toContain("## User Preferences & Context");
+    expect(firstPrompt).toContain("<memories");
+    expect(secondPrompt).toContain("<memories");
+  });
+
+  it("preserves a 6-message dbMessages window (no silent truncation to 3)", async () => {
+    const dbMessages = Array.from({ length: 6 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: `WINDOW_MSG_${String(i).padStart(2, "0")} body text`,
+      orderingIndex: i + 1,
+    }));
+
+    await enhancePromptWithLLM("Improve this", "char-1", {
+      sessionId: "session-window",
+      dbMessages,
+      includeMemories: false,
+      includeFileTree: false,
+    });
+
+    const prompt = aiMocks.generateText.mock.calls[0][0].messages.at(-1).content as string;
+    // All 6 stamps must appear — the old code would clip to just the last 3.
+    for (let i = 0; i < 6; i++) {
+      expect(prompt).toContain(`WINDOW_MSG_${String(i).padStart(2, "0")}`);
+    }
   });
 
   it("resolves utility model from session metadata", async () => {

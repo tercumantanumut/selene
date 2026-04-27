@@ -129,8 +129,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               if (meta?.livePromptInjected === true) return false;
               return true;
             });
-            // Take last 3 user-assistant pairs (up to 6 messages) for full conversational context
-            // Walk backwards to collect up to 3 pairs
+
+            // Defensive chronological sort by `orderingIndex` (ascending: oldest → newest).
+            // `getMessages` already sorts by orderingIndex asc, but we enforce it locally so
+            // the enhancer's history contract doesn't silently depend on that default.
+            // Canonical ordering source: `nextOrderingIndex(sessionId)` in `app/api/chat/route.ts`.
+            visibleMessages.sort((a, b) => {
+              const ai = typeof a.orderingIndex === "number" ? a.orderingIndex : Number.MAX_SAFE_INTEGER;
+              const bi = typeof b.orderingIndex === "number" ? b.orderingIndex : Number.MAX_SAFE_INTEGER;
+              return ai - bi;
+            });
+
+            // Take last 3 user-assistant pairs (up to 6 messages) for full conversational context.
+            // Walk backwards to collect up to 3 pairs, then `unshift` preserves ascending order.
             const pairs: typeof visibleMessages = [];
             let pairsFound = 0;
             for (let i = visibleMessages.length - 1; i >= 0 && pairsFound < 3; i--) {
