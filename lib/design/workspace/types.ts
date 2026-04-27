@@ -87,7 +87,7 @@ export interface PickedColor {
   hex: string;
   rgb: { r: number; g: number; b: number; a: number };
   hsl: { h: number; s: number; l: number; a: number };
-  source: "background" | "foreground";
+  source: "background" | "foreground" | "border";
   element: { selector: string; tagName: string };
   createdAt: number;
 }
@@ -98,6 +98,68 @@ export interface DesignComment {
   text: string;
   createdAt: number;
   resolved: boolean;
+  /**
+   * Set to `true` by the parent in response to a `selene-tool-comments-resolved`
+   * ack from the iframe when the comment's `elementSelector` no longer resolves
+   * to a live DOM node. Comments whose selector resolves remain `false` /
+   * undefined. Round-trips through the session cache so the panel's "stale"
+   * badge persists across session switches.
+   */
+  orphaned?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Iframe -> parent postMessage payload types
+// ---------------------------------------------------------------------------
+
+/** Bounding rect carried by inspector / measure payloads. */
+export interface IframeRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Validated payload shape for `selene-tool-measure`. */
+export interface MeasurementPayload {
+  type: "selene-tool-measure";
+  from: { selector: string; rect: IframeRect };
+  to: { selector: string; rect: IframeRect };
+  distances: { dx: number; dy: number; horizontal: number; vertical: number; euclidean: number };
+}
+
+/** Validated payload shape for `selene-tool-color-pick`. */
+export interface ColorPickPayload {
+  type: "selene-tool-color-pick";
+  source: PickedColor["source"];
+  background: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
+  foreground: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
+  picked: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
+  element: { selector: string; tagName: string };
+}
+
+/** Validated payload shape for `selene-tool-comment`. */
+export interface CommentPayload {
+  type: "selene-tool-comment";
+  tempId: string;
+  elementSelector: string;
+  text: string;
+  createdAt: number;
+}
+
+/** Validated payload shape for `selene-tool-comments-resolved`. */
+export interface CommentsResolvedPayload {
+  type: "selene-tool-comments-resolved";
+  resolved: string[];
+  unresolved: string[];
+}
+
+/** Validated payload shape for `selene-inspector-select`. */
+export interface InspectorSelectPayload {
+  type: "selene-inspector-select";
+  element: InspectedElement;
+  action?: "add" | "remove" | "replace";
+  multiSelect?: boolean;
 }
 
 /** Serialisable session state that gets cached when switching sessions. */
@@ -167,4 +229,5 @@ export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   removeComment: (id: string) => void;
   resolveComment: (id: string) => void;
   clearComments: () => void;
+  markCommentsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => void;
 }

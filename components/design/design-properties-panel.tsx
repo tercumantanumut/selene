@@ -266,6 +266,12 @@ function PickedColorsSection({
                 )}
               </Button>
             </div>
+            <div
+              className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs text-muted-foreground"
+              title={`${c.element.tagName} · ${c.element.selector}`}
+            >
+              {c.element.tagName} · {c.element.selector}
+            </div>
           </div>
         );
       })}
@@ -317,6 +323,11 @@ function CommentsSection({
               {c.resolved && (
                 <Badge variant="outline" className="px-1 py-0 text-[10px]">
                   resolved
+                </Badge>
+              )}
+              {c.orphaned === true && (
+                <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                  stale
                 </Badge>
               )}
             </div>

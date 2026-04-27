@@ -23,10 +23,10 @@ import {
 import type {
   DesignComment,
   DesignPreviewTheme,
-  InspectedElement,
   Measurement,
   PickedColor,
 } from "@/lib/design/workspace/types";
+import { validateIframeMessage } from "@/lib/design/workspace/iframe-messages";
 
 const BREAKPOINT_ICONS: Record<string, ReactNode> = {
   responsive: <Maximize className="h-4 w-4" />,
@@ -257,48 +257,45 @@ function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   return size;
 }
 
-type IframeMessage =
-  | {
-      type: "selene-inspector-select";
-      element: InspectedElement;
-      action?: "add" | "remove" | "replace";
-      multiSelect?: boolean;
-    }
-  | {
-      type: "selene-tool-measure";
-      from: Measurement["from"];
-      to: Measurement["to"];
-      distances: Measurement["distances"];
-    }
-  | {
-      type: "selene-tool-color-pick";
-      source: PickedColor["source"];
-      background: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
-      foreground: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
-      picked: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
-      element: { selector: string; tagName: string };
-    }
-  | {
-      type: "selene-tool-comment";
-      tempId: string;
-      elementSelector: string;
-      text: string;
-      createdAt: number;
-    };
-
-function isIframeMessage(value: unknown): value is IframeMessage {
-  if (!value || typeof value !== "object") return false;
-  const data = value as { type?: unknown };
-  return (
-    data.type === "selene-inspector-select" ||
-    data.type === "selene-tool-measure" ||
-    data.type === "selene-tool-color-pick" ||
-    data.type === "selene-tool-comment"
-  );
-}
-
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Window during which a burst of comment changes is coalesced into one diff. */
+const COMMENTS_SYNC_DEBOUNCE_MS = 50;
+
+/** Compute the diff between the parent's current `comments` and the iframe's
+ * last-synced view of that list. */
+function diffComments(
+  current: DesignComment[],
+  previous: Map<string, DesignComment>,
+): {
+  added: DesignComment[];
+  removed: string[];
+  updated: DesignComment[];
+} {
+  const added: DesignComment[] = [];
+  const updated: DesignComment[] = [];
+  const seen = new Set<string>();
+  for (const comment of current) {
+    seen.add(comment.id);
+    const prev = previous.get(comment.id);
+    if (!prev) {
+      added.push(comment);
+    } else if (
+      prev.text !== comment.text ||
+      prev.elementSelector !== comment.elementSelector ||
+      prev.resolved !== comment.resolved ||
+      prev.orphaned !== comment.orphaned
+    ) {
+      updated.push(comment);
+    }
+  }
+  const removed: string[] = [];
+  previous.forEach((_, id) => {
+    if (!seen.has(id)) removed.push(id);
+  });
+  return { added, removed, updated };
 }
 
 export function DesignPreviewFrame() {
@@ -315,6 +312,7 @@ export function DesignPreviewFrame() {
   const addMeasurement = useDesignWorkspaceStore((s) => s.addMeasurement);
   const addPickedColor = useDesignWorkspaceStore((s) => s.addPickedColor);
   const addComment = useDesignWorkspaceStore((s) => s.addComment);
+  const markCommentsOrphaned = useDesignWorkspaceStore((s) => s.markCommentsOrphaned);
   const comments = useDesignWorkspaceStore((s) => s.comments);
 
   // Auto-compile Tailwind components when switching or on first load
@@ -330,90 +328,149 @@ export function DesignPreviewFrame() {
     win.postMessage(message, "*");
   }, []);
 
-  const syncCommentsToIframe = useCallback(
+  // The iframe's view of the comments list. Keyed by id so diffing is O(n).
+  // Reset to empty whenever the iframe rebuilds (handleIframeLoad) and updated
+  // after every successful diff post.
+  const lastSyncedCommentsRef = useRef<Map<string, DesignComment>>(new Map());
+  const commentsSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCommentsRef = useRef<DesignComment[] | null>(null);
+
+  const flushCommentsDiff = useCallback(() => {
+    commentsSyncTimerRef.current = null;
+    const next = pendingCommentsRef.current;
+    pendingCommentsRef.current = null;
+    if (!next) return;
+    const diff = diffComments(next, lastSyncedCommentsRef.current);
+    if (diff.added.length === 0 && diff.removed.length === 0 && diff.updated.length === 0) {
+      return;
+    }
+    postToIframe({ type: "selene-tool-comments-sync", diff });
+    // After successful post, snapshot the new state.
+    const snapshot = new Map<string, DesignComment>();
+    for (const c of next) snapshot.set(c.id, c);
+    lastSyncedCommentsRef.current = snapshot;
+  }, [postToIframe]);
+
+  const scheduleCommentsDiff = useCallback(
+    (next: DesignComment[]) => {
+      pendingCommentsRef.current = next;
+      if (commentsSyncTimerRef.current !== null) {
+        clearTimeout(commentsSyncTimerRef.current);
+      }
+      commentsSyncTimerRef.current = setTimeout(flushCommentsDiff, COMMENTS_SYNC_DEBOUNCE_MS);
+    },
+    [flushCommentsDiff],
+  );
+
+  // Send a full bootstrap of the current comments list (used on iframe rebuild).
+  // Drops any pending debounce so we don't immediately overwrite the bootstrap
+  // with a partial diff against an empty `lastSyncedCommentsRef`.
+  const bootstrapCommentsToIframe = useCallback(
     (list: DesignComment[]) => {
-      postToIframe({ type: "selene-tool-comments-sync", comments: list });
+      if (commentsSyncTimerRef.current !== null) {
+        clearTimeout(commentsSyncTimerRef.current);
+        commentsSyncTimerRef.current = null;
+      }
+      pendingCommentsRef.current = null;
+      lastSyncedCommentsRef.current = new Map();
+      postToIframe({ type: "selene-tool-comments-sync", bootstrap: list });
+      const snapshot = new Map<string, DesignComment>();
+      for (const c of list) snapshot.set(c.id, c);
+      lastSyncedCommentsRef.current = snapshot;
     },
     [postToIframe],
   );
 
-  // Listen for tool postMessages from the iframe — validate source
+  // Listen for tool postMessages from the iframe — validate source AND payload.
+  // The state-machine gate inside each branch reads the active tool via
+  // `getState()` so we don't have to re-subscribe the listener whenever
+  // `activeTool` flips; the listener stays mounted for the lifetime of the
+  // component and reacts to whichever tool is active when the event fires.
   useEffect(() => {
     function handleMessage(e: MessageEvent) {
-      // Only accept messages from our own iframe, not arbitrary windows
       if (e.source !== iframeRef.current?.contentWindow) return;
-      if (!isIframeMessage(e.data)) return;
-      const data = e.data;
+      const message = validateIframeMessage(e.data);
+      if (!message) return;
 
-      if (data.type === "selene-inspector-select") {
-        try {
-          const element = data.element;
-          if (!element || typeof element !== "object") return;
-          const action = data.action;
-          if (action === "add" || action === "remove") {
-            toggleSelectedElement(element);
-          } else {
-            setSelectedElements([element]);
-          }
-        } catch (err) {
-          console.warn("[design-preview] malformed inspector-select message", err);
+      if (message.type === "selene-inspector-select") {
+        const action = message.action;
+        if (action === "add" || action === "remove") {
+          toggleSelectedElement(message.element);
+        } else {
+          setSelectedElements([message.element]);
         }
         return;
       }
 
-      if (data.type === "selene-tool-measure") {
-        try {
-          if (!data.from || !data.to || !data.distances) return;
-          const measurement: Measurement = {
-            id: makeId("m"),
-            from: data.from,
-            to: data.to,
-            distances: data.distances,
-            createdAt: Date.now(),
-          };
-          addMeasurement(measurement);
-        } catch (err) {
-          console.warn("[design-preview] malformed measure message", err);
+      if (message.type === "selene-tool-measure") {
+        const active = useDesignWorkspaceStore.getState().activeTool;
+        if (active !== "measure") {
+          console.warn(
+            `[design-preview] rejecting stale selene-tool-measure — activeTool=${String(active)}`,
+          );
+          return;
         }
+        const measurement: Measurement = {
+          id: makeId("m"),
+          from: message.from,
+          to: message.to,
+          distances: message.distances,
+          createdAt: Date.now(),
+        };
+        addMeasurement(measurement);
         return;
       }
 
-      if (data.type === "selene-tool-color-pick") {
-        try {
-          const sourceData = data.source === "foreground" ? data.foreground : data.background;
-          if (!sourceData || !sourceData.rgb || !sourceData.hsl || !data.element) return;
-          const picked: PickedColor = {
-            id: makeId("c"),
-            hex: sourceData.hex,
-            rgb: sourceData.rgb,
-            hsl: sourceData.hsl,
-            source: data.source,
-            element: data.element,
-            createdAt: Date.now(),
-          };
-          addPickedColor(picked);
-        } catch (err) {
-          console.warn("[design-preview] malformed color-pick message", err);
+      if (message.type === "selene-tool-color-pick") {
+        const active = useDesignWorkspaceStore.getState().activeTool;
+        if (active !== "eyedropper") {
+          console.warn(
+            `[design-preview] rejecting stale selene-tool-color-pick — activeTool=${String(active)}`,
+          );
+          return;
         }
+        const sourceData =
+          message.source === "foreground"
+            ? message.foreground
+            : message.source === "border"
+              ? message.picked
+              : message.background;
+        const picked: PickedColor = {
+          id: makeId("c"),
+          hex: sourceData.hex,
+          rgb: sourceData.rgb,
+          hsl: sourceData.hsl,
+          source: message.source,
+          element: message.element,
+          createdAt: Date.now(),
+        };
+        addPickedColor(picked);
         return;
       }
 
-      if (data.type === "selene-tool-comment") {
-        try {
-          if (typeof data.elementSelector !== "string" || typeof data.text !== "string") return;
-          const comment: DesignComment = {
-            id: makeId("cm"),
-            elementSelector: data.elementSelector,
-            text: data.text,
-            createdAt: data.createdAt,
-            resolved: false,
-          };
-          addComment(comment);
-          // The `comments` effect below re-syncs to the iframe whenever the
-          // list changes — no explicit sync needed here (would double-roundtrip).
-        } catch (err) {
-          console.warn("[design-preview] malformed comment message", err);
+      if (message.type === "selene-tool-comment") {
+        const active = useDesignWorkspaceStore.getState().activeTool;
+        if (active !== "comment") {
+          console.warn(
+            `[design-preview] rejecting stale selene-tool-comment — activeTool=${String(active)}`,
+          );
+          return;
         }
+        const comment: DesignComment = {
+          id: makeId("cm"),
+          elementSelector: message.elementSelector,
+          text: message.text,
+          createdAt: message.createdAt,
+          resolved: false,
+        };
+        addComment(comment);
+        // The `comments` effect below re-syncs to the iframe whenever the
+        // list changes — no explicit sync needed here (would double-roundtrip).
+        return;
+      }
+
+      if (message.type === "selene-tool-comments-resolved") {
+        markCommentsOrphaned(message.unresolved, message.resolved);
         return;
       }
     }
@@ -423,6 +480,7 @@ export function DesignPreviewFrame() {
     addComment,
     addMeasurement,
     addPickedColor,
+    markCommentsOrphaned,
     setSelectedElements,
     toggleSelectedElement,
   ]);
@@ -440,11 +498,22 @@ export function DesignPreviewFrame() {
     }
   }, [activeTool, postToIframe]);
 
-  // Re-sync comments to the iframe whenever the list changes (covers new
-  // pins, resolves, deletes, and the post-rebuild handshake on iframe load).
+  // Re-sync comments to the iframe whenever the list changes — but as a
+  // diff against the iframe's last-synced view, debounced to coalesce
+  // rapid-fire edits within ~50ms.
   useEffect(() => {
-    syncCommentsToIframe(comments);
-  }, [comments, syncCommentsToIframe]);
+    scheduleCommentsDiff(comments);
+  }, [comments, scheduleCommentsDiff]);
+
+  // Cancel any pending debounce when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (commentsSyncTimerRef.current !== null) {
+        clearTimeout(commentsSyncTimerRef.current);
+        commentsSyncTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Workspace-level keyboard shortcuts: V/M/I/C
   useEffect(() => {
@@ -500,12 +569,14 @@ export function DesignPreviewFrame() {
 
   // After the iframe rebuilds (srcDoc change), re-sync state once it has
   // booted the tools script: re-broadcast the active tool and the full
-  // comment list so persistent pins reappear on every rebuild.
+  // comment list so persistent pins reappear on every rebuild. The bootstrap
+  // resets `lastSyncedCommentsRef` so subsequent diffs are computed against
+  // the freshly-seeded iframe view.
   const handleIframeLoad = useCallback(() => {
     const state = useDesignWorkspaceStore.getState();
     postToIframe({ type: "selene-tool-set-active", tool: state.activeTool });
-    syncCommentsToIframe(state.comments);
-  }, [postToIframe, syncCommentsToIframe]);
+    bootstrapCommentsToIframe(state.comments);
+  }, [postToIframe, bootstrapCommentsToIframe]);
 
   const inspectorEnabled = activeTool === "inspect";
 

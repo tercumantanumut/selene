@@ -407,7 +407,6 @@ export const TOOLS_SCRIPT = `
   // --- Comment mode ---
   var commentInput = null;
   var commentTarget = null;
-  var commentPins = [];
 
   function clearCommentInput() {
     if (commentInput && commentInput.wrap.parentNode) commentInput.wrap.parentNode.removeChild(commentInput.wrap);
@@ -446,24 +445,145 @@ export const TOOLS_SCRIPT = `
     return { wrap: wrap, input: input, isComposing: false };
   }
 
-  function refreshCommentPins(comments) {
-    commentPins.forEach(function(p) { if (p && p.parentNode) p.parentNode.removeChild(p); });
-    commentPins = [];
-    if (!comments || !comments.length) return;
-    comments.forEach(function(c, idx) {
-      try {
-        var el = document.querySelector(c.elementSelector);
-        if (!el) return;
-        var rect = el.getBoundingClientRect();
-        var pin = document.createElement('div');
-        pin.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;width:20px;height:20px;border-radius:9999px;background:' + (c.resolved ? '#94a3b8' : '#f59e0b') + ';color:#fff;font:11px/20px ui-sans-serif,system-ui,sans-serif;text-align:center;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.25);';
-        pin.style.left = (rect.right - 10) + 'px';
-        pin.style.top = (rect.top - 10) + 'px';
-        pin.textContent = String(idx + 1);
-        commentLayer.appendChild(pin);
-        commentPins.push(pin);
-      } catch (err) { /* invalid selector — skip */ }
+  // Map of commentId -> { comment, pin }. Allows incremental diff updates
+  // without rebuilding every pin on every change. Position-refresh on
+  // scroll/resize iterates the live entries.
+  var commentPinsById = Object.create(null);
+  // Ordered id list, used to assign 1-based pin numbers consistently with the
+  // parent store's array order.
+  var commentOrder = [];
+
+  function removeCommentPin(id) {
+    var entry = commentPinsById[id];
+    if (!entry) return;
+    if (entry.pin && entry.pin.parentNode) entry.pin.parentNode.removeChild(entry.pin);
+    delete commentPinsById[id];
+    var idx = commentOrder.indexOf(id);
+    if (idx !== -1) commentOrder.splice(idx, 1);
+  }
+
+  function clearAllCommentPins() {
+    commentOrder.forEach(function(id) {
+      var entry = commentPinsById[id];
+      if (entry && entry.pin && entry.pin.parentNode) entry.pin.parentNode.removeChild(entry.pin);
     });
+    commentPinsById = Object.create(null);
+    commentOrder = [];
+  }
+
+  function renumberCommentPins() {
+    commentOrder.forEach(function(id, idx) {
+      var entry = commentPinsById[id];
+      if (entry && entry.pin) entry.pin.textContent = String(idx + 1);
+    });
+  }
+
+  function buildCommentPin(comment) {
+    var pin = document.createElement('div');
+    pin.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;width:20px;height:20px;border-radius:9999px;background:' + (comment.resolved ? '#94a3b8' : '#f59e0b') + ';color:#fff;font:11px/20px ui-sans-serif,system-ui,sans-serif;text-align:center;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,0.25);';
+    return pin;
+  }
+
+  function positionCommentPin(pin, el) {
+    var rect = el.getBoundingClientRect();
+    pin.style.left = (rect.right - 10) + 'px';
+    pin.style.top = (rect.top - 10) + 'px';
+  }
+
+  function applyCommentAdd(comment) {
+    if (commentPinsById[comment.id]) return; // already present
+    var el = null;
+    try { el = document.querySelector(comment.elementSelector); } catch (err) { /* invalid selector */ }
+    var pin = buildCommentPin(comment);
+    if (el) {
+      positionCommentPin(pin, el);
+      commentLayer.appendChild(pin);
+    }
+    commentPinsById[comment.id] = { comment: comment, el: el, pin: pin, mounted: !!el };
+    commentOrder.push(comment.id);
+  }
+
+  function applyCommentUpdate(comment) {
+    var entry = commentPinsById[comment.id];
+    if (!entry) { applyCommentAdd(comment); return; }
+    // Re-resolve in case the selector changed (the parent allows
+    // updateComment to patch elementSelector, even though the iframe never
+    // generates such an update itself).
+    if (entry.comment.elementSelector !== comment.elementSelector) {
+      try { entry.el = document.querySelector(comment.elementSelector); } catch (err) { entry.el = null; }
+    }
+    entry.comment = comment;
+    // Re-paint colour for resolved/unresolved transitions.
+    entry.pin.style.background = comment.resolved ? '#94a3b8' : '#f59e0b';
+    if (entry.el) {
+      if (!entry.mounted) { commentLayer.appendChild(entry.pin); entry.mounted = true; }
+      positionCommentPin(entry.pin, entry.el);
+    } else if (entry.mounted && entry.pin.parentNode) {
+      entry.pin.parentNode.removeChild(entry.pin);
+      entry.mounted = false;
+    }
+  }
+
+  function bootstrapCommentPins(comments) {
+    clearAllCommentPins();
+    if (!comments || !comments.length) { ackCommentResolution(); return; }
+    comments.forEach(function(c) { applyCommentAdd(c); });
+    renumberCommentPins();
+    ackCommentResolution();
+  }
+
+  function applyCommentDiff(diff) {
+    var added = (diff && Array.isArray(diff.added)) ? diff.added : [];
+    var removed = (diff && Array.isArray(diff.removed)) ? diff.removed : [];
+    var updated = (diff && Array.isArray(diff.updated)) ? diff.updated : [];
+    removed.forEach(function(id) { removeCommentPin(id); });
+    updated.forEach(function(c) { applyCommentUpdate(c); });
+    added.forEach(function(c) { applyCommentAdd(c); });
+    renumberCommentPins();
+    ackCommentResolution();
+  }
+
+  // Back-compat wrapper for callers that still pass a full array (bootstrap
+  // path on iframe rebuild). Used by both legacy "comments: [...]" payloads
+  // and the explicit "bootstrap" shape.
+  function refreshCommentPins(comments) {
+    bootstrapCommentPins(comments || []);
+  }
+
+  function refreshLiveCommentPositions() {
+    commentOrder.forEach(function(id) {
+      var entry = commentPinsById[id];
+      if (!entry) return;
+      if (entry.el && entry.el.isConnected) {
+        if (!entry.mounted) { commentLayer.appendChild(entry.pin); entry.mounted = true; }
+        positionCommentPin(entry.pin, entry.el);
+      } else if (entry.mounted && entry.pin.parentNode) {
+        entry.pin.parentNode.removeChild(entry.pin);
+        entry.mounted = false;
+      }
+    });
+  }
+
+  function ackCommentResolution() {
+    var resolved = [];
+    var unresolved = [];
+    commentOrder.forEach(function(id) {
+      var entry = commentPinsById[id];
+      if (!entry) return;
+      // Re-query at ack time — the document may have mutated since add.
+      var el = null;
+      try { el = document.querySelector(entry.comment.elementSelector); } catch (err) { el = null; }
+      entry.el = el;
+      if (el) resolved.push(id);
+      else unresolved.push(id);
+    });
+    try {
+      window.parent.postMessage({
+        type: 'selene-tool-comments-resolved',
+        resolved: resolved,
+        unresolved: unresolved
+      }, '*');
+    } catch (err) { /* parent gone */ }
   }
 
   // --- Cursor management ---
@@ -649,14 +769,13 @@ export const TOOLS_SCRIPT = `
 
   // Refresh overlay positions on scroll/resize
   var rafPending = false;
-  var lastSyncedComments = [];
   function scheduleRefresh() {
     if (rafPending) return;
     rafPending = true;
     requestAnimationFrame(function() {
       rafPending = false;
       refreshSelectionOverlays();
-      refreshCommentPins(lastSyncedComments);
+      refreshLiveCommentPositions();
     });
   }
   window.addEventListener('scroll', scheduleRefresh, true);
@@ -689,9 +808,17 @@ export const TOOLS_SCRIPT = `
     } else if (t === 'selene-tool-set-active') {
       setActiveTool(e.data.tool || null);
     } else if (t === 'selene-tool-comments-sync') {
-      var list = Array.isArray(e.data.comments) ? e.data.comments : [];
-      lastSyncedComments = list;
-      refreshCommentPins(list);
+      // Three accepted shapes:
+      //   { bootstrap: DesignComment[] } — full reseed (iframe rebuild)
+      //   { comments: DesignComment[] } — legacy full-array (back-compat)
+      //   { diff: { added, removed, updated } } — incremental update
+      if (Array.isArray(e.data.bootstrap)) {
+        bootstrapCommentPins(e.data.bootstrap);
+      } else if (Array.isArray(e.data.comments)) {
+        bootstrapCommentPins(e.data.comments);
+      } else if (e.data.diff && typeof e.data.diff === 'object') {
+        applyCommentDiff(e.data.diff);
+      }
     }
   });
 

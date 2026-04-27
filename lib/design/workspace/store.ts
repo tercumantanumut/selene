@@ -66,6 +66,24 @@ const sessionCache = new Map<string, DesignWorkspaceSessionState>();
 export const MAX_HYDRATED_COMPONENTS = 16;
 
 /**
+ * FIFO caps on per-tool collections. Pushing past the cap drops the oldest
+ * entry (lowest index) so long sessions can't accumulate unbounded state.
+ * Comments get a higher cap because they're meant to persist across the
+ * lifetime of a design review.
+ */
+export const MAX_MEASUREMENTS = 200;
+export const MAX_PICKED_COLORS = 200;
+export const MAX_COMMENTS = 500;
+
+function pushFifo<T>(arr: readonly T[], entry: T, cap: number): T[] {
+  if (arr.length >= cap) {
+    // Drop oldest entries to make room for the new one.
+    return [...arr.slice(arr.length - cap + 1), entry];
+  }
+  return [...arr, entry];
+}
+
+/**
  * Tracks the order in which components were most recently hydrated
  * (full-code). Newest at the end. Keyed per-session: switching sessions
  * swaps the tracker so eviction accounting doesn't bleed across sessions.
@@ -583,7 +601,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
   },
 
   addMeasurement: (m: Measurement) => {
-    set({ measurements: [...get().measurements, m] });
+    set({ measurements: pushFifo(get().measurements, m, MAX_MEASUREMENTS) });
   },
 
   removeMeasurement: (id: string) => {
@@ -595,7 +613,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
   },
 
   addPickedColor: (c: PickedColor) => {
-    set({ pickedColors: [...get().pickedColors, c] });
+    set({ pickedColors: pushFifo(get().pickedColors, c, MAX_PICKED_COLORS) });
   },
 
   removePickedColor: (id: string) => {
@@ -607,7 +625,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
   },
 
   addComment: (c: DesignComment) => {
-    set({ comments: [...get().comments, c] });
+    set({ comments: pushFifo(get().comments, c, MAX_COMMENTS) });
   },
 
   updateComment: (id: string, patch: Partial<Omit<DesignComment, "id">>) => {
@@ -632,5 +650,26 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
 
   clearComments: () => {
     set({ comments: [] });
+  },
+
+  markCommentsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => {
+    if (unresolvedIds.length === 0 && resolvedIds.length === 0) return;
+    const unresolvedSet = new Set(unresolvedIds);
+    const resolvedSet = new Set(resolvedIds);
+    set({
+      comments: get().comments.map((entry) => {
+        if (unresolvedSet.has(entry.id)) {
+          // Mark stale if the iframe couldn't find a matching DOM node.
+          return entry.orphaned === true ? entry : { ...entry, orphaned: true };
+        }
+        if (resolvedSet.has(entry.id) && entry.orphaned === true) {
+          // Clear stale flag once the selector resolves again. Set to `false`
+          // explicitly (not `undefined`) so the cleared state round-trips
+          // through the session cache.
+          return { ...entry, orphaned: false };
+        }
+        return entry;
+      }),
+    });
   },
 }));
