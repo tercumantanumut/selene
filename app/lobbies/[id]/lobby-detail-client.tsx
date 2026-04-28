@@ -22,7 +22,11 @@
  *                   the `seedDefaultsForStatus` rationale to match the
  *                   lobbyId-only gate it actually uses.
  *   - Sprint 6    → RosterSection wired in (was a seat-count placeholder).
- *   - Sprint 7    → PlanningSection + RollingSection (Kanban + DnD).
+ *   - Sprint 7A   → PlanningSection (planner banner, editable card drafts,
+ *                   accept_plan transition).
+ *   - Sprint 7B   → RollingSection wired in: keyboard-first kanban,
+ *                   optimistic move overlay (`useSoloStoryUiStore`),
+ *                   per-card cancel/retry, dependency editor + DAG overlay.
  *   - Sprint 8    → ReviewSection (live run embed + approve/reject/retry).
  *   - Sprint 9    → SynthesisSection (final artifact).
  *
@@ -85,6 +89,7 @@ import type { LobbyStatus } from "@/lib/lobbies/types";
 import { LobbyStatusBadge } from "@/components/lobbies/status-badge";
 import { RosterSection } from "@/components/lobbies/roster/roster-section";
 import { PlanningSection } from "@/components/lobbies/planning/planning-section";
+import { RollingSection } from "@/components/lobbies/rolling/rolling-section";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -267,10 +272,15 @@ export default function LobbyDetailClient() {
                   onChanged={() => void refetch()}
                 />
               </PhaseSection>
-              <RollingSectionPlaceholder
-                cardCount={data.cards.length}
-                lobbyStatus={data.lobby.status}
-              />
+              <PhaseSection id="rolling" title="Rolling" icon={Activity}>
+                <RollingSection
+                  lobby={data.lobby}
+                  cards={data.cards}
+                  dependencies={data.dependencies}
+                  seats={data.seats}
+                  onChanged={() => void refetch()}
+                />
+              </PhaseSection>
               <ReviewSectionPlaceholder
                 approvedCount={
                   data.cards.filter((c) => c.status === "approved").length
@@ -436,25 +446,7 @@ function PhaseSection({
   );
 }
 
-// ─── Placeholder sections (Sprint 7B-9 fill the rest in) ──────────────────
-
-function RollingSectionPlaceholder({
-  cardCount,
-  lobbyStatus,
-}: {
-  cardCount: number;
-  lobbyStatus: LobbyStatus;
-}) {
-  return (
-    <PhaseSection id="rolling" title="Rolling" icon={Activity}>
-      <p className="font-mono text-sm text-terminal-muted">
-        Sprint 7 lands the kanban (custom keyboard-first DnD, DAG overlay).
-        Currently: {cardCount} card{cardCount === 1 ? "" : "s"} · lobby{" "}
-        {lobbyStatus}.
-      </p>
-    </PhaseSection>
-  );
-}
+// ─── Placeholder sections (Sprint 8-9 fill the rest in) ──────────────────
 
 function ReviewSectionPlaceholder({
   approvedCount,
