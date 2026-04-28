@@ -60,11 +60,6 @@ import {
   WEB_SEARCH_NO_RESULT_GUARD,
 } from "./content-sanitizer";
 import { mcpContextStore } from "@/lib/ai/providers/mcp-context-store";
-import {
-  applyScopeToMcpTools,
-  shouldApplyMcpScopeTightening,
-} from "@/lib/lobbies/scope-injection";
-import type { LobbyPermissionScopeV1 } from "@/lib/lobbies/types";
 
 const SDK_PASSTHROUGH_LARGE_INPUT_BYTES = (() => {
   const parsed = Number(process.env.SDK_PASSTHROUGH_LARGE_INPUT_BYTES);
@@ -112,16 +107,6 @@ interface ToolsBuildContext {
    * did not include the header (legacy clients / non-design sessions).
    */
   designPreviewTheme?: import("@/lib/design/workspace/types").DesignPreviewTheme;
-  /**
-   * Solo Story Mode per-seat permission scope (SPEC §7). When defined, MCP
-   * tools loaded via `loadMCPToolsForCharacter` are intersected by name with
-   * `scope.allowedTools` (minus `scope.deniedTools`) before any are surfaced
-   * to the model. Undefined for non-soloStory requests and for soloStory
-   * planner/synthesizer roles whose snapshot uses an empty `allowedTools`
-   * sentinel ("no tightening"). Reserved against
-   * `lib/lobbies/scope-injection.ts:loadSoloStoryScopeForSession`.
-   */
-  soloStoryPermissionScope?: LobbyPermissionScopeV1;
 }
 
 interface ToolsBuildResult {
@@ -424,43 +409,6 @@ export async function buildToolsForRequest(
       ? await getCharacterFull(characterId)
       : undefined;
     mcpToolResult = await loadMCPToolsForCharacter(character || undefined);
-
-    // Solo Story Mode SPEC §7 step 4: intersect MCP tools with the seat's
-    // permission scope only for explicit narrowed/denied scopes. Empty
-    // `allowedTools` is the inherit-all sentinel and must not strip MCP tools.
-    // Done here — not earlier in the registry filter pass — because MCP tool
-    // names aren't known until `loadMCPToolsForCharacter` returns. Tools dropped
-    // here are also stripped from the alwaysLoad / deferred id lists so the
-    // deferred gate doesn't try to surface them later in the request.
-    if (
-      ctx.soloStoryPermissionScope &&
-      shouldApplyMcpScopeTightening(ctx.soloStoryPermissionScope)
-    ) {
-      const before = Object.keys(mcpToolResult.allTools).length;
-      const { kept, denied } = applyScopeToMcpTools(
-        mcpToolResult.allTools,
-        ctx.soloStoryPermissionScope,
-      );
-      const deniedSet = new Set(denied);
-      mcpToolResult = {
-        allTools: kept,
-        alwaysLoadToolIds: mcpToolResult.alwaysLoadToolIds.filter(
-          (id) => !deniedSet.has(id),
-        ),
-        deferredToolIds: mcpToolResult.deferredToolIds.filter(
-          (id) => !deniedSet.has(id),
-        ),
-        enabledMcpServers: mcpToolResult.enabledMcpServers,
-        enabledMcpTools: mcpToolResult.enabledMcpTools?.filter(
-          (id) => !deniedSet.has(id),
-        ),
-      };
-      if (denied.length > 0) {
-        console.log(
-          `[CHAT API] Solo Story scope denied ${denied.length}/${before} MCP tools: ${denied.join(", ")}`,
-        );
-      }
-    }
 
     if (Object.keys(mcpToolResult.allTools).length > 0) {
       console.log(

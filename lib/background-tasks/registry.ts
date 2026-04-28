@@ -229,11 +229,6 @@ class TaskRegistry extends EventEmitter {
       userId: task.userId,
       characterId: task.characterId,
       sessionId: task.sessionId,
-      // SPEC §8: source soloStory routing metadata from the task row when the
-      // caller didn't pass overrides via `details`. Allows the lobby UI to
-      // filter `task:progress` events by lobbyId without re-querying.
-      lobbyId: task.lobbyId,
-      cardId: task.cardId,
       progressText,
       progressPercent,
       ...restDetails,

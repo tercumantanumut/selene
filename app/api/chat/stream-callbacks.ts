@@ -14,7 +14,6 @@ import {
   completeAgentRun,
   appendRunEvent,
 } from "@/lib/observability";
-import { getAgentRun } from "@/lib/observability/queries";
 import { triggerExtraction } from "@/lib/agent-memory";
 import { deliverChannelReply } from "@/lib/channels/delivery";
 import { taskRegistry } from "@/lib/background-tasks/registry";
@@ -43,10 +42,6 @@ import {
 import type { ContextInjectionTrackingMetadata } from "./context-injection";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function isSoloStorySynthesizerRun(ctx: StreamCallbackContext): boolean {
-  return ctx.agentRun?.pipelineName === "solo_story.synthesizer";
-}
 
 /**
  * Drain any messages that were queued for live-prompt injection but never
@@ -150,7 +145,7 @@ interface StreamCallbackContext {
   sessionId: string;
   characterId: string | null;
   sessionMetadata: Record<string, unknown>;
-  agentRun: { id: string; pipelineName?: string } | null;
+  agentRun: { id: string } | null;
   streamingState: StreamingMessageState | null;
   syncStreamingMessage: ((force?: boolean) => Promise<void>) | null | undefined;
   shouldEmitProgress: boolean;
@@ -412,65 +407,26 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
           0
         ) || 0;
 
-      if (isSoloStorySynthesizerRun(ctx)) {
-        await appendRunEvent({
-          runId: ctx.agentRun.id,
-          eventType: "step_completed",
-          level: "info",
-          pipelineName: ctx.agentRun.pipelineName,
-          data: {
-            phase: "chat_stream_completed",
-            stepCount,
-            toolCallCount,
-            usage: usage
-              ? {
-                  inputTokens: usage.inputTokens,
-                  outputTokens: usage.outputTokens,
-                  totalTokens: usage.totalTokens,
-                }
-              : undefined,
-            ...(cacheMetrics ? { cache: cacheMetrics } : {}),
-          },
-        });
-      } else {
-        await completeAgentRun(ctx.agentRun.id, "succeeded", {
-          stepCount,
-          toolCallCount,
-          usage: usage
-            ? {
-                inputTokens: usage.inputTokens,
-                outputTokens: usage.outputTokens,
-                totalTokens: usage.totalTokens,
-              }
-            : undefined,
-          ...(cacheMetrics ? { cache: cacheMetrics } : {}),
-        });
-      }
+      await completeAgentRun(ctx.agentRun.id, "succeeded", {
+        stepCount,
+        toolCallCount,
+        usage: usage
+          ? {
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+              totalTokens: usage.totalTokens,
+            }
+          : undefined,
+        ...(cacheMetrics ? { cache: cacheMetrics } : {}),
+      });
 
       const registryTask = taskRegistry.get(ctx.agentRun.id);
       const registryDurationMs = registryTask
         ? Date.now() - new Date(registryTask.startedAt).getTime()
         : undefined;
-      if (isSoloStorySynthesizerRun(ctx)) {
-        const currentRun = await getAgentRun(ctx.agentRun.id);
-        if (currentRun && currentRun.status !== "running") {
-          taskRegistry.updateStatus(ctx.agentRun.id, currentRun.status, {
-            durationMs: registryDurationMs,
-          });
-        } else {
-          taskRegistry.updateStatus(ctx.agentRun.id, "running", {
-            metadata: {
-              ...(registryTask?.metadata ?? {}),
-              chatStreamFinishedAt: new Date().toISOString(),
-              waitingForSynthesisCompletion: true,
-            },
-          });
-        }
-      } else {
-        taskRegistry.updateStatus(ctx.agentRun.id, "succeeded", {
-          durationMs: registryDurationMs,
-        });
-      }
+      taskRegistry.updateStatus(ctx.agentRun.id, "succeeded", {
+        durationMs: registryDurationMs,
+      });
     }
 
     // Log cache performance metrics (if caching enabled)
@@ -685,7 +641,7 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
           runId: ctx.agentRun.id,
           eventType: "run_completed",
           level: "info",
-          pipelineName: ctx.agentRun.pipelineName ?? "chat",
+          pipelineName: "chat",
           data: {
             status: "cancelled",
             reason: "user_cancelled",

@@ -4,7 +4,7 @@
  * Uses discriminated unions for type-safe task handling.
  */
 
-export type TaskType = "scheduled" | "channel" | "chat" | "solo_story";
+export type TaskType = "scheduled" | "channel" | "chat";
 
 export type TaskStatus =
   | "queued"
@@ -27,15 +27,6 @@ interface BaseTask {
   durationMs?: number;
   error?: string;
   metadata?: Record<string, unknown>;
-  /**
-   * Solo Story Mode (SPEC §8): when this task corresponds to a soloStory run
-   * (planner / worker / synthesizer), `lobbyId` (and `cardId` for worker
-   * runs) are mirrored from the soloStory snapshot so SSE consumers can
-   * filter task events by the lobby they belong to without re-querying
-   * `agent_runs.metadata`. Undefined for non-soloStory tasks.
-   */
-  lobbyId?: string;
-  cardId?: string;
 }
 
 export interface BackgroundTask extends BaseTask {
@@ -93,14 +84,6 @@ export interface TaskProgressEvent {
   progressContentProjectionOnly?: boolean;
   startedAt?: string;
   timestamp: string;
-  /**
-   * Solo Story Mode (SPEC §8): mirrored from the registered task so progress
-   * events also carry routing metadata. The registry sources these from the
-   * task row when possible, so callers do not need to populate them in
-   * `details`.
-   */
-  lobbyId?: string;
-  cardId?: string;
 }
 
 interface TaskCompletedEvent {

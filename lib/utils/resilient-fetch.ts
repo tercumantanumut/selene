@@ -24,13 +24,6 @@ interface ResilientFetchResult<T> {
   error: string | null;
   timedOut: boolean;
   status?: number;
-  /**
-   * Parsed JSON response body when the server returned `application/json` —
-   * populated for BOTH success and error responses. Lets callers recover the
-   * structured error envelope (e.g., 409 `{ error, reason, currentVersion }`)
-   * even though `data` is null on failure.
-   */
-  parsedBody?: unknown;
 }
 
 const DEFAULT_TIMEOUT = 10_000;
@@ -100,18 +93,6 @@ export async function resilientFetch<T = unknown>(
       const contentType = response.headers.get("content-type") || "";
       const raw = response.status === 204 || response.status === 205 ? "" : await response.text();
 
-      // Parse JSON once up-front so both success and error paths can return
-      // `parsedBody`. Errors here are non-fatal — we fall back to text.
-      let parsedBody: unknown;
-      const isJson = contentType.includes("application/json");
-      if (isJson && raw) {
-        try {
-          parsedBody = JSON.parse(raw);
-        } catch {
-          // Leave parsedBody undefined; success branch maps this to "Invalid JSON".
-        }
-      }
-
       // Don't retry client errors (4xx) — they won't succeed on retry
       if (response.ok) {
         if (response.status === 204 || response.status === 205) {
@@ -120,11 +101,13 @@ export async function resilientFetch<T = unknown>(
         if (!raw) {
           return { data: null, error: null, timedOut: false, status: response.status };
         }
-        if (isJson) {
-          if (parsedBody === undefined) {
+        if (contentType.includes("application/json")) {
+          try {
+            const data = JSON.parse(raw) as T;
+            return { data, error: null, timedOut: false, status: response.status };
+          } catch {
             return { data: null, error: "Invalid JSON response", timedOut: false, status: response.status };
           }
-          return { data: parsedBody as T, error: null, timedOut: false, status: response.status, parsedBody };
         }
         return { data: raw as unknown as T, error: null, timedOut: false, status: response.status };
       }
@@ -139,14 +122,12 @@ export async function resilientFetch<T = unknown>(
         continue;
       }
 
-      // Non-retryable error — preserve parsedBody so callers can recover
-      // structured envelope fields (e.g., 409 currentVersion).
+      // Non-retryable error
       return {
         data: null,
         error: errorMessage,
         timedOut: false,
         status: response.status,
-        parsedBody,
       };
     } catch (err) {
       clearTimeout(timeoutId);
