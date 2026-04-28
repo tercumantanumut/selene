@@ -144,6 +144,46 @@ describe("execute-command-tool normalization", () => {
     });
   });
 
+  it("tags progress updates with the executeCommand tool name", async () => {
+    const onProgress = vi.fn();
+    const tool = createExecuteCommandTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+      onProgress,
+    });
+
+    commandExecutionMocks.executeCommandWithValidation.mockImplementation(async (options) => {
+      options.onProgress?.({
+        command: "git",
+        args: ["status"],
+        cwd: "C:\\workspace",
+        stdout: "partial output",
+        stderr: "",
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      });
+      return {
+        success: true,
+        stdout: "ok",
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        executionTime: 12,
+        startedAt: "2026-01-01T00:00:00.000Z",
+      };
+    });
+
+    await tool.execute({ command: "git", args: ["status"] }, createToolContext());
+
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "tc-1",
+        toolName: "executeCommand",
+        status: "running",
+      })
+    );
+  });
+
   it("applies normalization before executeCommandWithValidation", async () => {
     const tool = createExecuteCommandTool({
       sessionId: "sess-1",

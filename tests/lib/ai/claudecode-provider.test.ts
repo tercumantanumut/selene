@@ -657,8 +657,8 @@ describe("queryWithSdkOptions — async agent lifecycle (sdk-tools AgentOutput)"
     const text = await queryWithSdkOptions({ prompt: "launch task" });
     expect(text).toBe("Async task launched.");
   });
-});
 
+});
 
 describe("createClaudeCodeProvider — nested subagent filtering", () => {
   beforeEach(() => {

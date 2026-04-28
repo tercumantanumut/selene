@@ -8,6 +8,7 @@ type ExecuteCommandLiveStatus = "running" | "success" | "error";
 
 export interface ExecuteCommandProgressUpdate {
   toolCallId?: string;
+  toolName?: string;
   command: string;
   args: string[];
   cwd: string;
@@ -21,6 +22,7 @@ export interface ExecuteCommandProgressUpdate {
   message?: string;
   logId?: string;
   isTruncated?: boolean;
+  aborted?: boolean;
   chunkStream?: "stdout" | "stderr";
   chunkText?: string;
 }
@@ -59,6 +61,8 @@ export interface ExecuteOptions {
   windowsVerbatimArguments?: boolean;
   /** Tool call identifier used for live command progress projections. */
   toolCallId?: string;
+  /** Abort signal from the owning AI SDK run/tool call. */
+  abortSignal?: AbortSignal;
   /** Live progress callback for streaming command output into the UI. */
   onProgress?: (update: ExecuteCommandProgressUpdate) => void;
 }
@@ -106,6 +110,8 @@ export interface ExecuteResult {
   logId?: string;
   /** Whether the output was truncated in context */
   isTruncated?: boolean;
+  /** Whether execution was cancelled by the caller's abort signal. */
+  aborted?: boolean;
   /** Metadata for shell ripgrep compatibility/fallback diagnostics */
   searchMetadata?: ExecuteSearchMetadata;
 }
@@ -172,6 +178,8 @@ interface BashToolResult {
   logId?: string;
   /** Whether the output was truncated in context */
   isTruncated?: boolean;
+  /** Whether execution was cancelled by the caller's abort signal. */
+  aborted?: boolean;
 }
 
 /**
@@ -232,6 +240,8 @@ export interface ExecuteCommandToolResult {
   logId?: string;
   /** Whether the output was truncated in context */
   isTruncated?: boolean;
+  /** Whether execution was cancelled by the caller's abort signal. */
+  aborted?: boolean;
 }
 
 /**

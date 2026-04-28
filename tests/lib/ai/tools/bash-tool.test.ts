@@ -118,6 +118,46 @@ describe("bash-tool", () => {
       "sess-1",
       "/workspace/app"
     );
+  });
+
+  it("tags progress updates with the bash tool name", async () => {
+    const onProgress = vi.fn();
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+      onProgress,
+    });
+
+    commandExecutionMocks.executeCommandWithValidation.mockImplementation(async (options) => {
+      options.onProgress?.({
+        command: "/bin/sh",
+        args: ["-lc", "git status"],
+        cwd: "/workspace",
+        stdout: "partial output",
+        stderr: "",
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      });
+      return {
+        success: true,
+        stdout: "status ok\n__SELENE_CWD__:/workspace/app",
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        executionTime: 25,
+        startedAt: "2026-01-01T00:00:00.000Z",
+      };
+    });
+
+    await tool.execute({ command: "git status" }, createToolContext());
+
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "tc-1",
+        toolName: "bash",
+        status: "running",
+      })
+    );
 
     if (isWindows) {
       expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalledWith(
@@ -140,8 +180,8 @@ describe("bash-tool", () => {
           command: "/bin/sh",
           cwd: "/workspace",
           characterId: "char-1",
-          args: ["-l"],
-          stdin: expect.stringContaining("git status"),
+          args: ["-lc", expect.stringContaining("git status")],
+          stdin: undefined,
         }),
         ["/workspace"]
       );
@@ -406,8 +446,8 @@ describe("bash-tool", () => {
         expect.objectContaining({
           command: "/bin/sh",
           cwd: "/workspace",
-          args: ["-l"],
-          stdin: expect.stringContaining("npm run dev"),
+          args: ["-lc", expect.stringContaining("npm run dev")],
+          stdin: undefined,
         }),
         ["/workspace"]
       );

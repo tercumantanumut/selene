@@ -175,9 +175,10 @@ export function buildCharacterSystemPrompt(
     sections.push(channelBlock);
   }
 
-  // Prepend temporal context for accurate date/time awareness
+  // Append temporal context at the bottom for recency bias
   const temporalContext = getTemporalContextBlock();
-  return `${temporalContext}\n\n${sections.join("\n\n")}`;
+  sections.push(temporalContext);
+  return sections.join("\n\n");
 }
 
 /**
@@ -224,13 +225,7 @@ export function buildCacheableCharacterPrompt(
 
   const blocks: CacheableSystemBlock[] = [];
 
-  // Block 1: Temporal context (changes daily, not cached)
-  blocks.push({
-    role: "system",
-    content: getTemporalContextBlock(),
-  });
-
-  // Block 2: Character identity + profile (HIGHLY CACHEABLE)
+  // Block 1: Character identity + profile (HIGHLY CACHEABLE)
   const identityParts: string[] = [];
 
   identityParts.push(
@@ -326,6 +321,12 @@ export function buildCacheableCharacterPrompt(
       content: channelBlock,
     });
   }
+
+  // Temporal context at the bottom for recency bias (changes daily, not cached)
+  blocks.push({
+    role: "system",
+    content: getTemporalContextBlock(),
+  });
 
   return blocks;
 }

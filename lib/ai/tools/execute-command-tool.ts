@@ -436,10 +436,12 @@ The tool returns immediately with a processId. Poll with processId to check stat
             toolCallOptions?: ToolExecutionOptions,
         ): Promise<ExecuteCommandToolResult> => {
             const toolCallId = extractToolCallId(toolCallOptions);
+            const abortSignal = toolCallOptions?.abortSignal;
             const forwardProgress = (update: ExecuteCommandProgressUpdate) => {
                 onProgress?.({
                     ...update,
                     toolCallId: update.toolCallId ?? toolCallId,
+                    toolName: update.toolName ?? "executeCommand",
                 });
             };
 
@@ -672,6 +674,8 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     timeout: timeout ? Math.min(timeout, maxTimeout) : undefined,
                     characterId: characterId,
                     confirmRemoval,
+                    abortSignal,
+                    onProgress: forwardProgress,
                 };
 
                 let result = await executeCommandWithValidation(
@@ -753,6 +757,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     error: result.error,
                     logId: result.logId,
                     isTruncated: result.isTruncated,
+                    aborted: result.aborted,
                 };
 
                 return toolResult;

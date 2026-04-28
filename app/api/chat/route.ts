@@ -391,6 +391,7 @@ export async function POST(req: Request) {
       ? (update: import("@/lib/command-execution/types").ExecuteCommandProgressUpdate) => {
           if (!update.toolCallId) return;
 
+          const toolName = update.toolName ?? "executeCommand";
           const commandLabel = [update.command, ...(update.args ?? [])].join(" ").trim();
           const progressMessage = update.message?.trim()
             || (commandLabel ? `Running ${commandLabel}...` : "Running command...");
@@ -409,7 +410,7 @@ export async function POST(req: Request) {
           };
 
           if (!streamingState.toolCallParts.has(update.toolCallId)) {
-            recordStructuredToolCall(streamingState, update.toolCallId, "executeCommand", {
+            recordStructuredToolCall(streamingState, update.toolCallId, toolName, {
               command: update.command,
               args: update.args,
               cwd: update.cwd,
@@ -419,7 +420,7 @@ export async function POST(req: Request) {
           recordToolResultChunk(
             streamingState,
             update.toolCallId,
-            "executeCommand",
+            toolName,
             normalizedResult,
             update.status === "running"
           );
@@ -1661,7 +1662,35 @@ export async function POST(req: Request) {
             }
           }
 
-          const classification = classifyRecoverability({ provider, error, message: error instanceof Error ? error.message : String(error) });
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (/input exceeds the context window|context window of this model|context length|maximum context/i.test(errorMessage)) {
+            const postErrorCheck = await ContextWindowManager.preFlightCheck(
+              sessionId,
+              currentModelId,
+              5000,
+              currentProvider
+            );
+            if (postErrorCheck.canProceed && postErrorCheck.compactionResult?.success) {
+              if (runId) {
+                await appendRunEvent({
+                  runId,
+                  eventType: "llm_request_failed",
+                  level: "warn",
+                  pipelineName: "chat",
+                  data: {
+                    attempt: attempt + 1,
+                    reason: "context_window_compacted_after_provider_error",
+                    messagesCompacted: postErrorCheck.compactionResult.messagesCompacted,
+                    tokensFreed: postErrorCheck.compactionResult.tokensFreed,
+                    outcome: "retrying_after_compaction",
+                  },
+                });
+              }
+              continue;
+            }
+          }
+
+          const classification = classifyRecoverability({ provider, error, message: errorMessage });
           const retry = shouldRetry({ classification, attempt, maxAttempts: STREAM_RECOVERY_MAX_ATTEMPTS, aborted: streamAbortSignal.aborted });
 
           if (runId) {

@@ -261,6 +261,38 @@ describe("Codex model context window limits", () => {
     expect(thresholds.hardLimitTokens).toBe(380_000); // 95% of 400K
   });
 
+  it("uses GPT-5.5 provider input cap for compaction thresholds", async () => {
+    const config = getContextWindowConfig("gpt-5.5-high", "codex");
+    const thresholds = getTokenThresholds("gpt-5.5-high", "codex");
+
+    expect(config.maxTokens).toBe(1_000_000);
+    expect(config.maxInputTokens).toBe(276_000);
+    expect(config.maxOutputTokens).toBe(128_000);
+    expect(thresholds.warningTokens).toBe(220_800);
+    expect(thresholds.criticalTokens).toBe(262_200);
+    expect(thresholds.hardLimitTokens).toBe(262_200);
+
+    dbMocks.getSession.mockResolvedValue({ id: "gpt55-session", summary: null });
+    dbMocks.getNonCompactedMessages.mockResolvedValue([]);
+    vi.spyOn(TokenTracker, "calculateUsage").mockResolvedValueOnce(makeUsage(262_200));
+    vi.spyOn(CompactionService, "compact").mockResolvedValueOnce({
+      success: false,
+      tokensFreed: 0,
+      messagesCompacted: 0,
+      newSummary: "",
+      error: "No messages available to compact after preserving recent messages",
+    });
+
+    const result = await ContextWindowManager.preFlightCheck("gpt55-session", "gpt-5.5-high", 0, "codex");
+
+    expect(result.canProceed).toBe(false);
+    expect(result.status.status).toBe("exceeded");
+    expect(result.status.maxInputTokens).toBe(276_000);
+    expect(result.status.maxTokens).toBe(1_000_000);
+    expect(result.status.usagePercentage).toBeCloseTo(0.95, 4);
+    expect(result.status.formatted.max).toBe("276.0K");
+  });
+
   it("reports 208K on a 400K codex model as safe", async () => {
     const sessionId = "codex-session";
     const modelId = "gpt-5.1-codex";

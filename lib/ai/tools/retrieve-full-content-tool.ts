@@ -63,14 +63,29 @@ interface RetrieveFullContentToolOptions {
 }
 
 /**
- * Core retrieveFullContent execution logic
+ * Core retrieveFullContent execution logic.
+ * Exported for unit-testing; consumers should use createRetrieveFullContentTool().
  */
-async function executeRetrieveFullContent(
+export async function executeRetrieveFullContent(
   options: RetrieveFullContentToolOptions,
   args: RetrieveFullContentArgs
 ) {
   const { sessionId } = options;
   const { contentId, head, tail, range, grep } = args;
+
+  // Reject conflicting slice parameters so the model learns to send only one.
+  const activeSlices = [
+    grep !== undefined && grep.trim().length > 0 ? "grep" : null,
+    range !== undefined ? "range" : null,
+    head !== undefined ? "head" : null,
+    tail !== undefined ? "tail" : null,
+  ].filter(Boolean);
+  if (activeSlices.length > 1) {
+    return {
+      status: "error",
+      message: `Conflicting slice parameters: ${activeSlices.join(", ")}. Use only ONE of: grep, range, head, or tail.`,
+    };
+  }
 
   const entry = getFullContent(sessionId, contentId);
 
@@ -185,7 +200,7 @@ export function createRetrieveFullContentTool(options: RetrieveFullContentToolOp
 - Each call is hard-capped at ~8K tokens; use chunked reads for large content.
 - Defaults to the first 200 lines when no slice parameter is given.
 
-**Parameters:**
+**Parameters (mutually exclusive — use only ONE slice param per call):**
 - contentId (required) — the trunc_XXXXXXXX id from a stub
 - head: N — first N lines
 - tail: N — last N lines

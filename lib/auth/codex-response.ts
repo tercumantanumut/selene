@@ -4,9 +4,36 @@ type CodexSseEvent = {
 };
 
 type ParsedSseResult =
-  | { kind: "success"; response: unknown }
+  | { kind: "success"; response: Record<string, unknown> }
   | { kind: "error"; message: string; type?: string }
   | { kind: "none" };
+
+function createSyntheticTextResponse(text: string): Record<string, unknown> {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    id: "resp_injected_from_deltas",
+    object: "response",
+    created_at: now,
+    model: "codex",
+    status: "completed",
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        id: "msg_injected_from_deltas",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text,
+            annotations: [],
+          },
+        ],
+      },
+    ],
+    usage: null,
+  };
+}
 
 function parseSseStream(sseText: string): ParsedSseResult {
   const lines = sseText.split("\n");
@@ -86,10 +113,25 @@ function parseSseStream(sseText: string): ParsedSseResult {
     return { kind: "none" };
   }
 
+  // Some Codex responses finish with a scalar `response` payload (for example
+  // `"success"`) instead of a Responses API object. Wrap any recovered text in
+  // the minimal shape expected by the AI SDK so it does not throw Error(text).
+  if (!doneResponse || typeof doneResponse !== "object" || Array.isArray(doneResponse)) {
+    const recoveredText = accumulatedText || (typeof doneResponse === "string" ? doneResponse : "");
+    if (recoveredText) {
+      console.log("[CodexResponse] response.done omitted response object — creating synthetic response", {
+        recoveredTextLength: recoveredText.length,
+      });
+      return { kind: "success", response: createSyntheticTextResponse(recoveredText) };
+    }
+    return { kind: "none" };
+  }
+
+  const responseObj = doneResponse as Record<string, unknown>;
+
   // If response.done had empty output but we accumulated text from deltas,
-  // inject the accumulated text into the response output
-  if (accumulatedText && doneResponse) {
-    const responseObj = doneResponse as Record<string, unknown>;
+  // inject the accumulated text into the response output.
+  if (accumulatedText) {
     const output = responseObj.output as unknown[] | undefined;
     const outputIsEmpty = !Array.isArray(output) || output.length === 0;
 
@@ -97,26 +139,11 @@ function parseSseStream(sseText: string): ParsedSseResult {
       console.log("[CodexResponse] response.done had empty output — injecting accumulated text from delta events", {
         accumulatedTextLength: accumulatedText.length,
       });
-      // Reconstruct the output array in the format the AI SDK expects
-      responseObj.output = [
-        {
-          type: "message",
-          role: "assistant",
-          id: "injected_from_deltas",
-          status: "completed",
-          content: [
-            {
-              type: "output_text",
-              text: accumulatedText,
-              annotations: [],
-            },
-          ],
-        },
-      ];
+      responseObj.output = createSyntheticTextResponse(accumulatedText).output;
     }
   }
 
-  return { kind: "success", response: doneResponse };
+  return { kind: "success", response: responseObj };
 }
 
 export class CodexStreamError extends Error {
@@ -181,42 +208,40 @@ export async function convertSseToJson(
   }
 
   // Log diagnostic info about the response structure for non-streaming callers
-  const responseObj = parsed.response as Record<string, unknown> | null;
-  if (responseObj) {
-    const status = responseObj.status as string | undefined;
-    const output = responseObj.output as unknown[] | undefined;
-    const outputTypes = Array.isArray(output) ? output.map((o: any) => o?.type).filter(Boolean) : [];
-    const hasContent = Array.isArray(output) && output.some((o: any) => {
-      if (o?.type === "message" && Array.isArray(o.content)) {
-        return o.content.some((c: any) => c?.type === "output_text" && c?.text?.length > 0);
-      }
-      return false;
-    });
-    console.log("[CodexResponse] Parsed response.done:", {
-      status,
-      outputCount: output?.length ?? 0,
-      outputTypes,
-      hasTextContent: hasContent,
-      ...(status && status !== "completed" ? { fullResponse: JSON.stringify(responseObj).slice(0, 1000) } : {}),
-    });
+  const responseObj = parsed.response;
+  const status = responseObj.status as string | undefined;
+  const output = responseObj.output as unknown[] | undefined;
+  const outputTypes = Array.isArray(output) ? output.map((o: any) => o?.type).filter(Boolean) : [];
+  const hasContent = Array.isArray(output) && output.some((o: any) => {
+    if (o?.type === "message" && Array.isArray(o.content)) {
+      return o.content.some((c: any) => c?.type === "output_text" && c?.text?.length > 0);
+    }
+    return false;
+  });
+  console.log("[CodexResponse] Parsed response.done:", {
+    status,
+    outputCount: output?.length ?? 0,
+    outputTypes,
+    hasTextContent: hasContent,
+    ...(status && status !== "completed" ? { fullResponse: JSON.stringify(responseObj).slice(0, 1000) } : {}),
+  });
 
-    // If response has status "incomplete" or "failed", treat as error
-    if (status === "incomplete") {
-      const incompleteReason = (responseObj.incomplete_details as Record<string, unknown>)?.reason ?? "unknown";
-      throw new CodexStreamError(
-        `Codex response incomplete: ${incompleteReason}`,
-        "incomplete_response",
-      );
-    }
-    if (status === "failed") {
-      const errorDetails = responseObj.error as Record<string, unknown> | undefined;
-      const statusDetails = responseObj.status_details as Record<string, unknown> | undefined;
-      const errorMsg = (errorDetails?.message ?? statusDetails?.error ?? "unknown failure") as string;
-      throw new CodexStreamError(
-        `Codex response failed: ${errorMsg}`,
-        "response_failed",
-      );
-    }
+  // If response has status "incomplete" or "failed", treat as error
+  if (status === "incomplete") {
+    const incompleteReason = (responseObj.incomplete_details as Record<string, unknown>)?.reason ?? "unknown";
+    throw new CodexStreamError(
+      `Codex response incomplete: ${incompleteReason}`,
+      "incomplete_response",
+    );
+  }
+  if (status === "failed") {
+    const errorDetails = responseObj.error as Record<string, unknown> | undefined;
+    const statusDetails = responseObj.status_details as Record<string, unknown> | undefined;
+    const errorMsg = (errorDetails?.message ?? statusDetails?.error ?? "unknown failure") as string;
+    throw new CodexStreamError(
+      `Codex response failed: ${errorMsg}`,
+      "response_failed",
+    );
   }
 
   const jsonHeaders = new Headers(headers);

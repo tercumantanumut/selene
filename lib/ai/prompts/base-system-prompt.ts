@@ -74,7 +74,6 @@ function buildBaseSystemPrompt(options: BaseSystemPromptOptions): string {
 
   // Assemble the prompt
   const sections = [
-    getTemporalContextBlock(),
     coreIdentity,
     RESPONSE_STYLE,
     DOING_TASKS,
@@ -95,6 +94,9 @@ function buildBaseSystemPrompt(options: BaseSystemPromptOptions): string {
   if (additionalContext) {
     sections.push(additionalContext);
   }
+
+  // Temporal context at the bottom for recency bias
+  sections.push(getTemporalContextBlock());
 
   return combineBlocks(...sections);
 }
@@ -162,13 +164,7 @@ function buildCacheableSystemPrompt(
 
   const coreIdentity = buildCoreIdentity(options);
 
-  // Block 1: Temporal context (changes daily, not cached)
-  blocks.push({
-    role: "system",
-    content: getTemporalContextBlock(),
-  });
-
-  // Block 2: Core identity + response rules (static, highly cacheable)
+  // Block 1: Core identity + response rules (static, highly cacheable)
   const staticBlocks = combineBlocks(
     coreIdentity,
     RESPONSE_STYLE,
@@ -213,6 +209,12 @@ function buildCacheableSystemPrompt(
       }),
     });
   }
+
+  // Temporal context at the bottom for recency bias (changes daily, not cached)
+  blocks.push({
+    role: "system",
+    content: getTemporalContextBlock(),
+  });
 
   return blocks;
 }

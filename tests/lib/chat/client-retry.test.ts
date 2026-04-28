@@ -94,5 +94,15 @@ describe("client retry helpers", () => {
         ] as any,
       }),
     ).toBe(false);
+
+    expect(
+      shouldAutoRetryClientChat({
+        error: new Error("Your input exceeds the context window of this model."),
+        messages: [
+          { id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+          { id: "a1", role: "assistant", parts: [] },
+        ] as any,
+      }),
+    ).toBe(false);
   });
 });

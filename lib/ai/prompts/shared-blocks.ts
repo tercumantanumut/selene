@@ -115,7 +115,8 @@ export const TOOL_DISCOVERY_MINIMAL = `## Tool Discovery & Codebase Search
 - Most tools are deferred-loaded. Use searchTools to discover capabilities you don't see.
 - Never reject a request for missing capability without checking searchTools first.
 - When a pre-loaded tool returns a STUB, truncation, or "disabled" error, read the Retrieval section carefully. If it references a tool you don't have a schema for (e.g., executeCommand), call searchTools with \`select:toolName\` BEFORE retrying the failed tool.
-- The "skill" tool is for platform skills and workflows only (e.g., simplify, update-config). Do NOT use "skill" for file operations — use searchTools to load editFile, readFile, writeFile instead.`;
+- The "skill" tool is for platform skills and workflows only (e.g., simplify, update-config). Do NOT use "skill" for file operations — use searchTools to load editFile, readFile, writeFile instead.
+- IMPORTANT TOOLING NOTE: you are not limited to initially loaded tools. Use searchTools to discover tools you need (editFile, writeFile, executeCommand, readFile, localGrep, etc.). If a tool is missing, search for it instead of assuming unavailable.`;
 
 /**
  * Tool Discovery Instructions (Always-Include Mode)

@@ -116,11 +116,32 @@ describe("Smart timeout defaults", () => {
             args: ["-e", "setTimeout(() => console.log('done'), 5000)"],
             cwd: process.cwd(),
             characterId: "test",
-            timeout: 500, // 0.5s → will timeout
+            timeout: 500, // 0.5s -> will timeout
         });
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("timeout");
+    });
+
+    it("aborts foreground execution when the caller abort signal fires", async () => {
+        const controller = new AbortController();
+        const startedAt = Date.now();
+        const pending = executeCommand({
+            command: "node",
+            args: ["-e", "setInterval(() => {}, 1000)"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 30_000,
+            abortSignal: controller.signal,
+        });
+
+        setTimeout(() => controller.abort(), 100);
+        const result = await pending;
+
+        expect(result.success).toBe(false);
+        expect(result.aborted).toBe(true);
+        expect(result.error).toBe("Process cancelled by abort signal");
+        expect(Date.now() - startedAt).toBeLessThan(10_000);
     });
 });
 

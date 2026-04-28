@@ -10,7 +10,9 @@ export interface ContextStatusInfo {
   percentage: number;
   status: "safe" | "warning" | "critical" | "exceeded";
   currentTokens: number;
+  maxInputTokens: number;
   maxTokens: number;
+  maxOutputTokens?: number;
   formatted: {
     current: string;
     max: string;
@@ -54,6 +56,94 @@ interface UseContextStatusReturn {
   /** Trigger manual compaction and refresh status afterwards. */
   compact: () => Promise<{ success: boolean; compacted: boolean }>;
   isCompacting: boolean;
+}
+
+type CompactSessionToolResult = {
+  status?: string;
+  after?: {
+    tokens?: number;
+    maxInputTokens?: number;
+    maxTokens?: number;
+    maxOutputTokens?: number;
+    percentage?: number;
+    formatted?: ContextStatusInfo["formatted"];
+    thresholds?: ContextStatusInfo["thresholds"];
+    status?: ContextStatusInfo["status"];
+  };
+  model?: ContextStatusInfo["model"];
+};
+
+function normalizeStatus(
+  value: ContextStatusInfo,
+  fallbackThresholds?: ContextStatusInfo["thresholds"]
+): ContextStatusInfo {
+  return {
+    ...value,
+    maxInputTokens: value.maxInputTokens ?? value.maxTokens,
+    shouldCompact: value.shouldCompact ?? false,
+    mustCompact: value.mustCompact ?? false,
+    recommendedAction: value.recommendedAction ?? "",
+    thresholds: value.thresholds ?? fallbackThresholds ?? {
+      warning: 0,
+      critical: 0,
+      hardLimit: 0,
+    },
+  };
+}
+
+function normalizeCompactionToolStatus(
+  result: CompactSessionToolResult,
+  previousStatus: ContextStatusInfo | null
+): ContextStatusInfo | null {
+  if (result.status !== "success" || !result.after) return null;
+  const after = result.after;
+  const maxTokens = after.maxTokens ?? previousStatus?.maxTokens;
+  const maxInputTokens = after.maxInputTokens ?? previousStatus?.maxInputTokens ?? maxTokens;
+  const currentTokens = after.tokens;
+  const usagePercentage = typeof after.percentage === "number"
+    ? after.percentage * 100
+    : maxInputTokens && currentTokens !== undefined
+      ? (currentTokens / maxInputTokens) * 100
+      : undefined;
+
+  if (
+    currentTokens === undefined ||
+    maxTokens === undefined ||
+    maxInputTokens === undefined ||
+    usagePercentage === undefined
+  ) {
+    return null;
+  }
+
+  return normalizeStatus({
+    percentage: usagePercentage,
+    status: after.status ?? previousStatus?.status ?? "safe",
+    currentTokens,
+    maxInputTokens,
+    maxTokens,
+    maxOutputTokens: after.maxOutputTokens ?? previousStatus?.maxOutputTokens,
+    formatted: after.formatted ?? {
+      current: `${currentTokens}`,
+      max: `${maxInputTokens}`,
+      percentage: `${usagePercentage.toFixed(1)}%`,
+    },
+    thresholds: after.thresholds ?? previousStatus?.thresholds ?? {
+      warning: 0,
+      critical: 0,
+      hardLimit: 0,
+    },
+    shouldCompact: false,
+    mustCompact: false,
+    recommendedAction: "",
+    model: result.model ?? previousStatus?.model,
+  });
+}
+
+function dispatchContextStatusChanged(sessionId: string, status: ContextStatusInfo): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("seline:context-status-changed", {
+    detail: { sessionId, status },
+  }));
 }
 
 /**
@@ -112,11 +202,11 @@ export function useContextStatus({
 
     if (fetchError) {
       setError(fetchError);
-    } else {
-      setStatus(data);
-      if (data) {
-        statusCache.set(sessionId, { data, timestamp: Date.now() });
-      }
+    } else if (data) {
+      const normalized = normalizeStatus(data);
+      setStatus(normalized);
+      statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
+      dispatchContextStatusChanged(sessionId, normalized);
     }
 
     setIsLoading(false);
@@ -144,18 +234,10 @@ export function useContextStatus({
 
     // Update status from the response
     if (data?.status) {
-      setStatus({
-        ...data.status,
-        // Ensure all required fields are present
-        shouldCompact: data.status.shouldCompact ?? false,
-        mustCompact: data.status.mustCompact ?? false,
-        recommendedAction: data.status.recommendedAction ?? "",
-        thresholds: data.status.thresholds ?? status?.thresholds ?? {
-          warning: 0,
-          critical: 0,
-          hardLimit: 0,
-        },
-      });
+      const normalized = normalizeStatus(data.status, status?.thresholds);
+      setStatus(normalized);
+      statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
+      dispatchContextStatusChanged(sessionId, normalized);
     }
 
     setIsCompacting(false);
@@ -184,6 +266,40 @@ export function useContextStatus({
     window.addEventListener("seline:model-config-changed", handler);
     return () => window.removeEventListener("seline:model-config-changed", handler);
   }, [sessionId, fetchStatus]);
+
+  // Tool-driven compaction happens inside the chat stream, not through this
+  // hook's POST endpoint, so update immediately from the tool-result payload.
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const handleToolResult = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { sessionId?: unknown; status?: unknown } | undefined;
+      if (detail?.sessionId !== sessionId) return;
+      const normalized = normalizeCompactionToolStatus(
+        (detail.status ?? {}) as CompactSessionToolResult,
+        status
+      );
+      if (!normalized) return;
+      setStatus(normalized);
+      statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
+      dispatchContextStatusChanged(sessionId, normalized);
+    };
+
+    const handleStatusChanged = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { sessionId?: unknown; status?: ContextStatusInfo } | undefined;
+      if (detail?.sessionId !== sessionId || !detail.status) return;
+      const normalized = normalizeStatus(detail.status, status?.thresholds);
+      setStatus(normalized);
+      statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
+    };
+
+    window.addEventListener("seline:compact-session-completed", handleToolResult);
+    window.addEventListener("seline:context-status-changed", handleStatusChanged);
+    return () => {
+      window.removeEventListener("seline:compact-session-completed", handleToolResult);
+      window.removeEventListener("seline:context-status-changed", handleStatusChanged);
+    };
+  }, [sessionId, status]);
 
   // Refresh once when tab becomes visible again after being hidden.
   useEffect(() => {

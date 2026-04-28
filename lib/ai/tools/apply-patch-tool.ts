@@ -122,6 +122,7 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                 onProgress?.({
                     ...update,
                     toolCallId: update.toolCallId ?? toolCallId,
+                    toolName: update.toolName ?? "applyPatch",
                 });
             };
 

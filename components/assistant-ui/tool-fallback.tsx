@@ -879,6 +879,7 @@ export const ToolFallback: ToolCallContentPartComponent = memo(({
   result,
 }) => {
   const t = useTranslations("assistantUi.tools");
+  const sessionId = useChatSessionId();
   const canonicalToolName = useMemo(() => getCanonicalToolName(toolName), [toolName]);
   const isRunning = result === undefined;
   const parsedResult = result as ToolResult | undefined;
@@ -919,6 +920,33 @@ export const ToolFallback: ToolCallContentPartComponent = memo(({
       cancelled = true;
     };
   }, [canonicalToolName, toolName, t]);
+
+  const dispatchedCompactResultRef = useRef(false);
+  useEffect(() => {
+    if (
+      canonicalToolName !== "compactSession" ||
+      !sessionId ||
+      !parsedResult ||
+      parsedResult.status !== "success"
+    ) {
+      if (parsedResult === undefined) {
+        dispatchedCompactResultRef.current = false;
+      }
+      return;
+    }
+
+    if (dispatchedCompactResultRef.current) {
+      return;
+    }
+    dispatchedCompactResultRef.current = true;
+
+    window.dispatchEvent(new CustomEvent("seline:compact-session-completed", {
+      detail: {
+        sessionId,
+        status: parsedResult,
+      },
+    }));
+  }, [canonicalToolName, parsedResult, sessionId]);
 
   // When the tool completes, prefer the parsed args object if argsText is
   // stale (e.g. "{}" from a streaming race where the result arrives before

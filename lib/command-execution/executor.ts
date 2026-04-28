@@ -56,7 +56,10 @@ export { isEBADFError, spawnWithFileCapture } from "@/lib/spawn-utils";
 // ── Background Process Registry ──────────────────────────────────────────────
 const backgroundProcesses = new Map<string, BackgroundProcessInfo>();
 const MAX_BACKGROUND_OUTPUT = 1048576; // 1MB per stream
+const ESCALATION_DELAY_MS = 5000;
 let bgIdCounter = 0;
+
+type TerminationReason = "timeout" | "output_limit" | "abort";
 
 function nextBgId(): string {
     return `bg-${Date.now()}-${++bgIdCounter}`;
@@ -64,6 +67,31 @@ function nextBgId(): string {
 
 function isUnixLikePlatform(): boolean {
     return process.platform === "darwin" || process.platform === "linux";
+}
+
+function terminationMessage(reason: TerminationReason): string {
+    if (reason === "abort") return "Process cancelled by abort signal";
+    return "Process terminated due to timeout or output limit";
+}
+
+function terminateChildProcess(
+    child: ChildProcess | null | undefined,
+    _reason: TerminationReason,
+    onSignalError?: (error: unknown) => void,
+): void {
+    if (!child) return;
+    try {
+        child.kill("SIGTERM");
+    } catch (error) {
+        onSignalError?.(error);
+    }
+    setTimeout(() => {
+        try {
+            child.kill("SIGKILL");
+        } catch (error) {
+            onSignalError?.(error);
+        }
+    }, ESCALATION_DELAY_MS);
 }
 
 function shellQuote(value: string): string {
@@ -470,6 +498,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         toolCallId,
         onProgress,
         windowsVerbatimArguments,
+        abortSignal,
     } = options;
 
     const timeout = resolveTimeout(command, options.timeout);
@@ -528,10 +557,30 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         let stderr = "";
         let outputSize = 0;
         let killed = false;
+        let terminationReason: TerminationReason | null = null;
         let timeoutId: NodeJS.Timeout | null = null;
-        let child: ChildProcess;
+        let child: ChildProcess | undefined;
+
+        const terminate = (reason: TerminationReason): void => {
+            if (terminationReason) return;
+            killed = true;
+            terminationReason = reason;
+            terminateChildProcess(child, reason);
+        };
+
+        const onAbort = () => terminate("abort");
+        const cleanupAbortListener = () => {
+            abortSignal?.removeEventListener("abort", onAbort);
+        };
+
+        if (abortSignal?.aborted) {
+            onAbort();
+        } else {
+            abortSignal?.addEventListener("abort", onAbort, { once: true });
+        }
 
         const retryThroughShell = (): void => {
+            cleanupAbortListener();
             void executeCommand(buildShellRetryOptionsFromCurrentState()).then(resolve);
         };
 
@@ -560,6 +609,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                 && (fallbackReason === "rtk_unrecognized_subcommand" || fallbackReason === "rtk_unknown_command");
 
             if (shouldRetryDirect) {
+                cleanupAbortListener();
                 void executeCommand({
                     ...options,
                     forceDirectExecution: true,
@@ -614,18 +664,12 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                 child.stdin?.end();
             }
 
+            if (abortSignal?.aborted) {
+                onAbort();
+            }
+
             timeoutId = setTimeout(() => {
-                if (!killed) {
-                    killed = true;
-                    child.kill("SIGTERM");
-                    setTimeout(() => {
-                        try {
-                            child.kill("SIGKILL");
-                        } catch {
-                            // Process already dead
-                        }
-                    }, 5000);
-                }
+                terminate("timeout");
             }, timeout);
 
             emitProgress({ message: runningMessage });
@@ -636,14 +680,13 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
                 if (outputSize > maxOutputSize) {
                     if (!killed) {
-                        killed = true;
-                        child.kill("SIGTERM");
+                        terminate("output_limit");
                         stderr += "\n[Output size limit exceeded]";
                         emitProgress({
                             stderr,
                             status: "error",
                             message: failedMessage,
-                            error: "Process terminated due to timeout or output limit",
+                            error: terminationMessage("output_limit"),
                         });
                     }
                 } else {
@@ -663,6 +706,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
             child.on("close", (code, signal) => {
                 if (timeoutId) clearTimeout(timeoutId);
+                cleanupAbortListener();
 
                 const executionTime = Date.now() - startTime;
 
@@ -679,7 +723,9 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
                 const logId = saveTerminalLog(stdout, stderr);
 
-                const { fallbackReason, retried } = checkRtkRetry({ stderr, wrappedByRTK: wrapped.usingRTK });
+                const { fallbackReason, retried } = terminationReason
+                    ? { fallbackReason: undefined, retried: false }
+                    : checkRtkRetry({ stderr, wrappedByRTK: wrapped.usingRTK });
                 if (retried) return;
 
                 const finalResult: ExecuteResult = {
@@ -688,7 +734,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     stderr: stderr.trim(),
                     exitCode: code,
                     signal,
-                    error: killed ? "Process terminated due to timeout or output limit" : undefined,
+                    error: terminationReason ? terminationMessage(terminationReason) : undefined,
                     executionTime,
                     startedAt,
                     logId,
@@ -698,6 +744,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     // truncation that downstream consumers (tool-result-stream-guard,
                     // tool-result-utils, UI truncation indicators) must learn about.
                     isTruncated: killed,
+                    aborted: terminationReason === "abort",
                     searchMetadata: fallbackReason
                         ? buildExecuteSearchMetadata({
                             originalCommand: command,
@@ -718,6 +765,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     error: finalResult.error,
                     logId,
                     isTruncated: killed,
+                    aborted: terminationReason === "abort",
                     message: finalResult.success ? completedMessage : failedMessage,
                 });
 
@@ -726,6 +774,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
             child.on("error", async (error) => {
                 if (timeoutId) clearTimeout(timeoutId);
+                cleanupAbortListener();
 
                 if (isEBADFError(error) && process.platform === "darwin") {
                     console.warn("[Command Executor] spawn EBADF – retrying with file-capture fallback");
@@ -750,6 +799,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                 let errorMessage = error.message;
 
                 if (shouldRetryThroughShellOnMessage(errorMessage)) {
+                    cleanupAbortListener();
                     retryThroughShell();
                     return;
                 }
@@ -807,6 +857,7 @@ ${commandHint}`;
             });
         } catch (error) {
             if (timeoutId) clearTimeout(timeoutId);
+            cleanupAbortListener();
 
             if (isEBADFError(error) && process.platform === "darwin") {
                 console.warn("[Command Executor] spawn() threw EBADF synchronously – retrying with file-capture fallback");
@@ -831,6 +882,7 @@ ${commandHint}`;
             const errorMessage = error instanceof Error ? error.message : "Unknown error";
 
             if (shouldRetryThroughShellOnMessage(errorMessage)) {
+                cleanupAbortListener();
                 retryThroughShell();
                 return;
             }
@@ -866,6 +918,7 @@ ${commandHint}`;
                 message: failedMessage,
             });
 
+            cleanupAbortListener();
             resolve(failedResult);
         }
     });

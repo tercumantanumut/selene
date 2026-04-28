@@ -62,9 +62,10 @@ export const ContextWindowIndicator: FC<ContextWindowIndicatorProps> = ({
 
   const percentage = Math.min(status.percentage, 100);
   const statusKey = status.status;
-  const warningPct = Math.round((status.thresholds.warning / status.maxTokens) * 100);
-  const criticalPct = Math.round((status.thresholds.critical / status.maxTokens) * 100);
-  const hardPct = Math.round((status.thresholds.hardLimit / status.maxTokens) * 100);
+  const decisionMaxTokens = status.maxInputTokens ?? status.maxTokens;
+  const warningPct = Math.round((status.thresholds.warning / decisionMaxTokens) * 100);
+  const criticalPct = Math.round((status.thresholds.critical / decisionMaxTokens) * 100);
+  const hardPct = Math.round((status.thresholds.hardLimit / decisionMaxTokens) * 100);
   const thresholdsLabel = t("indicator.thresholdsLabel", { warn: warningPct, crit: criticalPct, hard: hardPct });
 
   const barColor = {

@@ -408,7 +408,7 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
       if (finalResponse && finalResponse.length > MAX_INLINE_RESULT_CHARS) {
         resultContent = finalResponse.slice(0, MAX_INLINE_RESULT_CHARS) + "\n... [result truncated — use observe to read full response]";
       } else {
-        resultContent = finalResponse || "No response captured.";
+        resultContent = finalResponse || "No response captured. Observe the session first, send continue preferably.";
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

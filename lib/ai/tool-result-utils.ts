@@ -353,10 +353,11 @@ export function normalizeToolResultOutput(
   const sessionId = getRunContext()?.sessionId;
 
   if (mode === "projection") {
-    // Exempt tools that intentionally return full content payloads.
+    // Exempt tools that intentionally return bounded content payloads.
     // readFile has built-in limits; skill and webSearch browse mode may return
     // richer content that should not be utility-truncated here.
-    const EXEMPT_TOOLS = new Set(["readFile", "skill", "webSearch"]);
+    // retrieveFullContent self-limits to PER_CALL_TOKEN_BUDGET (8K) via log-slice.ts.
+    const EXEMPT_TOOLS = new Set(["readFile", "skill", "webSearch", "retrieveFullContent"]);
 
     // Per-tool token budgets for tools that need more context than the default 3,000.
     // localGrep and vectorSearch results are dense, useful content — 10,000 tokens

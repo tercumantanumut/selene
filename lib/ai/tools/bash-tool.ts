@@ -49,6 +49,7 @@ type BashToolResult = {
   isTruncated?: boolean;
   /** Inline diff payload when apply_patch is detected in the command */
   inlineDiff?: string;
+  aborted?: boolean;
 };
 
 
@@ -135,13 +136,12 @@ __selene_exit=$?
 printf '\n${CWD_MARKER}%s\n' "$(pwd -P)"
 exit $__selene_exit`;
 
-  // Pass the script via stdin instead of -c to avoid heredoc/quote parsing
-  // issues. Shells read stdin line-by-line, so heredocs, triple quotes,
-  // backticks, and f-strings all work naturally without escaping.
+  // Run the script through `-c` instead of piping it on stdin. Login shells can
+  // source profile scripts that read stdin, which steals the command payload and
+  // leaves the child hanging without ever reaching our exit marker.
   return {
     command: "/bin/sh",
-    args: ["-l"],
-    stdin: wrapped,
+    args: ["-lc", wrapped],
   };
 }
 
@@ -437,6 +437,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           cwd: cleanedStdout.cwd ?? update.cwd,
           stdout: cleanedStdout.stdout,
           toolCallId: update.toolCallId ?? toolCallId,
+          toolName: update.toolName ?? "bash",
         });
       };
 
@@ -454,6 +455,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             timeout,
             characterId,
             toolCallId,
+            abortSignal: toolCallOptions?.abortSignal,
             onProgress: forwardProgress,
           },
           syncedFolders
@@ -473,6 +475,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           error: result.error,
           logId: result.logId,
           isTruncated: result.isTruncated,
+          aborted: result.aborted,
           inlineDiff: patchHeredoc.patchText,
         };
       }
@@ -518,6 +521,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           timeout,
           characterId,
           toolCallId,
+          abortSignal: toolCallOptions?.abortSignal,
           onProgress: forwardProgress,
           windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
         },
@@ -543,6 +547,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         error: result.error,
         logId: result.logId,
         isTruncated: result.isTruncated,
+        aborted: result.aborted,
       };
     },
   });

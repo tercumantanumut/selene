@@ -3,16 +3,18 @@ import type { ContextWindowStatus as ManagedContextWindowStatus } from "@/lib/co
 import { toModelToolResultOutput } from "./tool-call-utils";
 
 export function buildContextWindowPromptBlock(status: ManagedContextWindowStatus): string {
-  const warningPct = Math.round((status.thresholds.warning / status.maxTokens) * 100);
-  const criticalPct = Math.round((status.thresholds.critical / status.maxTokens) * 100);
-  const hardPct = Math.round((status.thresholds.hardLimit / status.maxTokens) * 100);
+  const decisionMaxTokens = status.maxInputTokens ?? status.maxTokens;
+  const warningPct = Math.round((status.thresholds.warning / decisionMaxTokens) * 100);
+  const criticalPct = Math.round((status.thresholds.critical / decisionMaxTokens) * 100);
+  const hardPct = Math.round((status.thresholds.hardLimit / decisionMaxTokens) * 100);
 
   return `\n\n[Context Window Status]
 Current: ${status.formatted.current}/${status.formatted.max} (${status.formatted.percentage})
 Thresholds: warning=${warningPct}%, critical=${criticalPct}%, hard=${hardPct}%
 
 You have access to the compactSession tool.
-Use compactSession when you judge that upcoming work will likely exhaust context (for example long multi-step operations or large tool outputs).
+Use compactSession proactively before long multi-step work or large tool outputs.
+When status is critical or exceeded, call compactSession before continuing unless you have just compacted and still need user guidance.
 Avoid repeated compaction unless additional headroom is needed.`;
 }
 
