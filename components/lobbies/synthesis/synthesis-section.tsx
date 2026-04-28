@@ -31,9 +31,13 @@
  *
  * Sprint 9 explicit non-goals (and why):
  *   - No abort button. Aborting a synthesis run is identical to aborting
- *     the lobby; that CTA already lives in the lobby header / top bar
- *     (Sprint 5 shell). Adding a duplicate here would create a confusing
- *     "abort what?" question.
+ *     the lobby; that CTA lives in the lobby header (`AbortLobbyButton`
+ *     mounted in `lobby-detail-client.tsx`) so it stays visible across
+ *     every non-terminal phase including a wedged synthesizer in `review`.
+ *     Sprint 9.1 (R5 BLOCKER B2) made this real — earlier the abort lived
+ *     inside RollingSection and vanished on phase flip; now it's the
+ *     captain's persistent escape hatch. The recovery hint inside
+ *     `SynthesisRunProgress` (failed/cancelled phases) points at it.
  *   - No retry button. A failed synthesis run cannot be retried in V1
  *     because the server's `transitionLobbyStartSynthesis` rejects when
  *     `synthesisRunId !== null`. A future sprint can add a `retry_synthesis`
@@ -45,7 +49,9 @@
 import { Sparkles, XCircle } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
-import type { Lobby, LobbyCard } from "@/lib/db/sqlite-lobbies-schema";
+// Sprint 9.1 (R4 M5): import row shapes from `@/lib/lobbies/types` so the
+// synthesis surface doesn't depend on the drizzle schema module path.
+import type { Lobby, LobbyCard } from "@/lib/lobbies/types";
 import type { LobbyRunStreamHandle } from "@/lib/lobbies/client/run-stream";
 
 import { ArtifactViewer } from "./artifact-viewer";
@@ -102,8 +108,13 @@ export function SynthesisSection({
   // the captain's path forward is creating a new lobby.
   if (status === "aborted") {
     return (
+      // Sprint 9.1 (R3 H3): the previous markup had `role="status"` but no
+      // `aria-live` — SR announced nothing on the transition into aborted.
+      // Add `aria-live="polite"` so AT users hear the state change once,
+      // without interrupting any other announcement in flight.
       <Card
         role="status"
+        aria-live="polite"
         className="p-3 flex items-start gap-3 border-red-500/30 bg-red-500/5"
       >
         <XCircle

@@ -98,6 +98,7 @@ import { RollingSection } from "@/components/lobbies/rolling/rolling-section";
 import { ReviewSection } from "@/components/lobbies/review/review-section";
 import { SynthesisSection } from "@/components/lobbies/synthesis/synthesis-section";
 import { SaveAsTemplateDialog } from "@/components/lobbies/save-as-template-dialog";
+import { AbortLobbyButton } from "@/components/lobbies/abort-lobby-button";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -293,6 +294,22 @@ export default function LobbyDetailClient() {
                     <BookOpenCheck className="mr-1.5 h-3.5 w-3.5" />
                     Save as template
                   </Button>
+                  {/*
+                    Sprint 9.1 (R5 BLOCKER B2 + B3): the abort lives in
+                    the lobby header so it stays reachable across every
+                    non-terminal phase — including `review` when the
+                    synthesizer is in flight or wedged. Previously it
+                    only existed inside RollingSection (gated on
+                    `status === "rolling"`), which left captains with no
+                    UI path to halt a stuck synthesis run. The button no-
+                    ops on terminal statuses (completed/aborted) — the
+                    component handles its own visibility.
+                  */}
+                  <AbortLobbyButton
+                    lobby={data.lobby}
+                    cards={data.cards}
+                    onChanged={() => void refetch()}
+                  />
                   <Button
                     size="sm"
                     variant="outline"

@@ -160,9 +160,16 @@ const ALL_COLLAPSED: Record<LobbyPhaseSection, boolean> = {
 /**
  * Status-aware default expansion. Auto-expands the section the lobby is
  * currently in plus the one before it (so the captain sees what's been
- * done leading into the current phase). Synthesis only expands once the
- * lobby has reached `review` *and* a synth run has been kicked off — the
- * caller must override `synthesis: true` when `hasSynthesisRun` is true.
+ * done leading into the current phase).
+ *
+ * Sprint 9.1 (R5 H1): synthesis expands by default in `review` too — the
+ * synthesizer kickoff (`StartSynthesisCard`) IS the next captain action
+ * once review begins, so collapsing the section by default forced the
+ * captain to discover it. (Earlier the comment said "synthesis only
+ * expands once a synth run has been kicked off"; that wording made the
+ * CTA invisible. The CTA's whole job is to be visible *before* a run
+ * exists.) Aborted likewise expands so the captain sees the recovery
+ * card the moment they land on the page.
  *
  * Progressive-reveal rule (FE Architect report — SPEC §3 has no
  * matching hard-constraint number): never collapse the active phase.
@@ -178,11 +185,11 @@ function defaultExpandedForStatus(
     case "rolling":
       return { roster: false, planning: true, rolling: true, review: false, synthesis: false };
     case "review":
-      return { roster: false, planning: false, rolling: true, review: true, synthesis: false };
+      return { roster: false, planning: false, rolling: true, review: true, synthesis: true };
     case "completed":
       return { roster: false, planning: false, rolling: false, review: true, synthesis: true };
     case "aborted":
-      return { roster: false, planning: false, rolling: true, review: true, synthesis: false };
+      return { roster: false, planning: false, rolling: true, review: true, synthesis: true };
   }
 }
 

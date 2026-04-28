@@ -35,7 +35,7 @@
  */
 
 import { Loader2, Sparkles, UserCircle2, AlertCircle } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -47,7 +47,10 @@ import {
   indexCharactersById,
 } from "@/lib/lobbies/client/character-hooks";
 import { LobbyApiError, transitionLobby } from "@/lib/lobbies/client/api";
-import type { Lobby, LobbyCard } from "@/lib/db/sqlite-lobbies-schema";
+// Sprint 9.1 (R4 M5): import from `@/lib/lobbies/types` instead of the
+// drizzle schema module — keeps the client off the DB schema import path
+// and lets `types.ts` stay the single contract source.
+import type { Lobby, LobbyCard } from "@/lib/lobbies/types";
 
 export type StartSynthesisCardProps = {
   lobby: Lobby;
@@ -79,8 +82,12 @@ export function StartSynthesisCard({
   // We don't write the override back to lobby.config — `start_synthesis`
   // takes the character id directly, and persisting it on the lobby would
   // require an extra updateLobby PATCH. V1 keeps it transient.
-  const initialCharacterId =
-    (lobby.config?.synthesizerCharacterId as string | undefined) ?? null;
+  //
+  // Sprint 9.1 (R4 M3): `LobbyConfigV1.synthesizerCharacterId` is already
+  // typed `string | undefined`, so the `as string | undefined` cast was
+  // redundant. Removing it lets TS catch a future shape drift instead of
+  // silently re-asserting a stale assumption.
+  const initialCharacterId = lobby.config?.synthesizerCharacterId ?? null;
   const [selectedCharacterId, setSelectedCharacterId] = useState<string | null>(
     initialCharacterId,
   );
@@ -98,6 +105,21 @@ export function StartSynthesisCard({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Sprint 9.1 (R2 H1): mountedRef guard. If the captain navigates away
+  // mid-request (or the synthesis-section unmounts because the lobby
+  // refetch flipped phase), the post-await setState calls would fire on
+  // an unmounted component. React 18 silently swallows the warning but
+  // the state update still wastes a render cycle and can race with the
+  // parent's refetch. Tracking mounted-ness in a ref + gating every
+  // post-await setter is the cheapest fix.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   async function startSynthesis() {
     setSubmitting(true);
     setError(null);
@@ -113,15 +135,47 @@ export function StartSynthesisCard({
           ? { synthesizerCharacterId: selectedCharacterId }
           : {}),
       });
+      // Parent still needs to refetch even if WE unmounted (the new state
+      // is server-authoritative). Call onChanged unconditionally; only
+      // gate component-local state.
       onChanged();
     } catch (err) {
+      if (!mountedRef.current) return;
+      // Sprint 9.1 (R1 H1, H2): peer CTAs (AbortLobbyButton, accept_plan)
+      // all auto-refetch on VERSION_CONFLICT and discriminate on other
+      // MutationFailureReason values instead of falling through to raw
+      // err.message. Bring this CTA to parity:
+      //   - VERSION_CONFLICT → refetch + plain-English nudge
+      //   - INVALID_TRANSITION → refetch + nudge (lobby phase moved)
+      //   - INVARIANT_VIOLATION → server message verbatim (it carries the
+      //     specific contract that was violated, e.g. "card X not approved")
+      //   - NOT_FOUND → clean message
+      //   - FORBIDDEN → server message (auth/permission)
       if (err instanceof LobbyApiError) {
-        if (err.reason === "VERSION_CONFLICT") {
-          setError(
-            "The lobby was updated in another tab. Refresh and try again.",
-          );
-        } else {
-          setError(err.message);
+        switch (err.reason) {
+          case "VERSION_CONFLICT":
+            setError(
+              "The lobby was updated in another tab. Refreshing — try again in a moment.",
+            );
+            onChanged();
+            break;
+          case "INVALID_TRANSITION":
+            setError(
+              "Lobby state changed before the request landed. Refreshing — try again in a moment.",
+            );
+            onChanged();
+            break;
+          case "INVARIANT_VIOLATION":
+            setError(err.message);
+            break;
+          case "NOT_FOUND":
+            setError("This lobby no longer exists.");
+            break;
+          case "FORBIDDEN":
+            setError(err.message);
+            break;
+          default:
+            setError(err.message);
         }
       } else if (err instanceof Error) {
         setError(err.message);
@@ -129,7 +183,7 @@ export function StartSynthesisCard({
         setError("Failed to start synthesis.");
       }
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   }
 
@@ -160,13 +214,20 @@ export function StartSynthesisCard({
       </div>
 
       {/* ── Approval roll-up ─────────────────────────────────────── */}
+      {/*
+        Sprint 9.1 (R3 H1): `text-terminal-green` on `bg-terminal-green/5`
+        measured ≈3.0–3.3:1 — fails WCAG AA for body text (4.5:1). Switch
+        the success body copy to `text-terminal-dark` and keep the green
+        only for the border accent. The border colour communicates the
+        "success" affordance; the text doesn't need to share the hue.
+      */}
       <div
         role="status"
         aria-live="polite"
         className={cn(
           "rounded border px-3 py-2 font-mono text-xs",
           allApproved
-            ? "border-terminal-green/40 bg-terminal-green/5 text-terminal-green"
+            ? "border-terminal-green/40 bg-terminal-green/5 text-terminal-dark"
             : "border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-300",
         )}
       >
@@ -243,18 +304,34 @@ export function StartSynthesisCard({
 
       {/* ── CTA ─────────────────────────────────────────────────── */}
       <div className="flex items-center justify-end gap-2">
+        {/*
+          Sprint 9.1 (R3 M2, R5 H4): SR users get no announcement when the
+          button flips into the spinning "submitting" state — visually
+          obvious, audibly silent. A hidden polite live region announces
+          the state change. Combined with `aria-busy` on the button itself,
+          AT users hear "Starting synthesis…" the moment we kick off the
+          request.
+        */}
+        <span className="sr-only" role="status" aria-live="polite">
+          {submitting ? "Starting synthesis…" : ""}
+        </span>
         <Button
           type="button"
           size="sm"
           onClick={() => void startSynthesis()}
           disabled={ctaDisabled}
+          aria-busy={submitting}
           className="font-mono"
           // Disabled buttons don't fire pointer events; the title gives
           // SR users (and pointer-hover users) a hint about what's missing.
+          // Sprint 9.1 (R5 P8): add the empty-lobby branch — it was a
+          // dead state if hit ("0 cards approved" with no actionable hint).
           title={
-            !allApproved
-              ? `${unapprovedCount} card${unapprovedCount === 1 ? "" : "s"} still need review`
-              : undefined
+            totalCards === 0
+              ? "Add cards in the planning phase before you can synthesize."
+              : !allApproved
+                ? `${unapprovedCount} card${unapprovedCount === 1 ? "" : "s"} still need review`
+                : undefined
           }
         >
           {submitting ? (

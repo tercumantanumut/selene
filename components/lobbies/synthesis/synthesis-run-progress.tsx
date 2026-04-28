@@ -72,7 +72,13 @@ export function SynthesisRunProgress({
   // mode, which reads top-to-bottom like a console.
   const ordered = useMemo(() => fragments.slice(), [fragments]);
 
-  const status = deriveStatus(runState, isInFlight);
+  // Sprint 9.1 (R5 P8): `deriveStatus` no longer needs `isInFlight` — both
+  // queued sub-cases (lobby thinks a run is in flight / lobby doesn't) now
+  // fall through to "queued" for an honest "no observed activity" header.
+  const status = deriveStatus(runState);
+  // Reference `isInFlight` to keep the prop in the public surface for the
+  // queued copy below — the EmptyTimeline "queued" detail mentions it.
+  void isInFlight;
 
   return (
     <Card
@@ -145,6 +151,25 @@ export function SynthesisRunProgress({
           </p>
         </div>
       )}
+
+      {/* Sprint 9.1 (R5 BLOCKER B3): recovery hint. Without this, a failed
+          or cancelled synthesizer dead-ended the captain — the run sat
+          there with no obvious next move, and the abort CTA used to live
+          inside RollingSection (which is no longer the visible section in
+          `review`). Now we point at the lobby-header abort button so the
+          captain has an explicit recovery path. */}
+      {(status.kind === "failed" || status.kind === "cancelled") && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="font-mono text-[11px] text-terminal-muted"
+        >
+          Use{" "}
+          <span className="font-semibold text-terminal-dark">Abort lobby</span>{" "}
+          in the header to halt this run and end the lobby, or refresh once
+          the orchestrator retries.
+        </p>
+      )}
     </Card>
   );
 }
@@ -158,12 +183,16 @@ type Status =
   | { kind: "failed" }
   | { kind: "cancelled" };
 
-function deriveStatus(
-  runState: RunStreamState | undefined,
-  isInFlight: boolean,
-): Status {
+function deriveStatus(runState: RunStreamState | undefined): Status {
   if (!runState) {
-    return isInFlight ? { kind: "queued" } : { kind: "running" };
+    // Sprint 9.1 (R5 P8): the previous fallback returned `running` when
+    // both `runState` and `isInFlight` were false — visually showing a
+    // spinning header for a lobby that has no synthesis run at all. The
+    // parent only mounts this component when `synthesisRunId !== null`,
+    // so the false branch should be effectively dead — but if it's hit
+    // (race between props update and refetch), `queued` is the honest
+    // default: "we expect activity, none observed yet."
+    return { kind: "queued" };
   }
   switch (runState.phase) {
     case "succeeded":
@@ -200,7 +229,11 @@ function Header({ status }: { status: Status }) {
     case "succeeded":
       Icon = CheckCircle2;
       label = "Synthesis complete";
-      tone = "text-terminal-green";
+      // Sprint 9.1 (R3 H1): `text-terminal-green` on the cream Card bg
+      // measures ≈3.0–3.3:1 — fails WCAG AA for body text. Use the
+      // green only on the icon (decorative / aria-hidden) and keep the
+      // text in `terminal-dark` (high contrast).
+      tone = "text-terminal-dark";
       break;
     case "failed":
       Icon = AlertCircle;
@@ -216,9 +249,16 @@ function Header({ status }: { status: Status }) {
 
   return (
     <div
+      // Sprint 9.1 (R3 H2): the previous markup combined `role="status"`,
+      // `aria-live="polite"`, AND `aria-atomic="true"`. With the timeline
+      // below using `role="log"` + `aria-live="polite"`, the atomic header
+      // re-announced its full text on every transition — competing with
+      // the log's incremental announcements. Dropping aria-atomic lets
+      // the SR announce only the changed substring on transition (which
+      // is the natural behaviour for role=status), and keeps the log as
+      // the primary stream surface.
       role="status"
       aria-live="polite"
-      aria-atomic="true"
       className="flex items-center gap-2"
     >
       <Icon

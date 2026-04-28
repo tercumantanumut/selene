@@ -24,19 +24,9 @@
  */
 
 import { useState } from "react";
-import { AlertOctagon, Loader2, Network } from "lucide-react";
+import { Network } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import type {
   Lobby,
@@ -45,7 +35,6 @@ import type {
   LobbySeat,
 } from "@/lib/db/sqlite-lobbies-schema";
 import type { LobbyRunStreamHandle } from "@/lib/lobbies/client/run-stream";
-import { LobbyApiError, transitionLobby } from "@/lib/lobbies/client/api";
 import { useSoloStoryUiStore } from "@/lib/stores/solo-story-ui-store";
 
 import { CardEditDialog } from "../planning/card-edit-dialog";
@@ -90,51 +79,18 @@ export function RollingSection({
   const [depEditorCard, setDepEditorCard] = useState<LobbyCard | null>(null);
   const [dagOpen, setDagOpen] = useState(false);
 
-  // Sprint 7B.1 (R5-H2): captain-level abort. When the orchestrator wedges
-  // (a card crashed mid-run, an LLM call hangs, the captain just changed
-  // their mind), there was no surfaced way to halt the run — the only
-  // recourse was per-card cancel × N. The abort confirmation requires an
-  // explicit click because aborting moves the lobby to `aborted` and
-  // shifts every running card to `cancelled`; not the kind of action you
-  // want to fire on a stray Enter key.
-  const [abortOpen, setAbortOpen] = useState(false);
-  const [aborting, setAborting] = useState(false);
-  const [abortError, setAbortError] = useState<string | null>(null);
+  // Sprint 9.1 (R5 BLOCKER B2): the captain-level abort lives in the
+  // lobby header now (`AbortLobbyButton` mounted by `lobby-detail-client`).
+  // It's reachable across roster / planning / rolling / review — including
+  // when the synthesizer is wedged in `review` — instead of disappearing
+  // the moment we leave `rolling`. Sprint 7B.1 (R5-H2) introduced the
+  // dialog inline here; Sprint 9.1 extracted it to share with synthesis.
 
   // The fullscreen run modal lives at the section level (mounted once) and
   // is opened/closed via the cross-component UI store. Pulling the action
   // here is what lets a Kanban tile fire `onOpenRun` without the modal
   // having to be threaded through every intermediate component.
   const openFullscreenRun = useSoloStoryUiStore((s) => s.openFullscreenRun);
-
-  async function handleAbort() {
-    setAborting(true);
-    setAbortError(null);
-    try {
-      await transitionLobby(lobby.id, {
-        action: "abort",
-        expectedVersion: lobby.lockVersion,
-        // `cancel` mode tells the orchestrator to mark in-flight cards
-        // `cancelled` (vs. `wait` which lets them finish, vs. `abandon`
-        // which leaves them as-is). Cancel is the right default for a
-        // captain-initiated halt.
-        mode: "cancel",
-        reason: "Captain aborted the lobby from the rolling section",
-      });
-      setAbortOpen(false);
-      onChanged();
-    } catch (err) {
-      if (err instanceof LobbyApiError) {
-        setAbortError(err.message);
-      } else if (err instanceof Error) {
-        setAbortError(err.message);
-      } else {
-        setAbortError("Failed to abort the lobby");
-      }
-    } finally {
-      setAborting(false);
-    }
-  }
 
   // No cards yet: friendly empty state. This shouldn't happen in practice
   // (Sprint 7A's `accept_plan` blocks empty plans) but the rolling phase
@@ -197,19 +153,12 @@ export function RollingSection({
             <Network className="h-3 w-3 mr-1.5" aria-hidden="true" />
             Dependency graph
           </Button>
-          {isEditable && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setAbortOpen(true)}
-              className="font-mono text-xs text-red-700 hover:text-red-800 dark:text-red-300 border-red-700/40"
-              aria-label="Abort lobby — cancels every running card and ends the rolling phase"
-            >
-              <AlertOctagon className="h-3 w-3 mr-1.5" aria-hidden="true" />
-              Abort lobby
-            </Button>
-          )}
+          {/* Sprint 9.1 (R5 BLOCKER B2): Abort lobby moved to the lobby
+              header (`AbortLobbyButton` in `lobby-detail-client.tsx`) so
+              the captain can halt across roster / planning / rolling /
+              review — including when the synthesizer is wedged in
+              `review`. Keeping it only in the rolling header would dead-end
+              the captain the moment the run flipped phases. */}
         </div>
       </div>
 
@@ -275,77 +224,6 @@ export function RollingSection({
         onChanged={onChanged}
       />
 
-      {/* Sprint 7B.1 (R5-H2): abort confirmation. AlertDialog (vs. plain
-          Dialog) gives us the right SR semantics — role="alertdialog"
-          interrupts every announcement, the destructive action button is
-          styled red, and the cancel is the default focus target. */}
-      <AlertDialog open={abortOpen} onOpenChange={setAbortOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="font-mono text-base">
-              Abort this lobby?
-            </AlertDialogTitle>
-            <AlertDialogDescription className="font-mono text-xs">
-              The orchestrator will stop dispatching new cards, every
-              currently <span className="font-semibold">running</span> card
-              will be cancelled, and the lobby moves to{" "}
-              <span className="font-semibold">aborted</span>. You can still
-              review what was done; you cannot resume from this state.
-              {runningCount > 0 && (
-                <span className="block pt-2">
-                  {runningCount} card{runningCount === 1 ? "" : "s"} currently
-                  running will be cancelled.
-                </span>
-              )}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {abortError && (
-            <p
-              role="alert"
-              className="font-mono text-[11px] text-red-700 dark:text-red-300"
-            >
-              {abortError}
-            </p>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel
-              disabled={aborting}
-              className="font-mono text-xs"
-            >
-              Keep running
-            </AlertDialogCancel>
-            <AlertDialogAction
-              disabled={aborting}
-              onClick={(e) => {
-                // AlertDialogAction auto-closes on click; we want to keep
-                // the dialog open while the request is in flight so the
-                // captain sees the spinner / error inline.
-                e.preventDefault();
-                void handleAbort();
-              }}
-              className="font-mono text-xs bg-red-700 hover:bg-red-800 text-white"
-            >
-              {aborting ? (
-                <>
-                  <Loader2
-                    className="h-3 w-3 mr-1.5 animate-spin"
-                    aria-hidden="true"
-                  />
-                  Aborting…
-                </>
-              ) : (
-                <>
-                  <AlertOctagon
-                    className="h-3 w-3 mr-1.5"
-                    aria-hidden="true"
-                  />
-                  Abort lobby
-                </>
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

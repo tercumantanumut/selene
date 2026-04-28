@@ -25,11 +25,13 @@
  */
 
 import { CheckCircle2, Copy, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import type { Lobby } from "@/lib/db/sqlite-lobbies-schema";
+// Sprint 9.1 (R4 M5): import row shapes from `@/lib/lobbies/types` so the
+// component doesn't depend on the drizzle schema module path.
+import type { Lobby } from "@/lib/lobbies/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -57,6 +59,30 @@ export type ArtifactViewerProps = {
 
 export function ArtifactViewer({ lobby, className }: ArtifactViewerProps) {
   const [copied, setCopied] = useState(false);
+
+  // Sprint 9.1 (R2 H2): the previous implementation called `setCopied(true)`
+  // and then `window.setTimeout(... setCopied(false), 1500)` without
+  // tracking the timer or guarding the post-await setState. Two leaks:
+  //   1. If the component unmounted within 1.5s of the click, the deferred
+  //      setCopied(false) fires on a dead component (React 18 swallows
+  //      the warning, but the closure still holds a render reference).
+  //   2. Repeated clicks stacked timers — each one would tick down
+  //      independently and flip the flag back, causing a brief
+  //      "Copy → Copied → Copy → Copied" flicker.
+  // Track the timer id and the mount flag in refs; clear on unmount and
+  // before scheduling a new tick.
+  const mountedRef = useRef(true);
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const artifactId = lobby.outputArtifactId;
   const completedAt = lobby.completedAt;
@@ -98,8 +124,17 @@ export function ArtifactViewer({ lobby, className }: ArtifactViewerProps) {
     if (!artifactId) return;
     try {
       await navigator.clipboard.writeText(artifactId);
+      if (!mountedRef.current) return;
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1_500);
+      // Cancel any in-flight reset timer so back-to-back clicks don't
+      // trigger an early setCopied(false) for the second click.
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        if (mountedRef.current) setCopied(false);
+        copyTimerRef.current = null;
+      }, 1_500);
     } catch (err) {
       // Clipboard failures are non-fatal — log and move on. The captain
       // can still select-and-copy the visible string.
@@ -140,13 +175,26 @@ export function ArtifactViewer({ lobby, className }: ArtifactViewerProps) {
           <code className="flex-1 font-mono text-xs text-terminal-dark break-all">
             {artifactId}
           </code>
+          {/*
+            Sprint 9.1 (R3 M1): the previous aria-label flipped from "Copy
+            artifact id to clipboard" to "Copied" on success — but flipping
+            an `aria-label` is a *visual* change to the AT user; some
+            screen readers re-announce the entire button on every focus,
+            others stay silent. Keep the aria-label stable (it's the
+            persistent description of the control's purpose) and emit the
+            "Copied" success through a hidden polite live region. AT users
+            now hear "Copied" exactly once, when the action succeeds.
+          */}
+          <span className="sr-only" role="status" aria-live="polite">
+            {copied ? "Copied to clipboard" : ""}
+          </span>
           <Button
             type="button"
             size="sm"
             variant="ghost"
             onClick={() => void handleCopy()}
             className="h-7 px-2 font-mono text-[11px] shrink-0"
-            aria-label={copied ? "Copied" : "Copy artifact id to clipboard"}
+            aria-label="Copy artifact id to clipboard"
           >
             <Copy className="h-3 w-3 mr-1" aria-hidden="true" />
             {copied ? "Copied" : "Copy"}

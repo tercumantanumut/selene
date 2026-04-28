@@ -118,6 +118,17 @@ export type LobbyCardOutputV1 = {
 export type SoloStoryRunRole = "planner" | "worker" | "synthesizer";
 
 /**
+ * Sprint 9.1 (R4 M1): the *lobby-level* slice of {@link SoloStoryRunRole}.
+ * The `byRole` map in `useLobbyRunStream` only ever buckets planner and
+ * synthesizer runs — worker runs live in the per-card map. Narrowing the
+ * key type to this alias makes the runtime guard at the routing site
+ * (`if (inferredRole === "worker") return;`) statically enforced for
+ * consumers and removes the dead `byRole.get("worker")` shape from public
+ * API.
+ */
+export type SoloStoryLobbyLevelRole = Exclude<SoloStoryRunRole, "worker">;
+
+/**
  * Snapshot stored at `agent_runs.metadata.soloStory` for every Solo Story
  * run. Captures everything needed to (1) route SSE events back to the lobby
  * and (2) enforce the seat's permission scope without re-reading the live

@@ -1119,3 +1119,381 @@ review-friendly chunks.
 - No live SR run in autonomous mode; a11y changes verified against
   the WAI-ARIA APG drag-and-drop pattern reference.
 
+---
+
+## Sprint 8 — Live execution + review UX
+
+Sprint 8 lifts the kanban from "static board with a Start button" to
+"live execution surface" — captain sees per-card progress as the
+orchestrator dispatches, and the review phase has a real two-list
+surface instead of the Sprint 7B placeholder.
+
+### What landed
+
+- **`lib/lobbies/client/run-stream.ts` (new)** — page-scoped SSE
+  consumer `useLobbyRunStream`. Filters `/api/tasks/events` by
+  `lobbyId`, routes per-card events into a `Map<cardId, RunStreamState>`
+  with bounded fragment timelines (the shell's `unified-tasks-store`
+  keeps only the latest snapshot, so the timeline lives locally here).
+  Reconnects after 2s on error. `onCardCompleted` fires through
+  `queueMicrotask` so the parent's refetch doesn't run inside React's
+  setState callback.
+
+- **`components/lobbies/rolling/run-transcript.tsx` (new)** — inline +
+  full modes for a card's run timeline. Inline shows the latest
+  fragment with status-tone styling; full mode is a scrollable
+  timeline + output block + failure reason + review notes.
+
+- **`components/lobbies/rolling/review-actions.tsx` (new)** — approve
+  / reject / retry / reopen with notes textarea, override-attempt-cap
+  + cancel-dependents toggles, character counter, and discriminated
+  `VERSION_CONFLICT` handling that keeps the dialog open so typed
+  notes survive a captain race.
+
+- **`components/lobbies/rolling/fullscreen-run-modal.tsx` (new)** —
+  page-singleton Dialog opened via
+  `solo-story-ui-store.openFullscreenRun(cardId)`. Subscribes to the
+  store directly so callers don't thread props.
+
+- **`RollingSection`** — lifts `useLobbyRunStream` up to
+  `LobbyDetailClient`, mounts the fullscreen modal at section level,
+  wires `onOpenRun` on the kanban, and threads `runStream` through to
+  `KanbanBoard` so tiles can render an inline progress hint for
+  running cards.
+
+- **`components/lobbies/review/review-section.tsx`** — replaces the
+  Sprint 7B placeholder. Two groups: "Awaiting review" with full
+  inline transcript + actions, and "Recent runs" sorted by
+  `completedAt` with compact rows. Surfaces the `enter_review` CTA
+  when the lobby is `rolling` and every card is terminal.
+
+### Verification
+
+- `npm run typecheck:app|lib|electron|tooling` all clean.
+- No reviewer round in this sprint's commit (R1–R5 fired against
+  Sprint 9 instead, and folded back into Sprint 9.1; cf. below).
+
+---
+
+## Sprint 9 — Synthesis phase UI
+
+Lands the final phase of Solo Story Mode — the synthesizer kickoff,
+its live transcript, and the completed-lobby artifact viewer — and
+extends the page-level run stream to surface lobby-level (planner /
+synthesizer) runs alongside per-card worker runs.
+
+### Sprint 9-1 — `useLobbyRunStream` extension
+
+- Added a `byRole` map (`planner` | `synthesizer`) on the
+  `LobbyRunStreamHandle`. Worker runs continue to live in
+  `byCardId`; planner / synthesizer are singletons per phase, so a
+  Map keyed on role is the natural fit.
+- `extractRole(task, hasCardId)` reads
+  `agent_runs.metadata.soloStory.role` from `task:started` /
+  `task:completed` events, with a `cardId`-based inference fallback
+  (cardId present ⇒ worker) when metadata is missing.
+- Refactored `handleEvent` into `updateCardSlot` / `updateRoleSlot`
+  helpers so both maps share the started / progress / completed
+  switch logic without duplication.
+- `onRoleRunCompleted` option for parents that need to refetch when
+  planner / synthesizer runs end (`LobbyDetailClient` now wires it so
+  synthesis completion reliably flips the surface to `ArtifactViewer`).
+
+### Sprint 9-2..9-5 — synthesis components
+
+- `components/lobbies/synthesis/synthesis-section.tsx` — top-level
+  state machine (pre-review → not-started → running → completed → aborted).
+  Picks one of the three child surfaces based on `lobby.status` +
+  `lobby.synthesisRunId` + `lobby.outputArtifactId`.
+- `components/lobbies/synthesis/start-synthesis-card.tsx` —
+  pre-flight roll-up ("N of M cards approved") + synthesizer
+  character picker (reuses the roster's `AgentPickerSheet` with
+  `seatRole="synthesizer"`) + the `start_synthesis` CTA. CTA stays
+  disabled until every card is approved (mirrors the server-side
+  guard).
+- `components/lobbies/synthesis/synthesis-run-progress.tsx` — live
+  transcript for the synthesizer subagent, keyed on the `byRole`
+  map. Card-less, so we don't reuse `RunTranscript` (which requires a
+  `LobbyCard` to decide between live SSE state and persisted
+  `card.output`). Renders queued / running / succeeded / failed /
+  cancelled banners with `role="log"` + `aria-live` updates.
+- `components/lobbies/synthesis/artifact-viewer.tsx` — final-output
+  surface for completed lobbies. Renders a "synthesis complete"
+  banner + the `outputArtifactId` as a copyable code line. Honest
+  scope note: artifact rendering is intentionally minimal in V1
+  because `lobbies.output_artifact_id` is opaque (no FK, no resolver
+  registered); the synthesizer's transcript still lives in this
+  lobby's chat session, and a future sprint can add a typed resolver
+  registry.
+
+### Sprint 9-6 — wire-up
+
+- Replaced the `SynthesisSectionPlaceholder` in `LobbyDetailClient`
+  with the real `SynthesisSection`.
+- Threaded the page-scoped `runStream` into `SynthesisSection` so the
+  synthesis transcript shares the same `EventSource` as the rolling
+  kanban tiles and the review section.
+
+### Verification
+
+- `tsc -p tsconfig.{lib,app,electron,tooling}.json` all 0-errors.
+- 5 parallel reviewers (R1 contract / R2 state / R3 a11y / R4 types /
+  R5 completeness) fired against commit `d489ff9f`. Their convergent
+  findings were folded into Sprint 9.1 below.
+
+### Decisions: deferred / no-action with rationale
+
+- **Abort synthesis button** — out of scope; the lobby-level abort
+  CTA subsumes it. Sprint 9.1 hoisted that abort to the lobby header
+  so it stays visible across review (including a wedged synthesizer).
+- **Retry button for failed synthesis** — server's
+  `transitionLobbyStartSynthesis` rejects when
+  `synthesisRunId !== null`; a future `retry_synthesis` transition is
+  the cleaner path.
+- **Artifact preview / download** — out of scope per the
+  `output_artifact_id` opacity note.
+
+---
+
+## Sprint 9.1 — convergent reviewer patches (synthesis hardening)
+
+Five parallel reviewers on the Sprint 9 commit (`d489ff9f`) returned
+3 BLOCKERs (R5 B1/B2/B3 + R1 B1 dup of R5 B1) and an a11y / state /
+contract cluster. This patch resolves all three blockers and the
+high-severity findings; mediums folded in opportunistically.
+
+### P1 — BLOCKER B1: `task:progress` events dropped on lobby-level runs
+
+Both R1 and R5 hit the same routing bug independently: the
+synthesizer's `task:progress` events carry no `cardId`, and
+`extractRole` only looked at `task:started` / `task:completed`
+metadata. So progress events arrived with `inferredRole === undefined`
+and were silently discarded — visually leaving the synthesizer's
+transcript empty even while the run was streaming fragments.
+
+- `lib/lobbies/types.ts` — added `SoloStoryLobbyLevelRole = Exclude<SoloStoryRunRole, "worker">`
+  so the lobby-level `byRole` map is statically prevented from holding
+  a `worker` slot. Also added `SoloStoryRunRole` to the export surface
+  for client code.
+- `lib/lobbies/client/run-stream.ts`:
+  - `byRole` is now `ReadonlyMap<SoloStoryLobbyLevelRole, RunStreamState>`
+    (was `…<SoloStoryRunRole, …>` — `worker` never belonged there).
+  - `onRoleRunCompleted` callback parameter narrowed to the same alias.
+  - `extractRole` validates the metadata role at the wire boundary
+    against a `VALID_ROLES` runtime allow-list (`planner | worker |
+    synthesizer`) — silent acceptance of an unexpected role string was
+    a quiet "errors should never pass silently" violation.
+  - **The fix.** Added a `byRoleRef` (`useRef` mirror of `byRole`,
+    synced via `useEffect`) so the SSE callback can do a synchronous
+    runId→role lookup *without* re-firing the EventSource effect on
+    every state change. When `extractRole` returns undefined for an
+    event lacking the metadata field (the synthesizer's `task:progress`
+    case), we now scan `byRoleRef.current` for a matching `runId` and
+    route accordingly. `byCardId` worker progress paths are unchanged
+    — those still resolve via `cardId`.
+  - `task:started` runId guard — added in `updateCardSlot` and
+    `updateRoleSlot` so an SSE-reconnect duplicate `task:started` for
+    the same `runId` no longer wipes the fragment list. Matches the
+    runId-based skip already present for `task:progress`.
+  - New `getRunStateForRole` helper for callers that prefer a function
+    over `byRole.get(role)`.
+
+### P2 — BLOCKERs B2 + B3: captain dead-end on wedged / failed synthesis
+
+The Sprint 7B.1 abort dialog lived inside `RollingSection` and was
+gated on `lobby.status === "rolling"`. The moment the lobby flipped
+to `review` (or `completed` / `aborted`), the abort vanished — even
+when the synthesizer was wedged in an LLM stall or an infinite tool
+loop. R5 also flagged that the synthesis "failed" / "cancelled"
+banner offered no recovery path.
+
+- **`components/lobbies/abort-lobby-button.tsx` (new)** — extracted
+  the Sprint 7B.1 dialog body into a shared component:
+  - Returns `null` for terminal statuses (`completed` / `aborted`) —
+    nothing left to halt.
+  - `transitionLobby({ action: "abort", expectedVersion, mode: "cancel" })`.
+  - VERSION_CONFLICT branch fires `onChanged()` for refetch so the
+    captain's next attempt sees the latest `lockVersion`.
+  - AlertDialog with destructive-styled action, `e.preventDefault()`
+    on click so the dialog stays open while the request is in flight,
+    inline error banner.
+  - Optional `label` prop (defaults to "Abort lobby") + `className`
+    pass-through for layout tweaks.
+  - Mentions "the in-flight synthesis run will be cancelled" in the
+    confirmation copy when `lobby.synthesisRunId !== null`.
+- `app/lobbies/[id]/lobby-detail-client.tsx` — mounted the new
+  button in the lobby header next to "Save as template" / "Refresh"
+  so it's visible across roster / planning / rolling / review.
+- `components/lobbies/rolling/rolling-section.tsx` — removed the
+  inline abort button + dialog block + supporting state; left the
+  rolling header lean (count summary + parallelism gauge + DAG
+  button). Header comment explains the move.
+- `components/lobbies/synthesis/synthesis-run-progress.tsx` —
+  recovery hint on `failed` / `cancelled` phases pointing at the
+  lobby-header abort. Without it the failed run sat there with no
+  obvious next move.
+
+### P3 — mountedRef cluster (post-await setState safety)
+
+R2 H1 + H2: `start-synthesis-card` and `artifact-viewer` set state
+after `await` calls without checking whether the component had
+unmounted. React 18 swallows the warning but the state update still
+costs a render and can race with the parent's refetch. Worse, the
+`artifact-viewer` copy timeout was never cleared on unmount.
+
+- `start-synthesis-card.tsx` — `mountedRef` + `useEffect` guard;
+  every post-`await` `setError` / `setSubmitting` is gated. The
+  `onChanged()` call deliberately fires *unconditionally* — the new
+  state is server-authoritative, so the parent should refetch even
+  if WE unmounted; only component-local state is gated.
+- `artifact-viewer.tsx` — `mountedRef` + `copyTimerRef` (tracks the
+  `setTimeout` id). On unmount we clear the timer and flip
+  `mountedRef.current` to `false`. Back-to-back clicks now cancel
+  the prior reset timer, eliminating the brief "Copy → Copied →
+  Copy → Copied" flicker.
+
+### P4 — accessibility cluster
+
+- **R3 H1 (contrast)** — `text-terminal-green` on `bg-terminal-green/5`
+  measures ≈3.0–3.3:1, failing WCAG AA (4.5:1) for body text.
+  Switched the success body copy in `start-synthesis-card` (approval
+  roll-up), `synthesis-run-progress` (header tone for `succeeded`),
+  and the `artifact-viewer` heading to `text-terminal-dark`. The
+  green now lives only on the icon (decorative / `aria-hidden`) and
+  the border (affordance).
+- **R3 H2 (aria-atomic + role=log conflict)** —
+  `synthesis-run-progress` header dropped `aria-atomic="true"` so the
+  status header no longer re-announces its full text on every
+  fragment-driven transition while the timeline (which uses
+  `role="log"` + `aria-live`) is the primary stream surface.
+- **R3 H3 (aborted Card silent)** — `synthesis-section` aborted
+  branch added `aria-live="polite"` so AT users hear the state
+  change once.
+- **R3 M1 (copy aria-label flip)** — `artifact-viewer` keeps the
+  `aria-label` stable ("Copy artifact id to clipboard"); the
+  "Copied" feedback now goes through a hidden `sr-only`
+  `role="status"` `aria-live="polite"` region. AT users hear
+  "Copied to clipboard" exactly once on success.
+- **R3 M2 / R5 H4 (submitting silent)** —
+  `start-synthesis-card`: `aria-busy={submitting}` on the CTA + a
+  hidden polite live region announces "Starting synthesis…" the
+  moment the request kicks off.
+
+### P5 — contract recovery (start-synthesis CTA parity)
+
+R1 H1 + H2: peer CTAs (`AbortLobbyButton`, `accept_plan`,
+`enter_review`) all auto-refetch on VERSION_CONFLICT and
+discriminate on the other `MutationFailureReason` values; the
+synthesis CTA only mapped VERSION_CONFLICT and fell through to raw
+`err.message` for everything else. Brought it to parity:
+
+- VERSION_CONFLICT → captain-friendly nudge + `onChanged()` refetch.
+- INVALID_TRANSITION → "Lobby state changed before the request
+  landed" + `onChanged()`.
+- INVARIANT_VIOLATION → server message verbatim (it carries the
+  specific contract that was violated, e.g. "card X not approved").
+- NOT_FOUND → clean "This lobby no longer exists." message.
+- FORBIDDEN → server message (auth / permission).
+- default → server message verbatim.
+
+### P6 — default-expand synthesis on review
+
+R5 H1: synthesis section was collapsed by default in `review`, so
+the captain had to discover the kickoff CTA by manually expanding.
+Flipped `defaultExpandedForStatus("review").synthesis` to `true` and
+matched it for `aborted` (so the recovery card is visible without a
+toggle).
+
+### P7 — type cleanup
+
+- R4 M3: dropped redundant
+  `as string | undefined` cast on `lobby.config?.synthesizerCharacterId`
+  (the field is already typed correctly upstream).
+- R4 M5: switched `synthesis-section.tsx`,
+  `start-synthesis-card.tsx`, and `artifact-viewer.tsx` from
+  `@/lib/db/sqlite-lobbies-schema` to `@/lib/lobbies/types` — keeps
+  the client off the drizzle schema module path and lets `types.ts`
+  stay the single contract surface (the re-export from Sprint 6.1
+  exists for exactly this case).
+
+### P8 — UX polish
+
+- R5 P8 part 1: empty-lobby disabled hint on the Start button
+  (`totalCards === 0` → "Add cards in the planning phase before you
+  can synthesize."). Previously the hint just said "0 cards still
+  need review" which read confusingly when there were no cards at
+  all.
+- R5 P8 part 2: `deriveStatus(undefined, false)` returned `running`
+  in `synthesis-run-progress` — visually a spinning header on a
+  lobby with no synthesis run at all. Returns `queued` now (honest
+  default), and the function signature drops the unused `isInFlight`
+  param.
+
+### Verification
+
+- `npm run typecheck:app` — clean.
+- `npm run typecheck:lib` — clean.
+- All 3 BLOCKERs (R1 B1 / R5 B1 dup, R5 B2, R5 B3) resolved.
+- All HIGH findings (R1 H1/H2, R2 H1/H2, R3 H1/H2/H3, R5 H1/H4)
+  resolved.
+- 5 mediums (R3 M1/M2, R4 M3/M5, R5 P8) resolved opportunistically.
+
+### Decisions: deferred with rationale
+
+- **R4 M1 — discriminated dispatch in `SynthesisSection`** — the
+  current `if`-cascade is small and reads well; refactoring to a
+  switch on `(status, hasSynthesisRun, hasArtifact)` would hide the
+  per-branch comments. Keeping as-is until a fourth state appears.
+- **R2 M2 — useReducer for `start-synthesis-card`** — three
+  independent useState slots (`selectedCharacterId`, `submitting`,
+  `error`) don't justify the indirection in V1.
+
+---
+
+## Sprint 10 — Starter templates + save-as-template
+
+SPEC §2 V1 commits to shipping 3 starter lobby templates (blank,
+research-and-summarize, code-task). Sprint 10 lands them as seeded
+`visibility='public'` rows with stable ids, plus a captain-facing
+path to capture any in-progress lobby roster as a private template.
+
+### What landed
+
+- **`lib/lobbies/seed-templates.ts` (new)** — idempotent boot-time
+  seed via `INSERT OR IGNORE` on stable ids; preserves operator
+  hand-edits. Wired into `initializeTables()` after the lobby tables
+  exist. Three starter templates with realistic permission scopes
+  (Researcher / Writer for research, Coder / Reviewer for code; the
+  Reviewer's `deniedTools` enforces no-writes as a poor-man's
+  separation of duties pending V1.1 folder scoping).
+
+- **`lib/lobbies/__tests__/seed-templates.test.ts` (new)** — 5
+  in-memory tests covering visibility / null user_id, idempotency,
+  divergent-row preservation, seat-shape conformance, and the
+  missing-table guard.
+
+- **`app/lobbies/new/new-lobby-client.tsx`** — `TemplateRadioGroup`
+  replaces the 2-option `TemplateOption` surface with full WAI-ARIA
+  radio support (Arrow / Home / End navigation, roving tabindex,
+  wrap-around) now that >2 options ship by default. Empty-state copy
+  refreshed for the case where the seed silently failed.
+
+- **`components/lobbies/save-as-template-dialog.tsx` (new)** —
+  lobby-header dialog that snapshots the live seat config (positions
+  re-indexed, `agentId` stripped, prompts editable) and POSTs to the
+  existing `/api/lobby-templates` route. The route forces
+  `visibility='private'` server-side so this never escalates.
+
+- **`app/lobbies/[id]/lobby-detail-client.tsx`** — "Save as template"
+  button next to Refresh; available at every phase so a captain can
+  save a roster they designed even before rolling.
+
+### Verification
+
+- `tsc -p tsconfig.{lib,app,electron,tooling}.json` clean.
+- Seed test green.
+- Reviewer round queued for the follow-up Sprint 10.1 patch (this
+  branch will fire 5 parallel R1–R5 against the Sprint 10 commit
+  alongside the Sprint 9.1 patch, then synthesize convergent
+  findings).
+
