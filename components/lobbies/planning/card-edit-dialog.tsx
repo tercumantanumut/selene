@@ -130,6 +130,16 @@ export function CardEditDialog({
   // Reset state when the dialog opens for a different card (or switches
   // between create and edit modes). Without this, switching cards mid-mount
   // carries stale text / criteria forward.
+  //
+  // Sprint 7A.1 (S7A R1-H1, R2-H1, R5 #4): the dependency list MUST key on
+  // the card's stable identity (`id` + `lockVersion`), NOT the object
+  // reference. A parent refetch produces a NEW `LobbyCard` object every
+  // time even when no relevant field changed; without this guard, every
+  // refetch (including the planner appending a sibling card) would silently
+  // overwrite the captain's in-progress title/description/criteria edits.
+  // `lockVersion` is included so a server-side bump (someone else edited the
+  // same card) DOES re-seed — that case should clobber, since the captain's
+  // copy is stale.
   useEffect(() => {
     if (!open) return;
     setTitle(card?.title ?? "");
@@ -138,7 +148,8 @@ export function CardEditDialog({
     setAssignedSeatId(card?.assignedSeatId ?? null);
     setMaxAttempts(card?.maxAttempts ?? defaultMaxAttempts);
     setError(null);
-  }, [open, card, defaultMaxAttempts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: see header
+  }, [open, card?.id, card?.lockVersion, defaultMaxAttempts]);
 
   const seatOptions = useMemo(
     () =>
@@ -203,12 +214,17 @@ export function CardEditDialog({
     } catch (err) {
       if (err instanceof LobbyApiError) {
         if (err.reason === "VERSION_CONFLICT") {
+          // Sprint 7A.1 (S7A R1-MEDIUM, R5 strong-recommend #4):
+          // Do NOT call onSaved() here. The parent's refetch produces a new
+          // `card` object reference; combined with the reset effect above
+          // (now keyed on id+lockVersion), the captain's in-progress edit
+          // would be silently clobbered the moment the bumped lockVersion
+          // arrives. Surface the conflict but keep the dialog stable so
+          // the captain can copy their edit, close, reopen on the latest
+          // card, and re-apply.
           setError(
-            "This card was updated since you opened the editor — refreshing latest. Re-apply your edit.",
+            "This card was updated since you opened the editor. Copy your changes, close, reopen, and re-apply.",
           );
-          // Surface the conflict but also nudge the parent to refetch so
-          // the user sees the new version in the list view.
-          onSaved();
         } else if (err.reason === "INVALID_TRANSITION") {
           setError(
             err.message ||
@@ -250,6 +266,11 @@ export function CardEditDialog({
                 className="font-mono text-[11px] uppercase tracking-wide text-terminal-muted"
               >
                 Title
+                {/* Sprint 7A.1 (S7A R3 MEDIUM): visible required indicator
+                    paired with aria-required on the input below. */}
+                <span aria-hidden="true" className="text-destructive ml-0.5">
+                  *
+                </span>
               </label>
               <Input
                 id="card-title"
@@ -257,6 +278,8 @@ export function CardEditDialog({
                 onChange={(e) => setTitle(e.target.value)}
                 maxLength={TITLE_MAX}
                 disabled={saving}
+                required
+                aria-required="true"
                 className="font-mono text-sm"
                 placeholder="Short, action-oriented title"
               />
@@ -286,11 +309,21 @@ export function CardEditDialog({
             </div>
 
             {/* Acceptance criteria */}
-            <div className="space-y-2">
+            {/* Sprint 7A.1 (S7A R3 MEDIUM): role="group" + aria-labelledby
+                so screen readers announce the group context. The label is
+                the visible "Acceptance criteria" text — id-bound below. */}
+            <div
+              className="space-y-2"
+              role="group"
+              aria-labelledby="card-ac-label"
+            >
               <div className="flex items-center justify-between">
-                <label className="font-mono text-[11px] uppercase tracking-wide text-terminal-muted">
+                <span
+                  id="card-ac-label"
+                  className="font-mono text-[11px] uppercase tracking-wide text-terminal-muted"
+                >
                   Acceptance criteria
-                </label>
+                </span>
                 <Button
                   type="button"
                   size="sm"
@@ -310,7 +343,7 @@ export function CardEditDialog({
                 </p>
               ) : (
                 <ul className="space-y-2">
-                  {criteria.map((c) => (
+                  {criteria.map((c, index) => (
                     <li
                       key={c.localId}
                       className="flex items-start gap-2 rounded-md border border-terminal-border/60 bg-terminal-cream/30 p-2"
@@ -323,7 +356,10 @@ export function CardEditDialog({
                           })
                         }
                         disabled={saving}
-                        aria-label="Required criterion"
+                        // Sprint 7A.1 (S7A R3 MEDIUM): disambiguate per-row
+                        // a11y labels — multiple identical "Required criterion"
+                        // labels were unusable for SR users.
+                        aria-label={`Required for criterion ${index + 1}`}
                         className="mt-1"
                       />
                       <Input
@@ -335,6 +371,7 @@ export function CardEditDialog({
                         }
                         maxLength={AC_TEXT_MAX}
                         disabled={saving}
+                        aria-label={`Acceptance criterion ${index + 1} text`}
                         className="font-mono text-xs flex-1"
                         placeholder="What must be true to accept this card"
                       />
@@ -344,7 +381,7 @@ export function CardEditDialog({
                         variant="ghost"
                         onClick={() => removeCriterion(c.localId)}
                         disabled={saving}
-                        aria-label="Remove criterion"
+                        aria-label={`Remove acceptance criterion ${index + 1}`}
                         className="h-7 w-7 text-terminal-muted hover:text-destructive"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -402,11 +439,20 @@ export function CardEditDialog({
                 id="card-attempts"
                 type="number"
                 min={1}
-                max={10}
+                // Sprint 7A.1 (S7A R1-LOW + R4 NIT): align with server schema
+                // (`cards/route.ts` and `cards/[cardId]/route.ts` both cap at
+                // 20). Previously the UI clamped at 10, which silently shrank
+                // any planner-emitted card with `maxAttempts > 10`.
+                max={20}
                 value={maxAttempts}
                 onChange={(e) => {
                   const next = Number.parseInt(e.target.value, 10);
-                  if (Number.isFinite(next)) setMaxAttempts(next);
+                  // Belt-and-braces: enforce range here too. The HTML max
+                  // attribute is captured by the spinner but bypassed by
+                  // direct keyboard entry.
+                  if (Number.isFinite(next) && next >= 1 && next <= 20) {
+                    setMaxAttempts(next);
+                  }
                 }}
                 disabled={saving}
                 className="font-mono text-sm w-24"
@@ -419,9 +465,12 @@ export function CardEditDialog({
         </ScrollArea>
 
         {error && (
+          // Sprint 7A.1 (S7A R3 MEDIUM): switch from `text-destructive`
+          // (#ef4444 ≈ 3.4:1 on cream) to `text-red-700` (#b91c1c ≈ 5.9:1)
+          // to clear WCAG AA 4.5:1 for normal text in the light theme.
           <p
             role="alert"
-            className="font-mono text-[11px] text-destructive"
+            className="font-mono text-[11px] text-red-700 dark:text-red-300"
           >
             {error}
           </p>

@@ -16,7 +16,7 @@
  * problem before clicking, instead of getting a 422 surface.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ArrowRight, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -74,9 +74,14 @@ export function AcceptPlanButton({
 }: AcceptPlanButtonProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Sprint 7A.1 (S7A R3 HIGH): stable id for the failure-reason <p> so the
+  // disabled Button can `aria-describedby` link to it. Without this, SR
+  // users hear "Accept plan & roll, dimmed" with no surfaced reason.
+  const reasonId = useId();
 
   const failure = preflight(cards, seats);
   const disabled = failure !== null || submitting;
+  const reasonText = error ?? failure?.reason ?? null;
 
   async function handleClick() {
     setError(null);
@@ -127,26 +132,37 @@ export function AcceptPlanButton({
         type="button"
         onClick={() => void handleClick()}
         disabled={disabled}
+        // Sprint 7A.1 (S7A R3 HIGH + MEDIUM): wire `aria-describedby` to the
+        // failure paragraph so SR users hear the reason; surface `aria-busy`
+        // during the network round-trip so AT can announce the loading state.
+        aria-describedby={reasonText ? reasonId : undefined}
+        aria-busy={submitting}
         className="font-mono"
       >
         {submitting ? (
           <>
-            <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+            <Loader2
+              className="h-3.5 w-3.5 mr-2 animate-spin"
+              aria-hidden="true"
+            />
             Starting rolling phase…
           </>
         ) : (
           <>
             Accept plan & roll
-            <ArrowRight className="h-3.5 w-3.5 ml-2" />
+            <ArrowRight className="h-3.5 w-3.5 ml-2" aria-hidden="true" />
           </>
         )}
       </Button>
-      {(failure || error) && (
+      {reasonText && (
+        // Sprint 7A.1 (S7A R3 MEDIUM): bump from amber-700 (~4.39:1 on cream
+        // — fails AA for 11px text) to amber-800 (~6.7:1, comfortably AA).
         <p
+          id={reasonId}
           role="alert"
-          className="font-mono text-[11px] text-amber-700 dark:text-amber-300"
+          className="font-mono text-[11px] text-amber-800 dark:text-amber-300"
         >
-          {error ?? failure?.reason}
+          {reasonText}
         </p>
       )}
     </div>

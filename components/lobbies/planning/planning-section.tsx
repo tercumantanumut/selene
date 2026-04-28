@@ -51,6 +51,11 @@ export function PlanningSection({
       <PlannerRunBanner
         hasPlanningRun={lobby.planningRunId !== null}
         cardCount={cards.length}
+        // Sprint 7A.1 (S7A R5 BLOCKER #2): wire the parent's refetch through
+        // so the banner can render a "Check for cards" escape hatch while the
+        // planner is running with no cards yet. SSE auto-refresh ships in
+        // Sprint 8.
+        onRefresh={onChanged}
       />
 
       <CardDraftList

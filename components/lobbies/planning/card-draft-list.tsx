@@ -173,7 +173,10 @@ export function CardDraftList({
                       {card.maxAttempts === 1 ? "" : "s"}
                     </span>
                     {!card.assignedSeatId && (
-                      <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300">
+                      // Sprint 7A.1 (S7A R3 MEDIUM): amber-700 on cream is
+                      // ~4.32:1 (fails AA for 11px text). Bump to amber-800
+                      // for ~6.7:1 contrast.
+                      <span className="inline-flex items-center gap-1 text-amber-800 dark:text-amber-300">
                         <AlertCircle
                           className="h-3 w-3"
                           aria-hidden="true"

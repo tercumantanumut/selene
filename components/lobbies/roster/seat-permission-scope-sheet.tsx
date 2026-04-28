@@ -19,7 +19,7 @@
  * intersection) — see `lib/lobbies/scope-injection.ts`.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader2, ShieldCheck, Wrench } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -96,11 +96,23 @@ export function SeatPermissionScopeSheet({
   // this, switching seats while the sheet is mounted carries the previous
   // seat's checkbox state forward — exactly the kind of stale state that
   // causes accidental tightening.
+  //
+  // Sprint 6.1 (S6 R2 HIGH): only re-seed on the open→true edge. The
+  // previous deps `[open, initialScope, agentTools]` triggered a reset on
+  // EVERY parent refetch (any sibling mutation produces a new
+  // `initialScope` object reference), silently clobbering captain's
+  // in-progress checkbox edits. We track `prevOpen` via a ref and only
+  // run the seed logic when `open` flips from false → true. The agentTools
+  // / initialScope reads inside the effect still pick up the current
+  // values, so the seed is correct.
+  const prevOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !prevOpenRef.current) {
       setAllowed(buildInitial(initialScope, agentTools));
     }
-  }, [open, initialScope, agentTools]);
+    prevOpenRef.current = open;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: edge-only seed
+  }, [open]);
 
   function toggle(tool: string) {
     setAllowed((prev) => {
@@ -117,6 +129,9 @@ export function SeatPermissionScopeSheet({
 
   const allChecked = agentTools.length > 0 && allowed.size === agentTools.length;
   const noneChecked = allowed.size === 0;
+  // Sprint 6.1 (S6 R3 MEDIUM): stable id for the tool-list group label so
+  // the inner <ul> can announce its group context.
+  const groupLabelId = useId();
 
   function handleSave() {
     // Map "all checked" back to the sentinel (empty list = inherit). Keeps
@@ -146,8 +161,12 @@ export function SeatPermissionScopeSheet({
         </DialogHeader>
 
         {!agent ? (
+          // Sprint 6.1 (S6 R3 HIGH): amber-700 → amber-800 for AA contrast.
           <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-            <AlertCircle className="h-4 w-4 text-amber-700 dark:text-amber-300 mt-0.5 shrink-0" />
+            <AlertCircle
+              className="h-4 w-4 text-amber-800 dark:text-amber-300 mt-0.5 shrink-0"
+              aria-hidden="true"
+            />
             <p className="font-mono text-xs text-amber-900 dark:text-amber-100">
               Pick an agent for this seat first — scope is anchored to the
               agent's tool surface.
@@ -191,8 +210,17 @@ export function SeatPermissionScopeSheet({
               </div>
             </div>
 
+            {/* Sprint 6.1 (S6 R3 MEDIUM): visually-hidden group label so SR
+                users hear the scope-tools list as a labelled group. */}
+            <span id={groupLabelId} className="sr-only">
+              Tools allowed for {seatRole}
+            </span>
             <ScrollArea className="flex-1 -mx-6 px-6">
-              <ul className="space-y-1 py-1">
+              <ul
+                className="space-y-1 py-1"
+                role="group"
+                aria-labelledby={groupLabelId}
+              >
                 {agentTools.map((tool) => {
                   const checked = allowed.has(tool);
                   const id = `scope-tool-${tool}`;
@@ -224,9 +252,10 @@ export function SeatPermissionScopeSheet({
             </ScrollArea>
 
             {noneChecked && (
+              // Sprint 6.1 (S6 R3 HIGH): amber-700 → amber-800 for AA.
               <p
                 role="status"
-                className="font-mono text-[11px] text-amber-700 dark:text-amber-300"
+                className="font-mono text-[11px] text-amber-800 dark:text-amber-300"
               >
                 No tools allowed — this seat will run with zero tool access.
               </p>
@@ -235,9 +264,11 @@ export function SeatPermissionScopeSheet({
         )}
 
         {error && (
+          // Sprint 6.1 (S6 R3 HIGH): destructive token (#ef4444) on cream
+          // is ~3.4:1 (fails AA). Use red-700 (#b91c1c) → ~5.9:1.
           <p
             role="alert"
-            className="font-mono text-[11px] text-destructive"
+            className="font-mono text-[11px] text-red-700 dark:text-red-300"
           >
             {error}
           </p>
