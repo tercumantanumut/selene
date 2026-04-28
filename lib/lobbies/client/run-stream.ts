@@ -801,13 +801,11 @@ export function useLobbyRunStream(
     }
 
     if (!inferredRole) {
-      const runId = getEventRunId(event);
-      if (
-        event.eventType !== "task:started" &&
-        runId === synthesisRunIdRef.current
-      ) {
-        inferredRole = "synthesizer";
-      }
+      inferredRole = inferLobbyLevelRoleForEvent({
+        event,
+        existingByRole: byRoleRef.current,
+        synthesisRunId: synthesisRunIdRef.current,
+      });
     }
 
     // Still no role? The event predates any `task:started` we've seen

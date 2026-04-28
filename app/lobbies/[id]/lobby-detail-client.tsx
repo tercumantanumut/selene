@@ -84,7 +84,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 import { useLobbyDetail } from "@/lib/lobbies/client/hooks";
-import { useLobbyRunStream } from "@/lib/lobbies/client/run-stream";
+import {
+  useLobbyRunStream,
+  type UseLobbyRunStreamOptions,
+} from "@/lib/lobbies/client/run-stream";
 import {
   useSoloStoryUiStore,
   useSectionControls,
@@ -101,6 +104,21 @@ import { SaveAsTemplateDialog } from "@/components/lobbies/save-as-template-dial
 import { AbortLobbyButton } from "@/components/lobbies/abort-lobby-button";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
+
+export function buildLobbyRunStreamOptions(params: {
+  synthesisRunId?: string | null;
+  refetch: () => Promise<void>;
+}): UseLobbyRunStreamOptions {
+  return {
+    synthesisRunId: params.synthesisRunId ?? null,
+    onCardCompleted: () => {
+      void params.refetch();
+    },
+    onRoleRunCompleted: () => {
+      void params.refetch();
+    },
+  };
+}
 
 const PHASES: Array<{
   key: LobbyPhaseSection;
@@ -166,21 +184,13 @@ export default function LobbyDetailClient() {
   // refetch the lobby detail so card.status / output / lockVersion land
   // authoritatively (the SSE stream reports lifecycle, not the persisted
   // row). Refetching is idempotent and cheap (<200ms).
-  const runStream = useLobbyRunStream(lobbyId, {
-    onCardCompleted: () => {
-      void refetch();
-    },
-    // Sprint 9: lobby-level (planner/synthesizer) run completions also
-    // need a refetch so the persisted lobby fields land:
-    //   - planner finish → cards rows materialize, lobby flips to `planning`.
-    //   - synthesizer finish → `outputArtifactId` lands, status flips to
-    //     `completed`. Without this refetch the SynthesisSection would
-    //     remain stuck on the SynthesisRunProgress timeline even after
-    //     the run reported succeeded.
-    onRoleRunCompleted: () => {
-      void refetch();
-    },
-  });
+  const runStream = useLobbyRunStream(
+    lobbyId,
+    buildLobbyRunStreamOptions({
+      synthesisRunId: data?.lobby.synthesisRunId ?? null,
+      refetch,
+    }),
+  );
 
   // Wire the active lobby into the UI store so cross-component selectors
   // know which lobby is mounted. The destructive reset clears per-lobby UI

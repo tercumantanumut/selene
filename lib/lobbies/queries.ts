@@ -49,9 +49,34 @@ import type {
   LobbyTemplateSeatV1,
   LobbyTemplateVisibility,
 } from "@/lib/lobbies/types";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
 const nowIso = () => new Date().toISOString();
+const LOBBY_CURSOR_SEPARATOR = "|";
+
+export type LobbyListCursor = {
+  updatedAt: string;
+  id: string;
+};
+
+export function encodeLobbyListCursor(cursor: LobbyListCursor): string {
+  return `${encodeURIComponent(cursor.updatedAt)}${LOBBY_CURSOR_SEPARATOR}${encodeURIComponent(cursor.id)}`;
+}
+
+export function decodeLobbyListCursor(cursor: string): LobbyListCursor | null {
+  const separatorIndex = cursor.indexOf(LOBBY_CURSOR_SEPARATOR);
+  if (separatorIndex === -1) return null;
+
+  try {
+    const updatedAt = decodeURIComponent(cursor.slice(0, separatorIndex));
+    const id = decodeURIComponent(cursor.slice(separatorIndex + 1));
+    if (!updatedAt || !id) return null;
+
+    return { updatedAt, id };
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Mutation result envelope.
@@ -149,19 +174,36 @@ export async function listLobbiesForUser(
 
   const conditions = [eq(lobbies.userId, params.userId)];
   if (params.status) conditions.push(eq(lobbies.status, params.status));
-  if (params.cursor) conditions.push(sql`${lobbies.updatedAt} < ${params.cursor}`);
+  if (params.cursor) {
+    const decodedCursor = decodeLobbyListCursor(params.cursor);
+    if (decodedCursor) {
+      conditions.push(
+        or(
+          sql`${lobbies.updatedAt} < ${decodedCursor.updatedAt}`,
+          and(
+            eq(lobbies.updatedAt, decodedCursor.updatedAt),
+            sql`${lobbies.id} < ${decodedCursor.id}`,
+          ),
+        )!,
+      );
+    } else {
+      // Backward-compatible path for timestamp-only cursors already in flight.
+      conditions.push(sql`${lobbies.updatedAt} < ${params.cursor}`);
+    }
+  }
 
   const rows = await db
     .select()
     .from(lobbies)
     .where(and(...conditions))
-    .orderBy(desc(lobbies.updatedAt))
+    .orderBy(desc(lobbies.updatedAt), desc(lobbies.id))
     .limit(pageSize + 1);
 
   const hasMore = rows.length > pageSize;
   const page = hasMore ? rows.slice(0, pageSize) : rows;
-  const nextCursor = hasMore
-    ? page[page.length - 1]?.updatedAt ?? null
+  const cursorRow = page[page.length - 1];
+  const nextCursor = hasMore && cursorRow
+    ? encodeLobbyListCursor({ updatedAt: cursorRow.updatedAt, id: cursorRow.id })
     : null;
 
   return { lobbies: page, nextCursor };
