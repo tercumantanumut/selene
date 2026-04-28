@@ -11,9 +11,11 @@ import { spawn, spawnSync } from "child_process";
 import { loadSettings, updateSetting } from "@/lib/settings/settings-manager";
 
 function getLocalDataDir(): string {
-  const dataDir = process.env.LOCAL_DATA_PATH || join(process.cwd(), ".local-data");
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true });
+  // turbopackIgnore: NFT cannot resolve process.cwd() at build time. Without
+  // this marker the whole project gets pulled into every route's trace.
+  const dataDir = process.env.LOCAL_DATA_PATH || join(/*turbopackIgnore: true*/ process.cwd(), ".local-data");
+  if (!existsSync(/*turbopackIgnore: true*/ dataDir)) {
+    mkdirSync(/*turbopackIgnore: true*/ dataDir, { recursive: true });
   }
   return dataDir;
 }
@@ -43,8 +45,10 @@ function getPackagedRTKBinaryPath(): string | null {
   }
 
   const binaryName = process.platform === "win32" ? "rtk.exe" : "rtk";
-  const binaryPath = join(resourcesPath, "binaries", "rtk", platformDir, binaryName);
-  return existsSync(binaryPath) ? binaryPath : null;
+  // turbopackIgnore: resourcesPath/platformDir are only known at runtime
+  // (Electron packaged vs. dev). Letting NFT see this join causes whole-project tracing.
+  const binaryPath = join(/*turbopackIgnore: true*/ resourcesPath, "binaries", "rtk", platformDir, binaryName);
+  return existsSync(/*turbopackIgnore: true*/ binaryPath) ? binaryPath : null;
 }
 
 /**
@@ -113,8 +117,9 @@ export async function checkRTKInstalled(): Promise<boolean> {
 export async function initializeRTK(): Promise<void> {
   const dbPath = getRTKDbPath();
   const dbDir = dirname(dbPath);
-  if (!existsSync(dbDir)) {
-    mkdirSync(dbDir, { recursive: true });
+  // turbopackIgnore: dbDir derives from process.cwd() / resourcesPath; runtime-only.
+  if (!existsSync(/*turbopackIgnore: true*/ dbDir)) {
+    mkdirSync(/*turbopackIgnore: true*/ dbDir, { recursive: true });
   }
 
   updateSetting("rtkDbPath", dbPath);

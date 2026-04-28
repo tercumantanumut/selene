@@ -66,6 +66,7 @@
     "electron:compile": "tsc -p tsconfig.electron.json",
     "electron:bundle": "node esbuild.electron.mjs",
     "electron:bundle:dev": "node esbuild.electron.mjs --dev",
+    "analyze:electron-bundle": "node scripts/analyze-electron-bundle.mjs",
     "electron:dev": "npm run typecheck && npm rebuild better-sqlite3 && npm run electron:bundle:dev && concurrently -k \"node scripts/dev-with-stdio-fix.mjs\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
     "electron:bundle-whisper": "node scripts/bundle-whisper.js",
     "electron:build": "npm run build && npm run electron:rebuild-native && npm run electron:bundle-whisper && npm run electron:prepare && npm run electron:bundle",

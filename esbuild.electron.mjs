@@ -3,9 +3,15 @@ import * as esbuild from "esbuild";
 const isDev = process.argv.includes("--dev");
 
 // Bundle the Electron main process
-// Native modules must stay external (they contain .node binaries that can't
-// be bundled). All pure-JS deps are inlined — esbuild handles ESM→CJS
-// transpilation, which is required for ESM-only packages like @huggingface/transformers.
+// Native modules stay external (they contain .node binaries that can't be
+// bundled). Heavy pure-JS deps that are only reached via dynamic import() —
+// or whose ESM-only entry can be loaded via Node 22's require(esm) — are
+// also kept external; they resolve from standalone/node_modules at runtime
+// via the banner below. This keeps electron-dist/main.js small (~1-2 MB)
+// instead of inlining ~5 MB of AI/PDF/tokenizer code that's only used on
+// demand. Adding a static import of one of these from electron/main.ts (or
+// any non-dynamic chain reachable from it) would force the dep to load
+// eagerly at process startup — prefer await import() for IPC handlers.
 // ---------------------------------------------------------------------------
 // Banner: native module resolution for packaged builds
 // This MUST run before any require() in the bundle because esbuild evaluates
@@ -54,6 +60,16 @@ await esbuild.build({
     "onnxruntime-node",
     "sharp",
     "@lancedb/*",
+    // Heavy pure-JS deps — only reached via dynamic import() chains in IPC
+    // handlers. Resolved from standalone/node_modules at runtime (banner
+    // above adds it to NODE_PATH). Removing any of these requires a real
+    // electron:dist build to re-validate — measure first with
+    // `npm run analyze:electron-bundle`.
+    "@huggingface/hub",
+    "@huggingface/transformers",
+    "gpt-tokenizer",
+    "pdfjs-dist",
+    "pdf-parse",
   ],
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',
