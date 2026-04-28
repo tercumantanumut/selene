@@ -274,7 +274,7 @@ function DagRow({
  * Returns cards in topological order plus any cards left in a cycle.
  * Depth tracks dependency layer (0 = root, n = max depth from a root).
  */
-function topoSortCards(
+export function topoSortCards(
   cards: LobbyCard[],
   dependencies: LobbyCardDependency[],
 ): { sorted: SortedRow[]; unsorted: LobbyCard[] } {
@@ -320,6 +320,7 @@ function topoSortCards(
 
   const sorted: SortedRow[] = [];
   const visited = new Set<string>();
+  const depthByCard = new Map<string, number>();
 
   while (queue.length > 0) {
     const { id, depth } = queue.shift()!;
@@ -336,11 +337,14 @@ function topoSortCards(
 
     sorted.push({ card, depth, upstream, downstream: downstreamCards });
 
-    // Decrement indegrees of all downstream cards; enqueue when they hit 0.
+    // Decrement indegrees of all downstream cards; enqueue after every parent
+    // has contributed so multi-parent nodes use max(parent depth) + 1.
     for (const childId of downstream.get(id) ?? []) {
       const next = (indegree.get(childId) ?? 0) - 1;
       indegree.set(childId, next);
-      if (next === 0) queue.push({ id: childId, depth: depth + 1 });
+      const childDepth = Math.max(depthByCard.get(childId) ?? 0, depth + 1);
+      depthByCard.set(childId, childDepth);
+      if (next === 0) queue.push({ id: childId, depth: childDepth });
     }
   }
 

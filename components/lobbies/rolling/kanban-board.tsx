@@ -174,6 +174,15 @@ const COLUMN_META: Record<LobbyCardColumn, ColumnMeta> = {
   },
 };
 
+export function isRollingKanbanManualDropTarget(
+  isEditable: boolean,
+  target: DnDPosition,
+): boolean {
+  if (!isEditable) return false;
+  if (!isLobbyCardColumn(target.containerId)) return false;
+  return COLUMN_META[target.containerId].manuallyDroppable;
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────
 
 export type KanbanBoardProps = {
@@ -320,17 +329,19 @@ export function KanbanBoard({
     [isEditable, cards, busyCardIds],
   );
 
+  const isManualDropTarget = useCallback(
+    (target: DnDPosition) => isRollingKanbanManualDropTarget(isEditable, target),
+    [isEditable],
+  );
+
   const canDrop = useCallback(
     ({ source, target }: DnDDropArgs) => {
       // Sprint 7B.1 (R4-H2): defend the boundary instead of casting. An
       // unknown containerId can't possibly be droppable.
-      if (!isLobbyCardColumn(target.containerId)) return false;
-      const meta = COLUMN_META[target.containerId];
-      if (!meta) return false;
-      if (source.containerId === target.containerId) return true;
-      return meta.manuallyDroppable;
+      if (!isLobbyCardColumn(source.containerId)) return false;
+      return isManualDropTarget(target);
     },
-    [],
+    [isManualDropTarget],
   );
 
   // ── Drop commit ────────────────────────────────────────────────────────
@@ -494,6 +505,7 @@ export function KanbanBoard({
     onDrop,
     canDrag,
     canDrop,
+    isDropTargetVisible: isManualDropTarget,
     announce,
     getContainerLabel,
     getItemLabel,
@@ -610,7 +622,7 @@ export function KanbanBoard({
               accentClass={meta.accentClass}
               dndState={dnd.state}
               getDropSlotProps={dnd.getDropSlotProps}
-              isReadOnly={!meta.manuallyDroppable && !isEditable}
+              isReadOnly={!isEditable || !meta.manuallyDroppable}
               items={items.map((card, idx) => ({
                 id: card.id,
                 node: (
@@ -677,12 +689,11 @@ export function KanbanBoard({
 
 /**
  * Project server cards into their on-screen columns, applying any
- * in-flight optimistic moves. Each column is sorted by `position` —
- * server's authoritative ordering — except for cards that are being
- * moved, which jump to their target column at their original `position`
- * (server will recompute on commit, then refetch will re-sort).
+ * in-flight optimistic moves. Canonical cards keep server `position` order;
+ * optimistic cards are then inserted at the queued before-card target so the
+ * UI mirrors the captain's intended slot while waiting for the refetch.
  */
-function projectColumns(
+export function projectColumns(
   cards: LobbyCard[],
   optimisticMoves: Map<string, { toColumn: string; beforeCardId: string | null }>,
 ): Record<LobbyCardColumn, LobbyCard[]> {
@@ -694,23 +705,46 @@ function projectColumns(
     done: [],
     blocked: [],
   };
+  const optimisticCards: Array<{
+    card: LobbyCard;
+    toColumn: LobbyCardColumn;
+    beforeCardId: string | null;
+  }> = [];
+
   for (const card of cards) {
     const overlay = optimisticMoves.get(card.id);
-    const candidate = overlay?.toColumn ?? card.column;
-    // Sprint 7B.1 (R4-H3): unknown column id → drop into `blocked` so
+    if (overlay) {
+      const candidate = overlay.toColumn;
+      optimisticCards.push({
+        card,
+        toColumn: isLobbyCardColumn(candidate) ? candidate : "blocked",
+        beforeCardId: overlay.beforeCardId,
+      });
+      continue;
+    }
+
+    // Sprint 7B.1 (R4-H3): unknown column id -> drop into `blocked` so
     // the card is still visible but flagged. Silently dropping
     // server-supplied data is worse than parking it somewhere visible.
-    const targetCol: LobbyCardColumn = isLobbyCardColumn(candidate)
-      ? candidate
+    const targetCol: LobbyCardColumn = isLobbyCardColumn(card.column)
+      ? card.column
       : "blocked";
     buckets[targetCol].push(card);
   }
-  // Sort each bucket by position. Optimistic moves don't update position
-  // here — refetch lands the canonical order — so we use the existing
-  // `position` as a stable sort key.
+
   for (const col of COLUMN_ORDER) {
     buckets[col].sort((a, b) => a.position - b.position);
   }
+
+  for (const move of optimisticCards) {
+    const bucket = buckets[move.toColumn];
+    const insertAt = move.beforeCardId
+      ? bucket.findIndex((card) => card.id === move.beforeCardId)
+      : -1;
+    const nextIndex = insertAt >= 0 ? insertAt : bucket.length;
+    bucket.splice(nextIndex, 0, move.card);
+  }
+
   return buckets;
 }
 

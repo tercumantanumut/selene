@@ -101,6 +101,8 @@ export type UseKanbanDndOptions = {
   canDrag?: (itemId: string, source: DnDPosition) => boolean;
   /** Optional drop validity check. Drives hover styling + commit gating. */
   canDrop?: (args: DnDDropArgs) => boolean;
+  /** Optional visibility gate for drop slots that should not be targetable. */
+  isDropTargetVisible?: (target: DnDPosition) => boolean;
   /** Optional ARIA-live announcer. Pass a setter that writes to a `polite` region. */
   announce?: (message: string) => void;
   /**
@@ -317,14 +319,21 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
       let nextIndex = cur.hover.index;
 
       if (direction === "left" || direction === "right") {
-        const targetIdx = colIdx + (direction === "left" ? -1 : 1);
-        if (targetIdx < 0 || targetIdx >= columnOrder.length) return;
-        nextCol = columnOrder[targetIdx];
-        // +1 because every column has `count + 1` slots (including the
-        // trailing "end of column" slot). Clamp the carried index so we
-        // don't land past the end when entering a smaller column.
-        const cap = (itemCounts[nextCol] ?? 0) + 1;
-        nextIndex = Math.min(nextIndex, cap - 1);
+        const step = direction === "left" ? -1 : 1;
+        let targetIdx = colIdx + step;
+        while (targetIdx >= 0 && targetIdx < columnOrder.length) {
+          const candidateCol = columnOrder[targetIdx];
+          const cap = (itemCounts[candidateCol] ?? 0) + 1;
+          const candidateIndex = Math.min(nextIndex, cap - 1);
+          const candidate = { containerId: candidateCol, index: candidateIndex };
+          if (optsRef.current.isDropTargetVisible?.(candidate) ?? true) {
+            nextCol = candidateCol;
+            nextIndex = candidateIndex;
+            break;
+          }
+          targetIdx += step;
+        }
+        if (nextCol === cur.hover.containerId && nextIndex === cur.hover.index) return;
       } else {
         const cap = (itemCounts[nextCol] ?? 0) + 1;
         nextIndex =
@@ -532,13 +541,15 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         state.hover.containerId === target.containerId &&
         state.hover.index === target.index;
       const isActive = state.kind === "active";
+      const isVisibleTarget = optsRef.current.isDropTargetVisible?.(target) ?? true;
       const valid =
-        !isActive ||
-        (optsRef.current.canDrop?.({
-          itemId: state.itemId,
-          source: state.source,
-          target,
-        }) ?? true);
+        isVisibleTarget &&
+        (!isActive ||
+          (optsRef.current.canDrop?.({
+            itemId: state.itemId,
+            source: state.source,
+            target,
+          }) ?? true));
       // Sprint 7B.1 (R3-H6): role="button" makes the slot a real keyboard
       // tabstop and a real SR target. tabIndex is -1 when no drag is
       // active (so the captain doesn't tab through hundreds of empty drop
@@ -553,7 +564,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         role: "button",
         tabIndex,
         "aria-label": ariaLabel,
-        "aria-disabled": isActive && !valid,
+        "aria-disabled": !isVisibleTarget || (isActive && !valid),
         "data-dnd-target": "true",
         "data-dnd-container": target.containerId,
         "data-dnd-index": String(target.index),
@@ -566,6 +577,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
           }
         },
         onPointerEnter: () => {
+          if (!isVisibleTarget) return;
           const cur = stateRef.current;
           if (cur.kind !== "active" || cur.mode !== "pointer") return;
           if (
@@ -577,6 +589,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
           setDndState({ ...cur, hover: target });
         },
         onPointerUp: (e) => {
+          if (!isVisibleTarget) return;
           const cur = stateRef.current;
           if (cur.kind !== "active" || cur.mode !== "pointer") return;
           e.preventDefault();
@@ -585,6 +598,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
           void commit(target);
         },
         onClick: () => {
+          if (!isVisibleTarget) return;
           const cur = stateRef.current;
           if (cur.kind !== "active" || cur.mode !== "keyboard") return;
           // Mouse-click-on-slot also commits in keyboard mode — supports
