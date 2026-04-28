@@ -148,6 +148,21 @@ export function useLobbyEvents(
   const [loading, setLoading] = useState(lobbyId !== null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Separate controller for the incremental `appendFromAfter` requests so
+   * navigating away from the lobby aborts in-flight cursor catch-up calls.
+   * Without this, late `setData` writes would land after unmount and either
+   * pollute the next mount's cache or trip a "set state on unmounted
+   * component" warning in dev.
+   */
+  const appendAbortRef = useRef<AbortController | null>(null);
+  /**
+   * Tracks whether the hook is still mounted for the current lobby. Flipped
+   * to false on unmount / lobby change so the trailing `setError` of an
+   * in-flight `appendFromAfter` is dropped instead of leaking into the next
+   * lobby's UI.
+   */
+  const mountedRef = useRef(true);
 
   const initialLimit = options.initialLimit;
   const afterSequence = options.afterSequence;
@@ -183,14 +198,23 @@ export function useLobbyEvents(
   /**
    * Pull events newer than `afterSequence` and append. Used by SSE-recovery
    * paths so we don't lose events while the stream reconnects.
+   *
+   * Aborts the previous append request before starting a new one, and bails
+   * out entirely if the hook has unmounted by the time the response lands.
    */
   const appendFromAfter = useCallback(
     async (cursor: number) => {
       if (!lobbyId) return;
+      appendAbortRef.current?.abort();
+      const controller = new AbortController();
+      appendAbortRef.current = controller;
+
       try {
         const result = await listLobbyEvents(lobbyId, {
           afterSequence: cursor,
+          signal: controller.signal,
         });
+        if (controller.signal.aborted || !mountedRef.current) return;
         setData((prev) => {
           const merged = [...(prev?.events ?? []), ...result.events];
           // De-dup on (lobbyId, sequence) — server allocator guarantees
@@ -205,6 +229,7 @@ export function useLobbyEvents(
           return { events: unique };
         });
       } catch (err) {
+        if (controller.signal.aborted || !mountedRef.current) return;
         setError(getErrorMessage(err, "Failed to append events"));
       }
     },
@@ -212,8 +237,13 @@ export function useLobbyEvents(
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     void run();
-    return () => abortRef.current?.abort();
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+      appendAbortRef.current?.abort();
+    };
   }, [run]);
 
   return { data, loading, error, refetch: run, appendFromAfter };

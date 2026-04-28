@@ -270,10 +270,19 @@ export function mapMutationResult<T>(
 // Generic error response
 // ---------------------------------------------------------------------------
 
+/**
+ * Catch-block escape hatch for lobby route handlers. We log the full error
+ * server-side (including the stack and any drizzle internals) but return a
+ * generic message to the browser — `error.message` from drizzle / sqlite can
+ * include schema details, file paths, and bound parameters that we don't
+ * want leaking into the response body.
+ *
+ * Use `mapMutationResult` for the typed-failure path; this is the catch-all
+ * for anything the service layer didn't already classify.
+ */
 export function errorResponse(error: unknown, fallbackMessage: string) {
-  const message = error instanceof Error ? error.message : fallbackMessage;
   console.error(`[lobbies] ${fallbackMessage}:`, error);
-  return NextResponse.json({ error: message }, { status: 500 });
+  return NextResponse.json({ error: fallbackMessage }, { status: 500 });
 }
 
 // ---------------------------------------------------------------------------
@@ -318,13 +327,15 @@ export const expectedVersionField = z
   .int()
   .nonnegative({ message: "expectedVersion must be a non-negative integer." });
 
-export const permissionScopeV1Schema = z.object({
-  version: z.literal(1),
-  mode: z.literal("tool_list"),
-  allowedTools: z.array(z.string()),
-  deniedTools: z.array(z.string()).optional(),
-  allowedFolderIds: z.array(z.string()).optional(),
-});
+export const permissionScopeV1Schema = z
+  .object({
+    version: z.literal(1),
+    mode: z.literal("tool_list"),
+    allowedTools: z.array(z.string()),
+    deniedTools: z.array(z.string()).optional(),
+    allowedFolderIds: z.array(z.string()).optional(),
+  })
+  .strict();
 
 /**
  * Acceptance-criterion input shape for create/patch routes. The on-disk
@@ -335,19 +346,31 @@ export const permissionScopeV1Schema = z.object({
  * No `version` field on input. Storage rows are V1 today; future versions
  * will go through a separate input schema.
  */
-export const acceptanceCriterionV1Schema = z.object({
-  id: z.string().min(1).optional(),
-  text: z.string().min(1).max(2000),
-  required: z.boolean().optional(),
-});
+export const acceptanceCriterionV1Schema = z
+  .object({
+    id: z.string().min(1).optional(),
+    text: z.string().min(1).max(2000),
+    required: z.boolean().optional(),
+  })
+  .strict();
 
-export const lobbyConfigV1Schema = z.object({
-  version: z.literal(1),
-  maxParallel: z.number().int().positive().optional(),
-  defaultMaxAttempts: z.number().int().positive().optional(),
-  plannerCharacterId: z.string().optional(),
-  synthesizerCharacterId: z.string().optional(),
-});
+/**
+ * MUST stay in lockstep with `LobbyConfigV1` in lib/lobbies/types.ts.
+ * `.strict()` is critical here — a typo in a config field would otherwise be
+ * silently dropped and the captain would think they'd persisted a setting
+ * (e.g., a planner character override) when the server just used defaults.
+ */
+export const lobbyConfigV1Schema = z
+  .object({
+    version: z.literal(1),
+    maxParallel: z.number().int().positive().optional(),
+    defaultMaxAttempts: z.number().int().positive().optional(),
+    plannerCharacterId: z.string().optional(),
+    synthesizerCharacterId: z.string().optional(),
+    plannerPromptOverride: z.string().optional(),
+    synthesisPromptOverride: z.string().optional(),
+  })
+  .strict();
 
 export const cardStatusFilterSchema = z.enum([
   "pending",

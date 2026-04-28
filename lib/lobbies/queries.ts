@@ -55,25 +55,21 @@ const nowIso = () => new Date().toISOString();
 
 // ---------------------------------------------------------------------------
 // Mutation result envelope.
+//
+// The canonical definitions live in `lib/lobbies/types.ts` so the typed
+// fetcher (lib/lobbies/client/api.ts) doesn't have to import this module
+// (which would drag drizzle into the browser bundle graph). Re-exported
+// here so existing call sites that `import { MutationResult } from
+// "@/lib/lobbies/queries"` keep working.
 // ---------------------------------------------------------------------------
 
-export type MutationFailureReason =
-  | "NOT_FOUND"
-  | "VERSION_CONFLICT"
-  | "FORBIDDEN"
-  | "INVALID_TRANSITION"
-  | "INVARIANT_VIOLATION";
+import type {
+  MutationFailureReason,
+  MutationResult,
+  MutationFailure,
+} from "@/lib/lobbies/types";
 
-export type MutationResult<T> =
-  | { ok: true; row: T }
-  | {
-      ok: false;
-      reason: MutationFailureReason;
-      message: string;
-      currentVersion?: number;
-    };
-
-export type MutationFailure = Extract<MutationResult<unknown>, { ok: false }>;
+export type { MutationFailureReason, MutationResult, MutationFailure };
 
 // ---------------------------------------------------------------------------
 // Lobby — reads

@@ -21,6 +21,8 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
+import type { LobbyStatus } from "@/lib/lobbies/types";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -100,21 +102,64 @@ interface SoloStoryUiState {
   rollbackOptimisticMove: (cardId: string, optimisticVersion: number) => void;
   clearOptimisticMoves: () => void;
 
-  /** Reset everything when the captain leaves the lobby page. */
-  resetForLobbyChange: (nextLobbyId: string | null) => void;
+  /**
+   * Reset everything when the captain leaves the lobby page. The optional
+   * `lobbyStatus` lets the store seed `expandedSections` from the lobby's
+   * current status — collapsed for not-yet-reached phases — so the page
+   * doesn't open all five sections by default on a freshly-loaded lobby.
+   */
+  resetForLobbyChange: (
+    nextLobbyId: string | null,
+    lobbyStatus?: LobbyStatus,
+  ) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 
+/**
+ * Fallback for cases where we don't yet know the lobby status (e.g., the page
+ * mounts before the first fetch resolves). Roster + planning expanded by
+ * default — those are the first sections the captain interacts with.
+ */
 const DEFAULT_EXPANDED: Record<LobbyPhaseSection, boolean> = {
   roster: true,
   planning: true,
-  rolling: true,
-  review: true,
-  synthesis: true,
+  rolling: false,
+  review: false,
+  synthesis: false,
 };
+
+/**
+ * Status-aware default expansion. Auto-expands the section the lobby is
+ * currently in plus the one before it (so the captain sees what's been
+ * done leading into the current phase). Synthesis only expands once the
+ * lobby has reached `review` *and* a synth run has been kicked off — the
+ * caller must override `synthesis: true` when `hasSynthesisRun` is true.
+ *
+ * SPEC §3 #11 (progressive reveal): never collapse the active phase.
+ */
+function defaultExpandedForStatus(
+  status: LobbyStatus | undefined,
+): Record<LobbyPhaseSection, boolean> {
+  switch (status) {
+    case "roster":
+      return { roster: true, planning: false, rolling: false, review: false, synthesis: false };
+    case "planning":
+      return { roster: true, planning: true, rolling: false, review: false, synthesis: false };
+    case "rolling":
+      return { roster: false, planning: true, rolling: true, review: false, synthesis: false };
+    case "review":
+      return { roster: false, planning: false, rolling: true, review: true, synthesis: false };
+    case "completed":
+      return { roster: false, planning: false, rolling: false, review: true, synthesis: true };
+    case "aborted":
+      return { roster: false, planning: false, rolling: true, review: true, synthesis: false };
+    default:
+      return { ...DEFAULT_EXPANDED };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Store
@@ -215,11 +260,11 @@ export const useSoloStoryUiStore = create<SoloStoryUiState>((set) => ({
   clearOptimisticMoves: () =>
     set({ optimisticMoves: new Map<string, OptimisticCardMove>() }),
 
-  resetForLobbyChange: (nextLobbyId) =>
+  resetForLobbyChange: (nextLobbyId, lobbyStatus) =>
     set({
       activeLobbyId: nextLobbyId,
-      activeSection: "roster",
-      expandedSections: { ...DEFAULT_EXPANDED },
+      activeSection: pickInitialSection(lobbyStatus),
+      expandedSections: defaultExpandedForStatus(lobbyStatus),
       selectedCardId: null,
       fullscreenRunCardId: null,
       expandedCardTranscripts: new Set<string>(),
@@ -228,6 +273,30 @@ export const useSoloStoryUiStore = create<SoloStoryUiState>((set) => ({
       // late server reply arrives after navigation.
     }),
 }));
+
+/**
+ * Pick the section the page should scroll-anchor to on first paint, derived
+ * from the lobby's current status. Falls back to roster when status hasn't
+ * loaded yet (the page will still snap to the right section once data lands
+ * because the detail page calls `setActiveSection` after the first fetch).
+ */
+function pickInitialSection(
+  status: LobbyStatus | undefined,
+): LobbyPhaseSection {
+  switch (status) {
+    case "planning":
+      return "planning";
+    case "rolling":
+      return "rolling";
+    case "review":
+    case "completed":
+    case "aborted":
+      return "review";
+    case "roster":
+    default:
+      return "roster";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Convenience selectors

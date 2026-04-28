@@ -15,19 +15,47 @@
  *     at card start so mid-execution scope changes don't affect in-flight runs.
  */
 
+/**
+ * Per-seat permission scope V1.
+ *
+ * Mirrors `permissionScopeV1Schema` in lib/lobbies/api-helpers.ts. The route
+ * layer validates with zod; this type is what TS code actually uses to
+ * read/write the field.
+ *
+ * - `allowedFolderIds`: schema stub for V1.1+ folder scoping (SPEC §3 #6).
+ *   Stored in V1, not yet enforced by the tool gate.
+ */
 export type LobbyPermissionScopeV1 = {
   version: 1;
   mode: "tool_list";
   allowedTools: string[];
   deniedTools?: string[];
-  notes?: string;
+  allowedFolderIds?: string[];
 };
 
+/**
+ * Lobby configuration JSON stored at `lobbies.config`.
+ *
+ * Field names MUST match `lobbyConfigV1Schema` in lib/lobbies/api-helpers.ts —
+ * any drift here breaks the route validator silently (zod strips unknown
+ * fields and the server falls back to defaults).
+ *
+ * - `maxParallel`: max in-flight `running` cards in the rolling phase.
+ * - `defaultMaxAttempts`: default `attempts` cap when a card is created
+ *   without an explicit `maxAttempts`.
+ * - `plannerCharacterId` / `synthesizerCharacterId`: pin which Selene
+ *   character drives the planner / synthesizer runs (Selene's table is
+ *   `characters`, not `agents` — keep the name canonical here).
+ * - `plannerPromptOverride` / `synthesisPromptOverride`: optional prompt
+ *   override strings; consumed by services.ts when starting the planner /
+ *   synthesizer runs.
+ */
 export type LobbyConfigV1 = {
   version: 1;
-  maxParallelCards?: number;
-  plannerAgentId?: string;
-  synthesizerAgentId?: string;
+  maxParallel?: number;
+  defaultMaxAttempts?: number;
+  plannerCharacterId?: string;
+  synthesizerCharacterId?: string;
   plannerPromptOverride?: string;
   synthesisPromptOverride?: string;
 };
@@ -123,3 +151,30 @@ export type LobbyCardStatus =
 export type LobbyCardCreator = "planner" | "human";
 
 export type LobbyEventActor = "captain" | "agent" | "system";
+
+// ---------------------------------------------------------------------------
+// Mutation result envelope — shared between the repository layer
+// (lib/lobbies/queries.ts), the route layer (lib/lobbies/api-helpers.ts), and
+// the client typed-fetcher layer (lib/lobbies/client/api.ts).
+//
+// Hoisted here so the client never has to import from `queries.ts` (which
+// would pull the drizzle bundle into the browser chunk graph).
+// ---------------------------------------------------------------------------
+
+export type MutationFailureReason =
+  | "NOT_FOUND"
+  | "VERSION_CONFLICT"
+  | "FORBIDDEN"
+  | "INVALID_TRANSITION"
+  | "INVARIANT_VIOLATION";
+
+export type MutationResult<T> =
+  | { ok: true; row: T }
+  | {
+      ok: false;
+      reason: MutationFailureReason;
+      message: string;
+      currentVersion?: number;
+    };
+
+export type MutationFailure = Extract<MutationResult<unknown>, { ok: false }>;

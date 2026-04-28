@@ -158,7 +158,6 @@ function extractSoloStorySnapshot(
       mode: "tool_list",
       allowedTools,
       deniedTools,
-      notes: typeof scope.notes === "string" ? scope.notes : undefined,
     },
     permissionScopeSnapshotAt:
       typeof ss.permissionScopeSnapshotAt === "string"

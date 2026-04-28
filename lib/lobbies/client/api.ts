@@ -35,8 +35,27 @@ import type {
   LobbyPermissionScopeV1,
   LobbyStatus,
   LobbyTemplateSeatV1,
+  MutationFailureReason,
 } from "@/lib/lobbies/types";
-import type { MutationFailureReason } from "@/lib/lobbies/queries";
+
+/**
+ * Default options for mutation calls (POST/PUT/PATCH/DELETE):
+ *   - `retries: 0` so we never re-issue a non-idempotent request after a
+ *     5xx (the second call could double-create or double-transition).
+ *   - `credentials: "same-origin"` to forward the `zlutty-session` cookie
+ *     even when the page is hosted from a different origin (Electron app).
+ *
+ * Reads (GET) keep the resilientFetch defaults: 2 retries on 5xx, 10s
+ * timeout, exponential backoff.
+ */
+const MUTATION_DEFAULTS = {
+  retries: 0,
+  credentials: "same-origin",
+} as const;
+
+const READ_DEFAULTS = {
+  credentials: "same-origin",
+} as const;
 
 // ---------------------------------------------------------------------------
 // Error envelope
@@ -81,9 +100,15 @@ function classifyStatus(status: number | undefined): LobbyApiError["reason"] {
  * Inspect the server's JSON envelope (when present) to recover the structured
  * `MutationFailure` shape — the route layer's `mapMutationResult` writes
  * `{ error, reason, currentVersion? }` for 409s and similar.
+ *
+ * Critical detail: `resilientFetch` always sets `data` to null on a non-2xx
+ * response. The structured envelope lives in `result.parsedBody` instead —
+ * we MUST read it from there, otherwise `currentVersion` is forever
+ * undefined and the optimistic-concurrency loop is broken (409 → fetch →
+ * retry never converges).
  */
 async function unwrap<T>(
-  promise: Promise<ResilientResult<T | LobbyEnvelopeFailure>>,
+  promise: Promise<ResilientResult<T>>,
   fallbackMessage: string,
 ): Promise<T> {
   const result = await promise;
@@ -104,12 +129,12 @@ async function unwrap<T>(
       reason: "TIMEOUT",
     });
   }
-  // Try to extract structured failure from data
-  const envelope = (result.data ?? null) as LobbyEnvelopeFailure | null;
+  // Try to extract structured failure from the parsed JSON body.
+  const envelope = parseEnvelope(result.parsedBody);
   const reason: LobbyApiError["reason"] =
     envelope?.reason ?? classifyStatus(result.status);
   throw new LobbyApiError({
-    message: result.error ?? envelope?.error ?? fallbackMessage,
+    message: envelope?.error ?? result.error ?? fallbackMessage,
     reason,
     status: result.status,
     currentVersion: envelope?.currentVersion,
@@ -122,6 +147,33 @@ type LobbyEnvelopeFailure = {
   reason?: MutationFailureReason;
   currentVersion?: number;
 };
+
+const VALID_FAILURE_REASONS: ReadonlySet<MutationFailureReason> = new Set([
+  "NOT_FOUND",
+  "VERSION_CONFLICT",
+  "FORBIDDEN",
+  "INVALID_TRANSITION",
+  "INVARIANT_VIOLATION",
+]);
+
+/**
+ * Defensive parse: tolerate any JSON shape, only pull through the fields we
+ * trust. We never trust untyped server payloads to match the TS shape — zod
+ * runs server-side, the browser just got bytes.
+ */
+function parseEnvelope(parsedBody: unknown): LobbyEnvelopeFailure | null {
+  if (!parsedBody || typeof parsedBody !== "object") return null;
+  const obj = parsedBody as Record<string, unknown>;
+  const out: LobbyEnvelopeFailure = {};
+  if (typeof obj.error === "string" && obj.error.trim()) out.error = obj.error;
+  if (typeof obj.reason === "string" && VALID_FAILURE_REASONS.has(obj.reason as MutationFailureReason)) {
+    out.reason = obj.reason as MutationFailureReason;
+  }
+  if (typeof obj.currentVersion === "number" && Number.isFinite(obj.currentVersion)) {
+    out.currentVersion = obj.currentVersion;
+  }
+  return out.error || out.reason || out.currentVersion !== undefined ? out : null;
+}
 
 // ---------------------------------------------------------------------------
 // Types returned by the routes
@@ -177,6 +229,7 @@ export async function listLobbies(
 
   return unwrap(
     resilientFetch<ListLobbiesResponse>(url.toString(), {
+      ...READ_DEFAULTS,
       method: "GET",
       signal: params.signal,
     }),
@@ -201,7 +254,7 @@ export async function createLobby(
   body: CreateLobbyBody,
 ): Promise<CreateLobbyResponse> {
   return unwrap(
-    resilientPost<CreateLobbyResponse>("/api/lobbies", body),
+    resilientPost<CreateLobbyResponse>("/api/lobbies", body, MUTATION_DEFAULTS),
     "Failed to create lobby",
   );
 }
@@ -216,6 +269,7 @@ export async function getLobbyDetail(
 ): Promise<LobbyDetailResponse> {
   return unwrap(
     resilientFetch<LobbyDetailResponse>(`/api/lobbies/${lobbyId}`, {
+      ...READ_DEFAULTS,
       method: "GET",
       signal,
     }),
@@ -237,7 +291,7 @@ export async function updateLobby(
   body: UpdateLobbyBody,
 ): Promise<{ lobby: Lobby }> {
   return unwrap(
-    resilientPatch<{ lobby: Lobby }>(`/api/lobbies/${lobbyId}`, body),
+    resilientPatch<{ lobby: Lobby }>(`/api/lobbies/${lobbyId}`, body, MUTATION_DEFAULTS),
     "Failed to update lobby",
   );
 }
@@ -282,6 +336,7 @@ export async function transitionLobby(
     resilientPost<unknown>(
       `/api/lobbies/${lobbyId}/transition`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to transition lobby",
   );
@@ -310,6 +365,7 @@ export async function replaceSeats(
     resilientPut<{ seats: LobbySeat[]; lobby: Lobby }>(
       `/api/lobbies/${lobbyId}/seats`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to replace seats",
   );
@@ -335,6 +391,7 @@ export async function updateSeat(
     resilientPatch<{ seat: LobbySeat }>(
       `/api/lobbies/${lobbyId}/seats/${seatId}`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to update seat",
   );
@@ -363,6 +420,7 @@ export async function listCards(
 
   return unwrap(
     resilientFetch<{ cards: LobbyCard[] }>(url.toString(), {
+      ...READ_DEFAULTS,
       method: "GET",
       signal: params.signal,
     }),
@@ -389,6 +447,7 @@ export async function createCard(
     resilientPost<{ card: LobbyCard }>(
       `/api/lobbies/${lobbyId}/cards`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to create card",
   );
@@ -416,6 +475,7 @@ export async function updateCard(
     resilientPatch<{ card: LobbyCard }>(
       `/api/lobbies/${lobbyId}/cards/${cardId}`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to update card",
   );
@@ -450,6 +510,7 @@ export async function transitionCard(
     resilientPost<unknown>(
       `/api/lobbies/${lobbyId}/cards/${cardId}/transition`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to transition card",
   );
@@ -468,6 +529,7 @@ export async function replaceDependencies(
     resilientPut<{ dependencies: LobbyCardDependency[] }>(
       `/api/lobbies/${lobbyId}/cards/${cardId}/dependencies`,
       body,
+      MUTATION_DEFAULTS,
     ),
     "Failed to replace card dependencies",
   );
@@ -498,6 +560,7 @@ export async function listLobbyEvents(
 
   return unwrap(
     resilientFetch<ListEventsResponse>(url.toString(), {
+      ...READ_DEFAULTS,
       method: "GET",
       signal: params.signal,
     }),
@@ -514,6 +577,7 @@ export async function listLobbyTemplates(
 ): Promise<ListTemplatesResponse> {
   return unwrap(
     resilientFetch<ListTemplatesResponse>("/api/lobby-templates", {
+      ...READ_DEFAULTS,
       method: "GET",
       signal,
     }),
@@ -534,7 +598,11 @@ export async function createLobbyTemplate(
   body: CreateTemplateBody,
 ): Promise<CreateTemplateResponse> {
   return unwrap(
-    resilientPost<CreateTemplateResponse>("/api/lobby-templates", body),
+    resilientPost<CreateTemplateResponse>(
+      "/api/lobby-templates",
+      body,
+      MUTATION_DEFAULTS,
+    ),
     "Failed to create lobby template",
   );
 }
