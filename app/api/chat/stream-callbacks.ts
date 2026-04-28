@@ -145,7 +145,7 @@ interface StreamCallbackContext {
   sessionId: string;
   characterId: string | null;
   sessionMetadata: Record<string, unknown>;
-  agentRun: { id: string } | null;
+  agentRun: { id: string; pipelineName?: string } | null;
   streamingState: StreamingMessageState | null;
   syncStreamingMessage: ((force?: boolean) => Promise<void>) | null | undefined;
   shouldEmitProgress: boolean;
@@ -407,18 +407,40 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
           0
         ) || 0;
 
-      await completeAgentRun(ctx.agentRun.id, "succeeded", {
-        stepCount,
-        toolCallCount,
-        usage: usage
-          ? {
-              inputTokens: usage.inputTokens,
-              outputTokens: usage.outputTokens,
-              totalTokens: usage.totalTokens,
-            }
-          : undefined,
-        ...(cacheMetrics ? { cache: cacheMetrics } : {}),
-      });
+      if (ctx.agentRun.pipelineName === "solo_story.synthesizer") {
+        await appendRunEvent({
+          runId: ctx.agentRun.id,
+          eventType: "step_completed",
+          level: "info",
+          pipelineName: ctx.agentRun.pipelineName,
+          data: {
+            phase: "chat_stream_completed",
+            stepCount,
+            toolCallCount,
+            usage: usage
+              ? {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  totalTokens: usage.totalTokens,
+                }
+              : undefined,
+            ...(cacheMetrics ? { cache: cacheMetrics } : {}),
+          },
+        });
+      } else {
+        await completeAgentRun(ctx.agentRun.id, "succeeded", {
+          stepCount,
+          toolCallCount,
+          usage: usage
+            ? {
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+                totalTokens: usage.totalTokens,
+              }
+            : undefined,
+          ...(cacheMetrics ? { cache: cacheMetrics } : {}),
+        });
+      }
 
       const registryTask = taskRegistry.get(ctx.agentRun.id);
       const registryDurationMs = registryTask

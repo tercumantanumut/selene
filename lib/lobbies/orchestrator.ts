@@ -1,32 +1,88 @@
 import { db } from "@/lib/db/sqlite-client";
-import { agentRuns } from "@/lib/db/sqlite-observability-schema";
+import {
+  agentRunEvents,
+  agentRuns,
+} from "@/lib/db/sqlite-observability-schema";
+import { lobbies } from "@/lib/db/sqlite-lobbies-schema";
 import type { AgentRun } from "@/lib/db/sqlite-observability-schema";
 import { INTERNAL_API_SECRET } from "@/lib/config/internal-api-secret";
 import { getInternalApiBaseUrl } from "@/lib/utils/environment";
-import { eq } from "drizzle-orm";
+import { durationMs as durationMsFrom, nowISO } from "@/lib/utils/timestamp";
+import { eq, sql } from "drizzle-orm";
 
 /**
  * Kick off a Solo Story agent run through the existing Chat API path so
  * run-stream metadata, permission-scope injection, and SSE stay aligned.
  */
-export async function queueSoloStoryAgentRun(runId: string): Promise<{ queued: boolean }> {
+export function queueSoloStoryAgentRun(runId: string): { queued: true } {
+  void launchSoloStoryAgentRun(runId).catch((error) => {
+    console.error(`[solo-story] Failed to launch agent run ${runId}:`, error);
+  });
+
+  return { queued: true };
+}
+
+async function launchSoloStoryAgentRun(runId: string): Promise<void> {
   const [run] = await db
     .select()
     .from(agentRuns)
     .where(eq(agentRuns.id, runId))
     .limit(1)
     .all();
-  if (!run || run.status !== "running") return { queued: false };
-  await launchChatRun(run);
-  return { queued: true };
+  if (!run || run.status !== "running") return;
 
-  /*
-  void launchChatRun(run).catch((error) => {
-    console.error(`[solo-story] Failed to launch agent run ${run.id}:`, error);
+  try {
+    await launchChatRun(run);
+  } catch (error) {
+    await markRunLaunchFailed(run, error);
+    throw error;
+  }
+}
+
+async function markRunLaunchFailed(run: AgentRun, error: unknown): Promise<void> {
+  const completedAt = nowISO();
+  const metadata = (run.metadata ?? {}) as Record<string, unknown>;
+  const message = error instanceof Error ? error.message : String(error);
+
+  await db.transaction((tx) => {
+    tx.update(agentRuns)
+      .set({
+        status: "failed",
+        completedAt,
+        durationMs: durationMsFrom(run.startedAt, completedAt),
+        updatedAt: completedAt,
+        metadata: {
+          ...metadata,
+          launchError: message,
+          launchFailedAt: completedAt,
+        },
+      })
+      .where(eq(agentRuns.id, run.id))
+      .run();
+    tx.insert(agentRunEvents)
+      .values({
+        runId: run.id,
+        eventType: "run_completed",
+        level: "error",
+        pipelineName: run.pipelineName,
+        data: { status: "failed", phase: "launch", error: message },
+        timestamp: completedAt,
+        durationMs: durationMsFrom(run.startedAt, completedAt),
+      })
+      .run();
+
+    const soloStory = metadata.soloStory as { lobbyId?: string; role?: string } | undefined;
+    if (soloStory?.role === "synthesizer" && soloStory.lobbyId) {
+      tx.update(lobbies)
+        .set({
+          synthesisRunId: null,
+          lockVersion: sql`${lobbies.lockVersion} + 1`,
+          updatedAt: completedAt,
+        })
+        .where(eq(lobbies.synthesisRunId, run.id))
+        .run();
+    }
   });
-
-  return { queued: true };
-  */
 }
 
 async function launchChatRun(run: AgentRun): Promise<void> {

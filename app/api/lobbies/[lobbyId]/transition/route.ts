@@ -114,14 +114,29 @@ const transitionBodySchema = z.discriminatedUnion("action", [
 // ---------------------------------------------------------------------------
 
 export async function POST(req: Request, { params }: RouteParams) {
-  const ctx = await withLobbyAuth(req);
-  if (isAuthResponse(ctx)) return ctx;
-
   try {
     const { lobbyId } = await params;
     const parsed = await parseBody(req, transitionBodySchema);
     if (!parsed.ok) return parsed.response;
     const body = parsed.data;
+
+    if (body.action === "complete_synthesis") {
+      if (req.headers.get("X-Internal-Auth") !== INTERNAL_API_SECRET) {
+        return NextResponse.json(
+          { error: "complete_synthesis is internal-only.", reason: "FORBIDDEN" },
+          { status: 403 },
+        );
+      }
+      const result = await completeSynthesis({
+        lobbyId,
+        synthesisRunId: body.synthesisRunId,
+        outputArtifactId: body.outputArtifactId,
+      });
+      return mapMutationResult(result);
+    }
+
+    const ctx = await withLobbyAuth(req);
+    if (isAuthResponse(ctx)) return ctx;
 
     switch (body.action) {
       case "ready_roster": {
@@ -166,22 +181,8 @@ export async function POST(req: Request, { params }: RouteParams) {
           synthesizerCharacterId: body.synthesizerCharacterId,
         });
         if (result.ok) {
-          await queueSoloStoryAgentRun(result.row.synthesisRun.id);
+          void queueSoloStoryAgentRun(result.row.synthesisRun.id);
         }
-        return mapMutationResult(result);
-      }
-      case "complete_synthesis": {
-        if (req.headers.get("X-Internal-Auth") !== INTERNAL_API_SECRET) {
-          return NextResponse.json(
-            { error: "complete_synthesis is internal-only.", reason: "FORBIDDEN" },
-            { status: 403 },
-          );
-        }
-        const result = await completeSynthesis({
-          lobbyId,
-          synthesisRunId: body.synthesisRunId,
-          outputArtifactId: body.outputArtifactId,
-        });
         return mapMutationResult(result);
       }
       case "abort": {

@@ -154,7 +154,7 @@ registerAllTools();
 const hasStylyApiKey = () => !!process.env.STYLY_AI_API_KEY;
 
 export async function POST(req: Request) {
-  let agentRun: Pick<AgentRun, "id" | "startedAt"> | null = null;
+  let agentRun: Pick<AgentRun, "id" | "startedAt" | "pipelineName"> | null = null;
   let chatTaskRegistered = false;
   let configuredProvider: string | undefined;
   let activeSessionId: string | undefined;
@@ -1050,9 +1050,21 @@ export async function POST(req: Request) {
             await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
             removeLivePromptQueue(agentRun.id, activeSessionId);
           }
-          await completeAgentRun(agentRun.id, runStatus, shouldCancel
-            ? { reason: "stream_interrupted" }
-            : { error: isCreditError ? "Insufficient credits" : errorMessage });
+          if (agentRun.pipelineName !== "solo_story.synthesizer") {
+            await completeAgentRun(agentRun.id, runStatus, shouldCancel
+              ? { reason: "stream_interrupted" }
+              : { error: isCreditError ? "Insufficient credits" : errorMessage });
+          } else {
+            await appendRunEvent({
+              runId: agentRun.id,
+              eventType: "step_failed",
+              level: shouldCancel ? "warn" : "error",
+              pipelineName: agentRun.pipelineName,
+              data: shouldCancel
+                ? { phase: "chat_stream_interrupted", reason: "stream_interrupted" }
+                : { phase: "chat_stream_failed", error: isCreditError ? "Insufficient credits" : errorMessage },
+            });
+          }
           const registryTask = taskRegistry.get(agentRun.id);
           const registryDurationMs = registryTask ? Date.now() - new Date(registryTask.startedAt).getTime() : undefined;
           taskRegistry.updateStatus(agentRun.id, runStatus, shouldCancel
@@ -2066,9 +2078,21 @@ export async function POST(req: Request) {
         if (activeSessionId && !livePromptQueueCleanedUp) {
           removeLivePromptQueue(agentRun.id, activeSessionId);
         }
-        await completeAgentRun(agentRun.id, runStatus, shouldCancel
-          ? { reason: "stream_interrupted" }
-          : { error: isCreditError ? "Insufficient credits" : errorMessage });
+        if (agentRun.pipelineName !== "solo_story.synthesizer") {
+          await completeAgentRun(agentRun.id, runStatus, shouldCancel
+            ? { reason: "stream_interrupted" }
+            : { error: isCreditError ? "Insufficient credits" : errorMessage });
+        } else {
+          await appendRunEvent({
+            runId: agentRun.id,
+            eventType: "step_failed",
+            level: shouldCancel ? "warn" : "error",
+            pipelineName: agentRun.pipelineName,
+            data: shouldCancel
+              ? { phase: "chat_stream_interrupted", reason: "stream_interrupted" }
+              : { phase: "chat_stream_failed", error: isCreditError ? "Insufficient credits" : errorMessage },
+          });
+        }
         const registryTask = taskRegistry.get(agentRun.id);
         const registryDurationMs = registryTask ? Date.now() - new Date(registryTask.startedAt).getTime() : undefined;
         taskRegistry.updateStatus(agentRun.id, runStatus, shouldCancel

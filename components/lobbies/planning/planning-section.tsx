@@ -64,6 +64,7 @@ export function PlanningSection({
         seats={seats}
         isEditable={isEditable}
         defaultMaxAttempts={defaultMaxAttempts}
+        expectedLobbyVersion={lobby.lockVersion}
         onChanged={onChanged}
       />
 

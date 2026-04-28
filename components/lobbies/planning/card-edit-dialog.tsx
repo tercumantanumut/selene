@@ -58,6 +58,7 @@ export type CardEditDialogProps = {
   seats: LobbySeat[];
   /** Default `maxAttempts` for newly-created cards. */
   defaultMaxAttempts: number;
+  expectedLobbyVersion: number;
   onSaved: () => void;
 };
 
@@ -108,6 +109,7 @@ export function CardEditDialog({
   card,
   seats,
   defaultMaxAttempts,
+  expectedLobbyVersion,
   onSaved,
 }: CardEditDialogProps) {
   const isEdit = card !== null;
@@ -202,6 +204,7 @@ export function CardEditDialog({
         });
       } else {
         await createCard(lobbyId, {
+          expectedVersion: expectedLobbyVersion,
           title: trimmedTitle,
           description: description.trim(),
           acceptanceCriteria: cleanedAc,

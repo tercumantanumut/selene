@@ -49,6 +49,7 @@ export type CardDraftListProps = {
   seats: LobbySeat[];
   isEditable: boolean;
   defaultMaxAttempts: number;
+  expectedLobbyVersion: number;
   onChanged: () => void;
 };
 
@@ -67,6 +68,7 @@ export function CardDraftList({
   seats,
   isEditable,
   defaultMaxAttempts,
+  expectedLobbyVersion,
   onChanged,
 }: CardDraftListProps) {
   const [editing, setEditing] = useState<LobbyCard | null>(null);
@@ -199,6 +201,7 @@ export function CardDraftList({
         card={null}
         seats={seats}
         defaultMaxAttempts={defaultMaxAttempts}
+        expectedLobbyVersion={expectedLobbyVersion}
         onSaved={onChanged}
       />
 
@@ -209,6 +212,7 @@ export function CardDraftList({
         card={editing}
         seats={seats}
         defaultMaxAttempts={defaultMaxAttempts}
+        expectedLobbyVersion={expectedLobbyVersion}
         onSaved={onChanged}
       />
     </div>

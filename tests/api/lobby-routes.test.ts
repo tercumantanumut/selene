@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiHelperMocks = vi.hoisted(() => ({
   withLobbyAuth: vi.fn(async () => ({ userId: "user-1" })),
+  assertLobbyOwnershipAndVersion: vi.fn(),
 }));
 
 const lobbiesQueryMocks = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ const lobbiesQueryMocks = vi.hoisted(() => ({
   listLobbiesForUser: vi.fn(),
   createLobbyTemplate: vi.fn(),
   listLobbyTemplatesForUser: vi.fn(),
+  createCard: vi.fn(),
 }));
 
 const sessionMocks = vi.hoisted(() => ({
@@ -44,9 +46,29 @@ vi.mock("@/lib/lobbies/api-helpers", () => {
 
   return {
     withLobbyAuth: apiHelperMocks.withLobbyAuth,
+    assertLobbyOwnershipAndVersion: apiHelperMocks.assertLobbyOwnershipAndVersion,
     isAuthResponse: (ctx: unknown) => ctx instanceof NextResponse,
     permissionScopeV1Schema,
     lobbyConfigV1Schema,
+    expectedVersionField: z.number().int().nonnegative(),
+    cardColumnFilterSchema: z.enum(["backlog", "ready", "in_progress", "blocked", "done"]),
+    cardStatusFilterSchema: z.enum([
+      "pending",
+      "running",
+      "blocked",
+      "submitted",
+      "approved",
+      "rejected",
+      "failed",
+      "cancelled",
+    ]),
+    acceptanceCriterionV1Schema: z
+      .object({
+        id: z.string().optional(),
+        text: z.string(),
+        required: z.boolean().optional(),
+      })
+      .strict(),
     parseBody: async <T,>(req: Request, schema: ZodType<T>) => {
       let body: unknown;
       try {
@@ -83,7 +105,8 @@ vi.mock("@/lib/lobbies/api-helpers", () => {
 vi.mock("@/lib/lobbies/queries", () => lobbiesQueryMocks);
 vi.mock("@/lib/db/queries-sessions", () => sessionMocks);
 
-import { POST as createLobbyPost } from "@/app/api/lobbies/route";
+import { GET as listLobbiesGet, POST as createLobbyPost } from "@/app/api/lobbies/route";
+import { POST as createCardPost } from "@/app/api/lobbies/[lobbyId]/cards/route";
 import { POST as createTemplatePost } from "@/app/api/lobby-templates/route";
 
 describe("lobby API routes", () => {
@@ -99,6 +122,36 @@ describe("lobby API routes", () => {
       id: `seat-${input.position}`,
       ...input,
     }));
+    apiHelperMocks.assertLobbyOwnershipAndVersion.mockResolvedValue({
+      ok: true,
+      lobby: { id: "lobby-1", status: "planning", lockVersion: 7 },
+    });
+    lobbiesQueryMocks.createCard.mockImplementation(async (input) => ({
+      id: "card-1",
+      lockVersion: 0,
+      ...input,
+    }));
+  });
+
+  it("forwards list cursor unchanged to the repository", async () => {
+    lobbiesQueryMocks.listLobbiesForUser.mockResolvedValue({
+      lobbies: [],
+      nextCursor: null,
+    });
+
+    const response = await listLobbiesGet({
+      nextUrl: new URL(
+        "http://localhost/api/lobbies?cursor=2026-04-28T00%3A00%3A00.000Z%7Clobby-b&limit=2",
+      ),
+    } as never);
+
+    expect(response.status).toBe(200);
+    expect(lobbiesQueryMocks.listLobbiesForUser).toHaveBeenCalledWith({
+      userId: "user-1",
+      status: undefined,
+      cursor: "2026-04-28T00:00:00.000Z|lobby-b",
+      limit: 2,
+    });
   });
 
   it("materializes template prompts into lobby config while preserving explicit config", async () => {
@@ -137,6 +190,35 @@ describe("lobby API routes", () => {
           synthesisPromptOverride: "template synthesis prompt",
           maxParallel: 2,
         },
+      }),
+    );
+  });
+
+  it("requires and forwards expectedVersion when creating cards", async () => {
+    const response = await createCardPost(
+      new Request("http://localhost/api/lobbies/lobby-1/cards", {
+        method: "POST",
+        body: JSON.stringify({
+          expectedVersion: 7,
+          title: "Draft the outline",
+          description: "",
+          acceptanceCriteria: [{ text: "Outline exists" }],
+        }),
+      }),
+      { params: Promise.resolve({ lobbyId: "lobby-1" }) },
+    );
+
+    expect(response.status).toBe(201);
+    expect(apiHelperMocks.assertLobbyOwnershipAndVersion).toHaveBeenCalledWith({
+      lobbyId: "lobby-1",
+      userId: "user-1",
+      expectedVersion: 7,
+    });
+    expect(lobbiesQueryMocks.createCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lobbyId: "lobby-1",
+        title: "Draft the outline",
+        createdBy: "human",
       }),
     );
   });

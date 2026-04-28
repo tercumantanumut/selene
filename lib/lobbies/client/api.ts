@@ -449,6 +449,7 @@ export async function listCards(
 }
 
 export type CreateCardBody = {
+  expectedVersion: number;
   title: string;
   description?: string;
   acceptanceCriteria?: LobbyCardAcceptanceCriterionV1[];

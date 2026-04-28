@@ -184,6 +184,7 @@ export function RollingSection({
         card={editingCard}
         seats={seats}
         defaultMaxAttempts={defaultMaxAttempts}
+        expectedLobbyVersion={lobby.lockVersion}
         onSaved={onChanged}
       />
 
