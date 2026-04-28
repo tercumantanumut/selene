@@ -73,6 +73,7 @@ import {
 import type { LobbyStatus } from "@/lib/lobbies/types";
 import { LobbyStatusBadge } from "@/components/lobbies/status-badge";
 import { RosterSection } from "@/components/lobbies/roster/roster-section";
+import { PlanningSection } from "@/components/lobbies/planning/planning-section";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -236,7 +237,18 @@ export default function LobbyDetailClient() {
                   onChanged={() => void refetch()}
                 />
               </PhaseSection>
-              <PlanningSectionPlaceholder cardCount={data.cards.length} />
+              <PhaseSection
+                id="planning"
+                title="Planning"
+                icon={ClipboardList}
+              >
+                <PlanningSection
+                  lobby={data.lobby}
+                  cards={data.cards}
+                  seats={data.seats}
+                  onChanged={() => void refetch()}
+                />
+              </PhaseSection>
               <RollingSectionPlaceholder
                 cardCount={data.cards.length}
                 lobbyStatus={data.lobby.status}
@@ -406,19 +418,7 @@ function PhaseSection({
   );
 }
 
-// ─── Placeholder sections (Sprint 7-9 fill the rest in) ──────────────────
-
-function PlanningSectionPlaceholder({ cardCount }: { cardCount: number }) {
-  return (
-    <PhaseSection id="planning" title="Planning" icon={ClipboardList}>
-      <p className="font-mono text-sm text-terminal-muted">
-        {cardCount === 0
-          ? "Planner output empty. Sprint 7 wires the planner deliberation transcript and editable card draft."
-          : `${cardCount} card${cardCount === 1 ? "" : "s"} drafted by the planner.`}
-      </p>
-    </PhaseSection>
-  );
-}
+// ─── Placeholder sections (Sprint 7B-9 fill the rest in) ──────────────────
 
 function RollingSectionPlaceholder({
   cardCount,
