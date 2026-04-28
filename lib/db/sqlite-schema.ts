@@ -7,6 +7,9 @@ export * from "./sqlite-character-schema";
 // Re-export observability schema (agent runs, events, prompt versioning)
 export * from "./sqlite-observability-schema";
 
+// Re-export lobby schema
+export * from "./sqlite-lobbies-schema";
+
 // Re-export schedule schema (scheduled tasks and runs)
 export * from "./sqlite-schedule-schema";
 

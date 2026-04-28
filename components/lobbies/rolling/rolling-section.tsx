@@ -1,0 +1,251 @@
+"use client";
+
+/**
+ * RollingSection — captain's rolling-phase surface.
+ *
+ * Composed of:
+ *   - KanbanBoard            (the drag/keyboard kanban),
+ *   - CardEditDialog         (reused from planning — phase-agnostic),
+ *   - CardDependencyEditor   (rolling-only for now; planning Sprint 7A
+ *                             intentionally omitted dep editing because
+ *                             the planner usually wires deps server-side
+ *                             and the captain only adjusts mid-flight),
+ *   - DagOverlay             (read-only DAG view with deep-link to the
+ *                             dependency editor).
+ *
+ * The section is editable while `lobby.status === "rolling"`. After
+ * `enter_review` fires, the kanban becomes a read-only summary so the
+ * captain can revisit what was done. The section is also visible during
+ * `review`, `completed`, and `aborted` so the captain still has the
+ * record after the run finishes.
+ *
+ * SPEC §3 #6 (no Query/SWR): all mutations are direct fetches; the
+ * parent owns the live refetch via `useLobbyDetail.refetch`.
+ */
+
+import { useState } from "react";
+import { Network } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import type {
+  Lobby,
+  LobbyCard,
+  LobbyCardDependency,
+  LobbySeat,
+} from "@/lib/db/sqlite-lobbies-schema";
+import type { LobbyRunStreamHandle } from "@/lib/lobbies/client/run-stream";
+import { useSoloStoryUiStore } from "@/lib/stores/solo-story-ui-store";
+
+import { CardEditDialog } from "../planning/card-edit-dialog";
+
+import { KanbanBoard } from "./kanban-board";
+import { CardDependencyEditor } from "./card-dependency-editor";
+import { DagOverlay } from "./dag-overlay";
+import { FullscreenRunModal } from "./fullscreen-run-modal";
+
+// ─── Props ────────────────────────────────────────────────────────────────
+
+export type RollingSectionProps = {
+  lobby: Lobby;
+  cards: LobbyCard[];
+  dependencies: LobbyCardDependency[];
+  seats: LobbySeat[];
+  /**
+   * Page-scoped run-stream handle from `useLobbyRunStream` (mounted in
+   * `LobbyDetailClient`). The kanban tiles render live progress against
+   * this; the fullscreen modal pulls per-card slices.
+   */
+  runStream: LobbyRunStreamHandle;
+  onChanged: () => void;
+};
+
+// ─── Component ───────────────────────────────────────────────────────────
+
+export function RollingSection({
+  lobby,
+  cards,
+  dependencies,
+  seats,
+  runStream,
+  onChanged,
+}: RollingSectionProps) {
+  const isEditable = lobby.status === "rolling";
+  const defaultMaxAttempts = lobby.config?.defaultMaxAttempts ?? 3;
+  const maxParallel = lobby.config?.maxParallel ?? 1;
+
+  // ── Modal state ───────────────────────────────────────────────────────
+  const [editingCard, setEditingCard] = useState<LobbyCard | null>(null);
+  const [depEditorCard, setDepEditorCard] = useState<LobbyCard | null>(null);
+  const [dagOpen, setDagOpen] = useState(false);
+
+  // Sprint 9.1 (R5 BLOCKER B2): the captain-level abort lives in the
+  // lobby header now (`AbortLobbyButton` mounted by `lobby-detail-client`).
+  // It's reachable across roster / planning / rolling / review — including
+  // when the synthesizer is wedged in `review` — instead of disappearing
+  // the moment we leave `rolling`. Sprint 7B.1 (R5-H2) introduced the
+  // dialog inline here; Sprint 9.1 extracted it to share with synthesis.
+
+  // The fullscreen run modal lives at the section level (mounted once) and
+  // is opened/closed via the cross-component UI store. Pulling the action
+  // here is what lets a Kanban tile fire `onOpenRun` without the modal
+  // having to be threaded through every intermediate component.
+  const openFullscreenRun = useSoloStoryUiStore((s) => s.openFullscreenRun);
+
+  // No cards yet: friendly empty state. This shouldn't happen in practice
+  // (Sprint 7A's `accept_plan` blocks empty plans) but the rolling phase
+  // can still be entered from a custom transition path.
+  if (cards.length === 0) {
+    return (
+      <p className="font-mono text-sm text-terminal-muted">
+        No cards in this lobby — the orchestrator has nothing to roll.
+      </p>
+    );
+  }
+
+  // Sprint 7B.1 (R5-H3): live "running x/N" indicator. Without a visible
+  // cap, the captain can't tell whether the orchestrator is idle because
+  // it's done, or idle because it's at the parallelism limit waiting for
+  // a slot. The badge is muted at low utilization, amber when at cap.
+  const runningCount = cards.filter((c) => c.status === "running").length;
+  const atCap = runningCount >= maxParallel;
+  const parallelismLabel = `Running ${runningCount}/${maxParallel}`;
+
+  return (
+    <div className="space-y-3">
+      {/* Header controls — count summary + parallelism gauge + DAG overlay
+          + abort. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <p className="font-mono text-[11px] text-terminal-muted">
+            {countSummary(cards)}
+          </p>
+          <Badge
+            variant="outline"
+            className={
+              "font-mono text-[10px] tabular-nums " +
+              (atCap
+                ? "text-amber-700 dark:text-amber-300 border-amber-700/40"
+                : "text-terminal-muted border-terminal-border/50")
+            }
+            aria-label={
+              atCap
+                ? `${parallelismLabel} — at parallelism cap, waiting for a slot to free up`
+                : parallelismLabel
+            }
+            title={
+              atCap
+                ? "At parallelism cap — orchestrator is waiting for a running card to finish before picking up another."
+                : `Parallelism cap is ${maxParallel}.`
+            }
+          >
+            {parallelismLabel}
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setDagOpen(true)}
+            className="font-mono text-xs"
+          >
+            <Network className="h-3 w-3 mr-1.5" aria-hidden="true" />
+            Dependency graph
+          </Button>
+          {/* Sprint 9.1 (R5 BLOCKER B2): Abort lobby moved to the lobby
+              header (`AbortLobbyButton` in `lobby-detail-client.tsx`) so
+              the captain can halt across roster / planning / rolling /
+              review — including when the synthesizer is wedged in
+              `review`. Keeping it only in the rolling header would dead-end
+              the captain the moment the run flipped phases. */}
+        </div>
+      </div>
+
+      <KanbanBoard
+        lobbyId={lobby.id}
+        cards={cards}
+        dependencies={dependencies}
+        seats={seats}
+        runStream={runStream}
+        isEditable={isEditable}
+        onChanged={onChanged}
+        onEditCard={setEditingCard}
+        onOpenRun={(card) => openFullscreenRun(card.id)}
+      />
+
+      {/* Card edit dialog (reused from planning). The dialog calls
+          updateCard / createCard with `expectedVersion`; server returns
+          409 if the captain raced an SSE update. */}
+      <CardEditDialog
+        open={editingCard !== null}
+        onOpenChange={(o) => !o && setEditingCard(null)}
+        lobbyId={lobby.id}
+        card={editingCard}
+        seats={seats}
+        defaultMaxAttempts={defaultMaxAttempts}
+        expectedLobbyVersion={lobby.lockVersion}
+        onSaved={onChanged}
+      />
+
+      {/* Dependency editor — opened from the DAG overlay. */}
+      <CardDependencyEditor
+        open={depEditorCard !== null}
+        onOpenChange={(o) => !o && setDepEditorCard(null)}
+        lobbyId={lobby.id}
+        card={depEditorCard}
+        allCards={cards}
+        allDependencies={dependencies}
+        onSaved={onChanged}
+      />
+
+      {/* DAG overlay — modal that lists cards in topological order. */}
+      <DagOverlay
+        open={dagOpen}
+        onOpenChange={setDagOpen}
+        cards={cards}
+        dependencies={dependencies}
+        onEditDependencies={(card) => {
+          // Hand-off: close the DAG overlay first so the captain isn't
+          // stacked under two modals (focus traps fight when nested).
+          setDagOpen(false);
+          setDepEditorCard(card);
+        }}
+      />
+
+      {/* Fullscreen run modal — page-singleton, opened from any tile via
+          `openFullscreenRun(cardId)`. Stays mounted so opening/closing
+          doesn't tear down the dialog primitive's portal. */}
+      <FullscreenRunModal
+        lobbyId={lobby.id}
+        cards={cards}
+        seats={seats}
+        runStream={runStream}
+        isEditable={isEditable}
+        onChanged={onChanged}
+      />
+
+    </div>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+function countSummary(cards: LobbyCard[]): string {
+  const total = cards.length;
+  const running = cards.filter((c) => c.status === "running").length;
+  const review = cards.filter((c) => c.status === "awaiting_review").length;
+  const done = cards.filter((c) => c.status === "approved").length;
+  const blocked = cards.filter(
+    (c) =>
+      c.status === "rejected" ||
+      c.status === "failed" ||
+      c.status === "cancelled",
+  ).length;
+  const parts: string[] = [`${total} card${total === 1 ? "" : "s"}`];
+  if (running > 0) parts.push(`${running} running`);
+  if (review > 0) parts.push(`${review} awaiting review`);
+  if (done > 0) parts.push(`${done} done`);
+  if (blocked > 0) parts.push(`${blocked} blocked`);
+  return parts.join(" · ");
+}

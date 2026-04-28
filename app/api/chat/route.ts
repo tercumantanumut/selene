@@ -24,6 +24,9 @@ import {
 } from "@/lib/ai/session-model-resolver";
 import { generateSessionTitle } from "@/lib/ai/title-generator";
 import { createSession, createMessage, updateMessage, getSession, getOrCreateLocalUser, updateSession, deleteMessagesNotIn, getInjectedMessageIds, getSessionWithMessages } from "@/lib/db/queries";
+import { db } from "@/lib/db/sqlite-client";
+import { agentRuns, type AgentRun } from "@/lib/db/sqlite-observability-schema";
+import { eq } from "drizzle-orm";
 import { requireAuth } from "@/lib/auth/local-auth";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { sessionHasTruncatedContent } from "@/lib/ai/truncated-content-store";
@@ -109,6 +112,11 @@ import {
   shouldTreatStreamErrorAsCancellation,
 } from "./canonical-content";
 import { buildToolsForRequest } from "./tools-builder";
+import {
+  applyScopeToToolNames,
+  loadSoloStoryScopeForSession,
+  shouldApplyScopeTightening,
+} from "@/lib/lobbies/scope-injection";
 import { prepareMessagesForRequest } from "./message-prep";
 import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
@@ -146,7 +154,7 @@ registerAllTools();
 const hasStylyApiKey = () => !!process.env.STYLY_AI_API_KEY;
 
 export async function POST(req: Request) {
-  let agentRun: { id: string } | null = null;
+  let agentRun: Pick<AgentRun, "id" | "startedAt" | "pipelineName"> | null = null;
   let chatTaskRegistered = false;
   let configuredProvider: string | undefined;
   let activeSessionId: string | undefined;
@@ -474,20 +482,45 @@ export async function POST(req: Request) {
     // ── Create agent run ───────────────────────────────────────────────────────
     const resolvedCharacterId =
       characterId || ((sessionMetadata?.characterId as string | undefined) ?? undefined);
+    const headerAgentRunId = req.headers.get("X-Agent-Run-Id");
 
-    agentRun = await createAgentRun({
-      sessionId,
-      userId: dbUser.id,
-      pipelineName: "chat",
-      triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : "chat",
-      metadata: { characterId: resolvedCharacterId || null, messageCount: messages.length, taskSource: taskSource || "chat" },
-    });
+    if (isInternalAuth && headerAgentRunId) {
+      const existingRun = await db.query.agentRuns.findFirst({
+        where: eq(agentRuns.id, headerAgentRunId),
+      });
+      if (!existingRun || existingRun.sessionId !== sessionId || existingRun.userId !== dbUser.id) {
+        return new Response(
+          JSON.stringify({ error: "Invalid internal agent run id" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      agentRun = existingRun;
+    } else {
+      agentRun = await createAgentRun({
+        sessionId,
+        userId: dbUser.id,
+        pipelineName: "chat",
+        triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : "chat",
+        metadata: { characterId: resolvedCharacterId || null, messageCount: messages.length, taskSource: taskSource || "chat" },
+      });
+    }
     const chatAbortController = new AbortController();
     registerChatAbortController(agentRun.id, chatAbortController);
     // Promote the earlier reservation (or create afresh if the reservation
     // path was somehow bypassed). Any injections that raced to the queue
     // during warmup are preserved and carried into the real runId key.
     promoteLivePromptQueueToRunId(sessionId, agentRun.id);
+
+    // ── Solo Story Mode snapshot lookup (SPEC §7 + §8) ─────────────────────────
+    // Loaded once here so the registered task carries lobbyId/cardId for SSE
+    // routing AND the tool-builder injection downstream can reuse the same
+    // context without a second DB query. Returns null for non-soloStory
+    // sessions; non-null even when the scope is empty (planner / synthesizer
+    // sentinel) so SSE consumers still get the lobby tag.
+    const soloStoryScopeContext = await loadSoloStoryScopeForSession({
+      sessionId,
+      userId: dbUser.id,
+    });
 
     const isDelegation = sessionMetadata?.isDelegation === true;
     const chatTask: ChatTask = {
@@ -501,6 +534,8 @@ export async function POST(req: Request) {
       pipelineName: "chat",
       triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : isDelegation ? "delegation" : "chat",
       messageCount: messages.length,
+      lobbyId: soloStoryScopeContext?.lobbyId,
+      cardId: soloStoryScopeContext?.cardId,
       metadata: isScheduledRun || isChannelSource || isDelegation
         ? {
             ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
@@ -720,6 +755,30 @@ export async function POST(req: Request) {
     const previouslyDiscoveredTools = new Set([...historicallyDiscoveredTools, ...metadataDiscoveredTools]);
     const allowedPluginNames = new Set(scopedPlugins.map((plugin) => plugin.name));
 
+    // ── Solo Story Mode: per-seat permission scope tightening (SPEC §7) ────────
+    // Reuse the `soloStoryScopeContext` loaded earlier (right after the agent
+    // run was created) so we hit the DB exactly once per request. Worker roles
+    // carry a non-empty allowedTools list; planner / synthesizer roles use an
+    // empty list as a sentinel meaning "no tightening" — `shouldApplyScopeTightening`
+    // gates that here. MCP tool intersection happens inside `buildToolsForRequest`
+    // (after MCP discovery) and is gated on `soloStoryPermissionScope` being
+    // present, which is fine: passing an empty-allowedTools scope through still
+    // yields a no-op intersection.
+    const applyScopeTightening =
+      soloStoryScopeContext !== null &&
+      shouldApplyScopeTightening(soloStoryScopeContext.scope);
+    const effectiveEnabledTools = applyScopeTightening
+      ? applyScopeToToolNames(enabledTools, soloStoryScopeContext!.scope)
+      : enabledTools;
+    if (soloStoryScopeContext) {
+      console.log(
+        `[CHAT API] Solo Story scope applied: lobby=${soloStoryScopeContext.lobbyId} ` +
+          `card=${soloStoryScopeContext.cardId ?? "n/a"} role=${soloStoryScopeContext.role} ` +
+          `tightening=${applyScopeTightening} ` +
+          `enabledTools ${enabledTools?.length ?? "?"} -> ${effectiveEnabledTools?.length ?? 0}`,
+      );
+    }
+
     const toolsResult = await buildToolsForRequest({
       sessionId,
       userId: dbUser.id,
@@ -727,7 +786,7 @@ export async function POST(req: Request) {
       characterAvatarUrl,
       characterAppearanceDescription,
       sessionMetadata,
-      enabledTools,
+      enabledTools: effectiveEnabledTools,
       previouslyDiscoveredTools,
       toolLoadingMode,
       devWorkspaceEnabled: appSettings.devWorkspaceEnabled ?? false,
@@ -739,6 +798,7 @@ export async function POST(req: Request) {
       provider: currentProvider,
       droppedImagesForProvider,
       designPreviewTheme,
+      soloStoryPermissionScope: soloStoryScopeContext?.scope,
     });
 
     const {
@@ -994,9 +1054,21 @@ export async function POST(req: Request) {
             await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
             removeLivePromptQueue(agentRun.id, activeSessionId);
           }
-          await completeAgentRun(agentRun.id, runStatus, shouldCancel
-            ? { reason: "stream_interrupted" }
-            : { error: isCreditError ? "Insufficient credits" : errorMessage });
+          if (agentRun.pipelineName !== "solo_story.synthesizer") {
+            await completeAgentRun(agentRun.id, runStatus, shouldCancel
+              ? { reason: "stream_interrupted" }
+              : { error: isCreditError ? "Insufficient credits" : errorMessage });
+          } else {
+            await appendRunEvent({
+              runId: agentRun.id,
+              eventType: "step_failed",
+              level: shouldCancel ? "warn" : "error",
+              pipelineName: agentRun.pipelineName,
+              data: shouldCancel
+                ? { phase: "chat_stream_interrupted", reason: "stream_interrupted" }
+                : { phase: "chat_stream_failed", error: isCreditError ? "Insufficient credits" : errorMessage },
+            });
+          }
           const registryTask = taskRegistry.get(agentRun.id);
           const registryDurationMs = registryTask ? Date.now() - new Date(registryTask.startedAt).getTime() : undefined;
           taskRegistry.updateStatus(agentRun.id, runStatus, shouldCancel
@@ -2038,9 +2110,21 @@ export async function POST(req: Request) {
         if (activeSessionId && !livePromptQueueCleanedUp) {
           removeLivePromptQueue(agentRun.id, activeSessionId);
         }
-        await completeAgentRun(agentRun.id, runStatus, shouldCancel
-          ? { reason: "stream_interrupted" }
-          : { error: isCreditError ? "Insufficient credits" : errorMessage });
+        if (agentRun.pipelineName !== "solo_story.synthesizer") {
+          await completeAgentRun(agentRun.id, runStatus, shouldCancel
+            ? { reason: "stream_interrupted" }
+            : { error: isCreditError ? "Insufficient credits" : errorMessage });
+        } else {
+          await appendRunEvent({
+            runId: agentRun.id,
+            eventType: "step_failed",
+            level: shouldCancel ? "warn" : "error",
+            pipelineName: agentRun.pipelineName,
+            data: shouldCancel
+              ? { phase: "chat_stream_interrupted", reason: "stream_interrupted" }
+              : { phase: "chat_stream_failed", error: isCreditError ? "Insufficient credits" : errorMessage },
+          });
+        }
         const registryTask = taskRegistry.get(agentRun.id);
         const registryDurationMs = registryTask ? Date.now() - new Date(registryTask.startedAt).getTime() : undefined;
         taskRegistry.updateStatus(agentRun.id, runStatus, shouldCancel
