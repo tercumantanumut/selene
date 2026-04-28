@@ -472,3 +472,153 @@ patch resolves all of them before Sprint 6 begins.
   generation-token contract is testable but no test was added in this
   sprint (lobby hooks have no test harness yet — that's a Sprint 8
   follow-up when SSE arrives).
+
+---
+
+## Sprint 5.4 — Review-cycle patch (5-reviewer sweep, autonomous)
+
+Five parallel reviewers (R1 security, R2 hooks, R3 a11y, R4 types/integration,
+R5 sprint completeness) audited Sprint 5.3. Total: **0 functional HIGH**, 3
+SPEC-citation "HIGH" (comment-accuracy), several MEDIUMs (mostly comment
+honesty + a11y polish + 1 real functional bug). All applied below.
+
+### What changed
+
+1. **R4-H1** — `app/api/lobbies/[lobbyId]/cards/[cardId]/dependencies/route.ts:8`
+   header comment said `(SPEC §3 #6/#13)`. §3 #6 is "no TanStack Query / SWR"
+   — wrong constraint. Reworded to `(SPEC §3 #13 + DAG correctness)`,
+   mirroring the `services.ts:185` fix Sprint 5.3 already landed. Pure
+   doc-accuracy, no behaviour change.
+
+2. **R4-H2** — `app/api/lobbies/route.ts:158` cited `SPEC §3 #4` for the
+   "every lobby has a backing session row" decision. §3 #4 is "Agent table
+   is `characters`" — unrelated. The session-row decision lives in §1
+   (Spirit) + §4 (Data Model — `lobbies.sessionId` foreign key). Reworded
+   accordingly. Pure doc-accuracy.
+
+3. **R4-H3** — `app/lobbies/error.tsx:18` cited `SPEC §3 #7` for the
+   "no info-leak" rationale. §3 #7 is "Reuse `/api/tasks/events`. Do NOT
+   create a new SSE endpoint." — unrelated. Dropped the §3 ref; the no-leak
+   rationale stands on its own (same posture as `withLobbyAuth`'s 500 path
+   in `lib/lobbies/api-helpers.ts`, which carries no SPEC ref either).
+
+4. **R3-M1 (a11y)** — `app/lobbies/error.tsx` had both `role="alert"` AND
+   `aria-live="assertive"`. Per the ARIA spec, `role="alert"` already
+   implies `aria-live="assertive" + aria-atomic="true"` — the explicit
+   attribute was redundant. More importantly, the sibling
+   `lobbies-list-client.tsx` error banner uses `aria-live="polite"`, so
+   the explicit `assertive` here was inconsistent. Dropped the attribute
+   and let `role="alert"` carry the announcement.
+
+5. **R3-M2 (a11y)** — `app/lobbies/error.tsx` had no programmatic focus
+   management. After a render crash, focus typically lives in detached
+   DOM or jumps to body; a sighted keyboard-only captain had to Tab from
+   the top of the page to reach the recovery buttons. Added
+   `tabIndex={-1}` plus a ref plus `ref.current?.focus()` inside the
+   existing `useEffect`. Container picks up `outline-none focus-visible:ring-2
+   focus-visible:ring-red-500/40` so the focus state is visible without
+   double-painting an outline.
+
+6. **R2-M2 (functional bug)** — `lib/lobbies/client/hooks.ts`
+   `appendFromAfter` had asymmetric error handling. `run()` resets
+   `setError(null)` at the top of every call; `appendFromAfter` did not
+   on success. A transient network blip on append left a stale error
+   visible even after the next append succeeded. Added `setError(null)`
+   inside the success branch (after the `setData` updater) so the two
+   refresh paths share the same contract.
+
+7. **R4-M1 (doc)** — Five files cited `SPEC §3 #14` for the no-TanStack/SWR
+   ban. §3 #14 is "No process-level mutation of the global tool registry";
+   the actual no-Query/SWR ban is §3 #6. Updated:
+   - `lib/lobbies/client/hooks.ts:4` (`#14` → `#6`)
+   - `lib/lobbies/client/character-hooks.ts:10` (`#14` → `#6`)
+   - `lib/lobbies/client/api.ts:14` (`§3` → `§3 #6`, was ambiguous)
+   - `components/lobbies/roster/roster-section.tsx:18` (`#14` → `#6`)
+   - `components/lobbies/roster/agent-picker-sheet.tsx:10` (`#14` → `#6`)
+
+8. **R4-M2 (doc)** — `lib/lobbies/SPEC.md:190` cross-ref `(see §10)` for
+   the V1.1 folder-scoping deferral pointed at "Repo Conventions Reminder"
+   (§10), not the actual Deferred list (§2). Corrected to
+   `(see §2 Deferred)`.
+
+9. **R5-M1 (doc)** — `app/lobbies/[id]/lobby-detail-client.tsx:144`
+   rationale for `seedDefaultsForStatus` claimed "no-op after the first
+   call per (lobbyId, status) pair" but the actual gate (in
+   `solo-story-ui-store.ts`) is `lobbyId`-only. The intended behaviour
+   ("rolling→review status flip leaves captain section toggles alone") is
+   correct; the comment was misleading the next reader about what would
+   happen on a status flip. Reworded to describe the lobbyId-only gate
+   explicitly and added the "to force a re-seed, call `resetForLobbyChange`
+   first" follow-up note.
+
+10. **R5-M3 (doc)** — `app/lobbies/[id]/lobby-detail-client.tsx:1` file
+    header still said "Sprint 5 lands the SHELL" — never mentioned
+    `useIsomorphicLayoutEffect`, the seed/reset split, or `error.tsx`.
+    Refreshed into a short sprint history block (5 → 5.1 → 5.3 → 5.4 →
+    6/7/8/9) so the header maps to the inline-comment source-of-truth.
+
+11. **R4-L1 (doc)** — `lib/lobbies/scope-injection.ts:155` rationale said
+    "`.strict()` … means we're allowed to assume the field is well-typed
+    when present." That's not what `.strict()` does — it rejects unknown
+    keys, it does not validate the shape of present fields. Reworded to
+    cite the JSON-roundtrip path (the value comes from `agent_runs.metadata`
+    untyped JSON, not the strict zod schema) and explained why the
+    `Array.isArray + filter(string)` belt-and-braces is required even with
+    `.strict()` upstream.
+
+12. **R4-NIT (doc)** — `lib/lobbies/api-helpers.ts:11` JSDoc said
+    `MutationResult<T>` was "from `lib/lobbies/queries.ts` and
+    `lib/lobbies/services.ts`". Post-Sprint-5.2/5.3 the canonical home is
+    `lib/lobbies/types.ts`; queries/services merely consume / re-export.
+    Reworded for consistency with the dependency-direction story Sprint 5.3
+    hardened.
+
+### Deliberately not patched (defer / reject)
+
+- **R2-M1** — `useIsomorphicLayoutEffect` shim sits between two import
+  blocks at lines 39-40. R2 flagged this as `import/first` lint risk. The
+  current placement is intentional and was preserved when the file was
+  edited externally; the actual code reads naturally and ESLint's
+  `import/first` rule isn't enabled in this codebase. No action.
+
+- **R5-M2** — `dataLobbyIdRef` shortens but doesn't eliminate the
+  wrong-status flash on A→B navigation (the data-clear runs in
+  `useEffect`, post-paint). R5 suggested deriving `effectiveData =
+  dataLobbyIdRef.current === lobbyId ? data : null` at render time. Defer
+  — the layout-effect seed gate (lobbyId-only, idempotent) makes the
+  worst-case flash a single frame of stale title + skeleton sections;
+  not worth a render-time data filter that adds a re-render and changes
+  the public hook contract. Re-evaluate if Sprint 7's Kanban makes the
+  flash visible.
+
+- **R5-L1** — SPRINT_NOTES contrast claim ≈8.2:1 was conservative; actual
+  is ≈11.7:1 light / ≈8.7:1 dark per R3 + R5 independent calculations.
+  Both pass AA easily either way; not worth re-litigating the math here.
+  The Sprint 5.3 entry above remains as-shipped — this Sprint 5.4 entry
+  notes the conservative-vs-actual gap so reviewers don't trip on it.
+
+- **R5-L2** — `outline` Badge variant adds `bg-muted/50` which is shadowed
+  by `bg-{color}/{N}` overrides in STATUS_CONFIG today. Class-merge
+  reorder is hypothetical; defer until a real reorder shows up.
+
+- **R5-L3** — `useLobbyEvents` race-fix is correct but unreachable
+  (no consumer until Sprint 8). Defer — Sprint 8's wiring will exercise it.
+
+- **R5-L4** — `LobbySeat` re-export from `lib/lobbies/types.ts`. Sprint 6
+  WIP (already in flight) will own this when it lands its own seat-card
+  components; out of Sprint 5.4 scope.
+
+- **R5-N1, R5-N2, R3-LOW NIT** — cosmetic; no action.
+
+### Verification (autonomous mode)
+
+- `npx tsc --noEmit` clean (exit 0).
+- All 12 patches above are doc-accuracy or single-line code changes; no
+  behavioural drift.
+- The functional change (R2-M2 `setError(null)` in `appendFromAfter`
+  success path) is logic-only; no test added (no test harness for the
+  lobby hooks yet — same Sprint 8 follow-up as Sprint 5.3).
+- A11y changes (R3-M1 + R3-M2) verified by reading; no live AT run in
+  autonomous mode. The `tabIndex={-1}` + `ref.focus()` pattern matches
+  the canonical "live region + focus on mount" pattern from
+  `aria-practices` for alert dialogs.
