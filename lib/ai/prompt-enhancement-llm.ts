@@ -51,14 +51,48 @@ const RETRIEVAL_NOTE =
   'Reference only — use these exact file paths and patterns for technical grounding in your enhanced prompt. Do not rewrite this block.';
 
 /**
- * Escape composer text so it cannot smuggle a closing `</composer_prompt>` tag
- * and hijack the instruction layout. Defense-in-depth; the LLM is the ultimate
- * interpreter but keeping delimiters intact is cheap insurance.
+ * The set of structural delimiter tags the enhancement template uses. Any
+ * user-controlled text we drop into one of these blocks must have closing
+ * variants escaped so a malicious or accidental message can't hijack the
+ * layout (e.g. a chat message containing `</session_history>` breaking out
+ * to be rewritten as if it were the composer prompt).
+ */
+const ENHANCEMENT_DELIMITER_TAGS = [
+  'composer_prompt',
+  'session_history',
+  'memories',
+  'file_tree',
+  'retrieved_context',
+  'agent_context',
+] as const;
+
+/**
+ * Defense-in-depth: escape any opening or closing variant of our delimiter
+ * tags inside untrusted text — including whitespace and attribute variants
+ * like `< /composer_prompt>` or `</composer_prompt attr="x">`. The LLM is the
+ * ultimate interpreter, but keeping our XML-style delimiters un-smuggleable
+ * is cheap insurance.
+ *
+ * Pattern: `<` + optional whitespace + optional `/` + tag + (whitespace OR `>`)
+ * — matched case-insensitively. We escape the leading `<` so the token still
+ * reads like the user's text but no longer terminates a block.
+ */
+function escapeEnhancementDelimiters(text: string): string {
+  if (!text) return text;
+  const tagAlternation = ENHANCEMENT_DELIMITER_TAGS.join('|');
+  const pattern = new RegExp(
+    `<\\s*\\/?\\s*(?:${tagAlternation})(?=[\\s>])`,
+    'gi',
+  );
+  return text.replace(pattern, (match) => `\\${match}`);
+}
+
+/**
+ * Convenience for the composer block specifically (kept for readability at
+ * the call site — the underlying escape covers ALL delimiter tags).
  */
 function sanitizeComposerText(text: string): string {
-  return text.replace(/<\/?composer_prompt>/gi, (match) =>
-    match.replace(/</g, '\\<').replace(/>/g, '\\>')
-  );
+  return escapeEnhancementDelimiters(text);
 }
 
 /**
@@ -108,14 +142,15 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
     const agentLines: string[] = [];
     if (context.agentName) {
       agentLines.push(
-        `Agent: ${context.agentName}${context.agentTagline ? ` — ${context.agentTagline}` : ''}`
+        `Agent: ${escapeEnhancementDelimiters(context.agentName)}` +
+          `${context.agentTagline ? ` — ${escapeEnhancementDelimiters(context.agentTagline)}` : ''}`
       );
     }
     if (context.agentPurpose) {
-      agentLines.push(`Purpose: ${context.agentPurpose}`);
+      agentLines.push(`Purpose: ${escapeEnhancementDelimiters(context.agentPurpose)}`);
     }
     if (context.sessionTitle) {
-      agentLines.push(`Current topic: ${context.sessionTitle}`);
+      agentLines.push(`Current topic: ${escapeEnhancementDelimiters(context.sessionTitle)}`);
     }
     parts.push(`<agent_context note="${REFERENCE_NOTE}">`);
     parts.push(agentLines.join('\n'));
@@ -144,15 +179,45 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
 
   // -------------------------------------------------------------------------
   // 4. SESSION HISTORY — ascending chronological, numbered for clarity.
+  //    Aggregate char budget caps total history size; per-message slice is a
+  //    fail-safe. Without the aggregate cap, V2's 6-message window × 25k chars
+  //    each can reach ~150k chars before memories/file tree/retrieval ever get
+  //    rendered, ballooning the prompt and pushing the rewrite off the cliff.
   // -------------------------------------------------------------------------
   if (context.recentMessages.length > 0) {
     parts.push(`<session_history note="${HISTORY_NOTE}">`);
-    context.recentMessages.forEach((msg, i) => {
+    const PER_MESSAGE_CHARS = 25_000;
+    const AGGREGATE_HISTORY_CHARS = 30_000;
+    let aggregateBudget = AGGREGATE_HISTORY_CHARS;
+    const renderedLines: string[] = [];
+    // Walk newest → oldest so the freshest turns are guaranteed to fit, then
+    // re-emit in chronological (oldest → newest) order for the model.
+    const reversed = [...context.recentMessages].reverse();
+    const kept: Array<{ role: string; content: string; index: number }> = [];
+    for (let r = 0; r < reversed.length; r += 1) {
+      const msg = reversed[r];
       const role = msg.role === 'user' ? 'User' : 'Assistant';
       const raw = typeof msg.content === 'string' ? msg.content : '[complex content]';
-      const content = raw.slice(0, 25000);
-      parts.push(`[${i + 1}] ${role}: ${content}`);
+      const escaped = escapeEnhancementDelimiters(raw);
+      const truncated = escaped.slice(0, PER_MESSAGE_CHARS);
+      if (truncated.length === 0) continue;
+      if (truncated.length > aggregateBudget) {
+        // Out of room — stop walking older history.
+        break;
+      }
+      aggregateBudget -= truncated.length;
+      kept.push({
+        role,
+        content: truncated,
+        index: context.recentMessages.length - 1 - r,
+      });
+    }
+    // Re-sort to ascending chronological for emission.
+    kept.sort((a, b) => a.index - b.index);
+    kept.forEach((msg, i) => {
+      renderedLines.push(`[${i + 1}] ${msg.role}: ${msg.content}`);
     });
+    parts.push(...renderedLines);
     parts.push(`</session_history>`);
     parts.push('');
   }
@@ -162,7 +227,7 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   // -------------------------------------------------------------------------
   if (context.memories && context.memories.trim()) {
     parts.push(`<memories note="${REFERENCE_NOTE}">`);
-    parts.push(context.memories.trim());
+    parts.push(escapeEnhancementDelimiters(context.memories.trim()));
     parts.push(`</memories>`);
     parts.push('');
   }
@@ -172,7 +237,7 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   // -------------------------------------------------------------------------
   if (context.fileTree && context.fileTree.trim()) {
     parts.push(`<file_tree note="${REFERENCE_NOTE}">`);
-    parts.push(context.fileTree.trim());
+    parts.push(escapeEnhancementDelimiters(context.fileTree.trim()));
     parts.push(`</file_tree>`);
     parts.push('');
   }
@@ -182,7 +247,7 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   // -------------------------------------------------------------------------
   if (context.searchResults && context.searchResults.trim()) {
     parts.push(`<retrieved_context note="${RETRIEVAL_NOTE}">`);
-    parts.push(context.searchResults.trim());
+    parts.push(escapeEnhancementDelimiters(context.searchResults.trim()));
     parts.push(`</retrieved_context>`);
     parts.push('');
   }

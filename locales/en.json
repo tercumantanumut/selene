@@ -1008,7 +1008,8 @@
       "skipped": "Could not enhance prompt",
       "success": "Enhanced with {files} files ({chunks} chunks){llmIndicator}",
       "tooltipEnhanced": "Enhanced with {files} files - click Send to use",
-      "tooltipDefault": "Enhance with context from synced folders"
+      "tooltipDefault": "Enhance with context from synced folders",
+      "inputChangedDuringEnhance": "Input changed during enhancement \u2014 kept your version. Click \u2728 again to enhance the new text."
     },
     "deepResearch": {
       "modeLabel": "Deep Research Mode",

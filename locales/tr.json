@@ -1044,7 +1044,8 @@
       "skipped": "Prompt geliştirilemedi",
       "success": "{files} dosya ({chunks} parça) ile geliştirildi{llmIndicator}",
       "tooltipEnhanced": "{files} dosya ile geliştirildi - göndermek için tıklayın",
-      "tooltipDefault": "Senkronize klasörlerden bağlamla geliştir"
+      "tooltipDefault": "Senkronize klasörlerden bağlamla geliştir",
+      "inputChangedDuringEnhance": "Geliştirme sırasında giriş değişti \u2014 sizin sürümünüz korundu. Yeni metni geliştirmek için \u2728'a tekrar tıklayın."
     },
     "deepResearch": {
       "modeLabel": "Derin Araştırma Modu",
