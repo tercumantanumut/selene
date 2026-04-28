@@ -1,7 +1,7 @@
 /**
  * Solo Story Mode — client data hooks.
  *
- * Plain `useEffect` + `useState` fetch hooks. SPEC §3 #14 explicitly forbids
+ * Plain `useEffect` + `useState` fetch hooks. SPEC §3 #6 explicitly forbids
  * TanStack Query / SWR — manual hooks keep the bundle slim and make every
  * refetch / abort path obvious.
  *
@@ -283,6 +283,12 @@ export function useLobbyEvents(
           unique.sort((a, b) => a.sequence - b.sequence);
           return { events: unique };
         });
+        // Sprint 5.4 (R2-M2): clear any stale error from a prior failed
+        // append. Without this, a transient network blip leaves an error
+        // visible even after the next append succeeds. `run` already
+        // resets via `setError(null)`; mirror the contract here so the
+        // two refresh paths agree.
+        setError(null);
       } catch (err) {
         if (
           controller.signal.aborted ||

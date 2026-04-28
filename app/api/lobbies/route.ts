@@ -155,9 +155,10 @@ export async function POST(req: Request) {
       }
     }
 
-    // SPEC §3 #4: every lobby has a backing session row so chat history
-    // (planner deliberations, captain freeform notes) lives in the existing
-    // sessions/messages tables.
+    // Every lobby has a backing session row so chat history (planner
+    // deliberations, captain freeform notes) lives in the existing
+    // sessions/messages tables — see SPEC §1 (Spirit) and §4 (Data Model
+    // for the `sessionId` foreign key).
     const session = await createSession({
       userId: ctx.userId,
       title: body.title,

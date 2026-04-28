@@ -152,11 +152,15 @@ function extractSoloStorySnapshot(
   // even though the snapshot wrote it — the V1 tool gate ignores the
   // value but the field MUST round-trip through this reconstruction so
   // V1.1 (which will enforce folder scoping at the FS layer) can read it
-  // off the snapshot just like every other scope dimension. Validating
-  // for `string[]` shape on the way out keeps the invariant the rest of
-  // the codebase relies on (SPEC §3 #11 — `.strict()` on the scope
-  // schema means we're allowed to assume the field is well-typed when
-  // present).
+  // off the snapshot just like every other scope dimension. The defensive
+  // `Array.isArray + filter(string)` here is required because we're
+  // reading from `agent_runs.metadata` (untyped JSON) rather than the
+  // strict zod schema. The schema declares this as
+  // `z.array(z.string()).optional()`, so when callers go through
+  // `permissionScopeV1Schema` they get a well-typed value; this filter
+  // exists for the JSON-roundtrip path. SPEC §3 #11 (`.strict()` on the
+  // scope schema) only buys us "no extra keys" — it does not validate
+  // the shape of present fields, so we belt-and-braces it here.
   const allowedFolderIds = Array.isArray(scope.allowedFolderIds)
     ? (scope.allowedFolderIds as unknown[]).filter(
         (t): t is string => typeof t === "string",

@@ -8,9 +8,10 @@
  *     route handlers don't repeat the same 4 lines and so we have ONE place
  *     to swap in workspace-scoped auth later.
  *
- *   - `mapMutationResult(result)` translates a `MutationResult<T>` (from
- *     `lib/lobbies/queries.ts` and `lib/lobbies/services.ts`) into a
- *     `NextResponse` with the right HTTP status:
+ *   - `mapMutationResult(result)` translates a `MutationResult<T>` (canonical
+ *     home: `lib/lobbies/types.ts`; consumed by `lib/lobbies/queries.ts`
+ *     and `lib/lobbies/services.ts`) into a `NextResponse` with the right
+ *     HTTP status:
  *
  *       - `ok: true`                    → 200 `{ ...row }` (or whatever the
  *                                          caller maps via the `success`

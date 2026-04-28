@@ -7,7 +7,7 @@
  * display the agent's tool surface without importing the full character UI.
  *
  * Same fetch shape as the lobby hooks in `./hooks.ts` — manual `useEffect`
- * with abort. SPEC §3 #14 (no TanStack Query / SWR).
+ * with abort. SPEC §3 #6 (no TanStack Query / SWR).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";

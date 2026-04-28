@@ -7,13 +7,24 @@
  * with hidden tabs — the FE Architect report's "progressive reveal"
  * guidance for Solo Story Mode; SPEC §3 itself doesn't list it as a hard
  * constraint, but it's the design intent the surface is built around).
- * Sprint 5
- * lands the SHELL: data fetch, phase progress rail, and section placeholders
- * the later sprints fill in:
- *   - Sprint 6 → RosterSection (this page renders only the seat count today).
- *   - Sprint 7 → PlanningSection + RollingSection (Kanban + DnD).
- *   - Sprint 8 → ReviewSection (live run embed + approve/reject/retry).
- *   - Sprint 9 → SynthesisSection (final artifact).
+ *
+ * Sprint history (the inline comments are the source of truth for current
+ * behaviour — this header just sketches scope landed per sprint):
+ *   - Sprint 5    → SHELL: data fetch, phase progress rail, section
+ *                   placeholders.
+ *   - Sprint 5.1  → Pre-paint section seeding via layout effect to kill
+ *                   the "wrong-section flash" on cold load.
+ *   - Sprint 5.3  → Stale-data clear on lobbyId change (`useLobbyDetail`
+ *                   nulls `data` when the URL flips), `useIsomorphicLayoutEffect`
+ *                   SSR-safe shim, and `app/lobbies/error.tsx` segment-level
+ *                   error boundary (sibling file).
+ *   - Sprint 5.4  → Comment honesty pass — refreshed this header, corrected
+ *                   the `seedDefaultsForStatus` rationale to match the
+ *                   lobbyId-only gate it actually uses.
+ *   - Sprint 6    → RosterSection wired in (was a seat-count placeholder).
+ *   - Sprint 7    → PlanningSection + RollingSection (Kanban + DnD).
+ *   - Sprint 8    → ReviewSection (live run embed + approve/reject/retry).
+ *   - Sprint 9    → SynthesisSection (final artifact).
  *
  * Server-authoritative data lives on the server; this client calls
  * `useLobbyDetail` (fetch + useEffect) and feeds the cross-component UI
@@ -143,12 +154,19 @@ export default function LobbyDetailClient() {
 
   // Once the lobby's status is known, seed the default expanded sections /
   // active section *idempotently*. `seedDefaultsForStatus` is a no-op after
-  // the first call per (lobbyId, status) pair, which protects three things:
-  //   1. SSE-driven status flips don't reset expansion the captain has
-  //      manually changed since the seed fired,
-  //   2. React 18 strict-mode double-invoke can't double-seed,
-  //   3. a refetch that returns the same status is a no-op rather than a
+  // the first call per `lobbyId` (the gate is lobbyId-only — see
+  // `solo-story-ui-store.ts:seedDefaultsForStatus`), which protects three
+  // things:
+  //   1. Subsequent SSE-driven status flips within the same lobby do NOT
+  //      re-seed — that's intentional, so a rolling→review promotion
+  //      doesn't blow away the section toggles the captain set manually
+  //      while watching the run.
+  //   2. React 18 strict-mode double-invoke can't double-seed (the second
+  //      invocation hits the lobbyId guard).
+  //   3. A refetch that returns the same status is a no-op rather than a
   //      destructive reset of the captain's section toggles.
+  // To force a re-seed for a fresh lobbyId, call `resetForLobbyChange`
+  // first — that clears `seededForLobbyId` so the next seed call lands.
   // `useIsomorphicLayoutEffect` so the store update runs before paint on
   // the client — render 1 (with stale store value) is committed but not
   // yet painted; the layout effect updates the store; React schedules a

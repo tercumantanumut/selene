@@ -15,7 +15,7 @@
  * while the lobby is in the `roster` phase. After `ready_roster` fires, every
  * surface here goes read-only.
  *
- * SPEC §3 #14 (no Query/SWR): all mutations are direct fetches; the parent
+ * SPEC §3 #6 (no Query/SWR): all mutations are direct fetches; the parent
  * page owns the live refetch via `useLobbyDetail.refetch`.
  */
 

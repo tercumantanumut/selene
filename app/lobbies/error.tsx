@@ -15,7 +15,9 @@
  * is captured here. A failure inside `requireAuth` on a server page still
  * lands here too, but the visible message stays generic — we don't echo
  * `error.message` back to the captain because thrown error strings can
- * include DB / file paths (SPEC §3 #7 — no info-leak).
+ * include DB / file paths. Same posture as the `withLobbyAuth` 500 path
+ * in `lib/lobbies/api-helpers.ts`: log full detail server-side / DevTools,
+ * surface only a static label.
  *
  * Reviewer (Sprint 5.2) flagged the absence as a HIGH-impact MEDIUM:
  * without this file, any unhandled lobby render error escalates straight
@@ -27,9 +29,25 @@
  * + `font-mono` / `text-terminal-*`. Adding next-intl here would be an
  * isolated wire-up that diverges from the surrounding pages; will fold in
  * when (if) the lobby surface gets translated wholesale.
+ *
+ * Sprint 5.4 patches (R3 review):
+ *   - Drop `aria-live="assertive"`. `role="alert"` already implies
+ *     `aria-live="assertive" + aria-atomic="true"` per the ARIA spec; the
+ *     explicit attribute was redundant. Sibling errors in this surface
+ *     (e.g. `lobbies-list-client.tsx`) use `aria-live="polite"` for
+ *     non-time-critical feedback — a recovery banner the captain can
+ *     interact with at leisure should not interrupt the screen reader.
+ *     Letting `role="alert"` carry the announcement matches the rest of
+ *     the lobby surface and keeps it from interrupting whatever the
+ *     screen reader is reading.
+ *   - Move keyboard focus to the alert container on mount. After a render
+ *     crash, focus typically lives in detached DOM or jumps to `<body>`;
+ *     a sighted keyboard-only captain would have to Tab from the top of
+ *     the page to reach the recovery buttons. `tabIndex={-1}` makes the
+ *     container programmatically focusable without joining the tab order.
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { AlertCircle, RefreshCw, ArrowLeft } from "lucide-react";
 
@@ -44,23 +62,28 @@ export default function LobbiesError({
   reset: () => void;
 }) {
   const router = useRouter();
+  const alertRef = useRef<HTMLDivElement>(null);
 
   // Log the actual error message + stack to the console for the captain
   // / dev to inspect via DevTools. The visible UI stays generic.
+  // Also move focus to the alert container so a keyboard user lands on
+  // the recovery banner instead of the (likely-detached) crashed subtree.
   useEffect(() => {
     console.error("[lobbies] route-level error caught:", error);
     if (error.digest) {
       console.error("[lobbies] error digest:", error.digest);
     }
+    alertRef.current?.focus();
   }, [error]);
 
   return (
     <Shell>
       <div className="flex h-full items-center justify-center p-6">
         <div
+          ref={alertRef}
           role="alert"
-          aria-live="assertive"
-          className="max-w-md rounded-lg border border-red-500/30 bg-red-500/5 p-6 text-center"
+          tabIndex={-1}
+          className="max-w-md rounded-lg border border-red-500/30 bg-red-500/5 p-6 text-center outline-none focus-visible:ring-2 focus-visible:ring-red-500/40"
         >
           <AlertCircle
             className="mx-auto h-8 w-8 text-red-500"

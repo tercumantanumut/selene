@@ -7,7 +7,7 @@
  * `active` status) in a searchable list. Selection emits `onPick(agentId)`
  * back to RosterSection, which fires the `updateSeat` PATCH.
  *
- * SPEC §3 #14 forbids TanStack/SWR — `useCharacters` is plain useEffect.
+ * SPEC §3 #6 forbids TanStack/SWR — `useCharacters` is plain useEffect.
  * Sheet semantics: built on shadcn Dialog primitive (the codebase has no
  * separate Sheet primitive). The "sheet" naming reflects the UX intent
  * (modal panel for a transient choice), not the underlying component.

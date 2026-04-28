@@ -11,7 +11,7 @@
  *   - Single place that handles JSON parse failures.
  *   - Lets us forward an external `AbortSignal` from `useEffect` cleanup.
  *
- * SPEC §6 (route table) and §3 (HARD CONSTRAINT: no TanStack Query / SWR).
+ * SPEC §6 (route table) and §3 #6 (HARD CONSTRAINT: no TanStack Query / SWR).
  */
 import {
   resilientFetch,

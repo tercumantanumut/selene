@@ -5,7 +5,7 @@
  *     { dependencies: [{ dependsOnCardId, optional? }, ...] }
  *
  * Replaces the entire dependency set for the card in one transaction.
- * Service guards (SPEC §3 #6/#13):
+ * Service guards (SPEC §3 #13 + DAG correctness):
  *   - self-cycle rejected,
  *   - all `dependsOnCardId` must belong to the same lobby,
  *   - cycle detection lives in `replaceDependenciesForCardWithCycleCheck`

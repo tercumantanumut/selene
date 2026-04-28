@@ -187,8 +187,8 @@ export type LobbyPermissionScopeV1 = {
   mode: "tool_list";
   allowedTools: string[];
   deniedTools?: string[];
-  // Forward-looking placeholder for V1.1 folder scoping (see §10). V1
-  // ignores it. (Sprint 5.1: replaced the unused V0 `notes?: string`.)
+  // Forward-looking placeholder for V1.1 folder scoping (see §2 Deferred).
+  // V1 ignores it. (Sprint 5.1: replaced the unused V0 `notes?: string`.)
   allowedFolderIds?: string[];
 };
 
