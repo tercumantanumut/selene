@@ -33,12 +33,15 @@ import type {
   LobbyCardDependency,
   LobbySeat,
 } from "@/lib/db/sqlite-lobbies-schema";
+import type { LobbyRunStreamHandle } from "@/lib/lobbies/client/run-stream";
+import { useSoloStoryUiStore } from "@/lib/stores/solo-story-ui-store";
 
 import { CardEditDialog } from "../planning/card-edit-dialog";
 
 import { KanbanBoard } from "./kanban-board";
 import { CardDependencyEditor } from "./card-dependency-editor";
 import { DagOverlay } from "./dag-overlay";
+import { FullscreenRunModal } from "./fullscreen-run-modal";
 
 // ─── Props ────────────────────────────────────────────────────────────────
 
@@ -47,6 +50,12 @@ export type RollingSectionProps = {
   cards: LobbyCard[];
   dependencies: LobbyCardDependency[];
   seats: LobbySeat[];
+  /**
+   * Page-scoped run-stream handle from `useLobbyRunStream` (mounted in
+   * `LobbyDetailClient`). The kanban tiles render live progress against
+   * this; the fullscreen modal pulls per-card slices.
+   */
+  runStream: LobbyRunStreamHandle;
   onChanged: () => void;
 };
 
@@ -57,6 +66,7 @@ export function RollingSection({
   cards,
   dependencies,
   seats,
+  runStream,
   onChanged,
 }: RollingSectionProps) {
   const isEditable = lobby.status === "rolling";
@@ -66,6 +76,12 @@ export function RollingSection({
   const [editingCard, setEditingCard] = useState<LobbyCard | null>(null);
   const [depEditorCard, setDepEditorCard] = useState<LobbyCard | null>(null);
   const [dagOpen, setDagOpen] = useState(false);
+
+  // The fullscreen run modal lives at the section level (mounted once) and
+  // is opened/closed via the cross-component UI store. Pulling the action
+  // here is what lets a Kanban tile fire `onOpenRun` without the modal
+  // having to be threaded through every intermediate component.
+  const openFullscreenRun = useSoloStoryUiStore((s) => s.openFullscreenRun);
 
   // No cards yet: friendly empty state. This shouldn't happen in practice
   // (Sprint 7A's `accept_plan` blocks empty plans) but the rolling phase
@@ -104,9 +120,11 @@ export function RollingSection({
         cards={cards}
         dependencies={dependencies}
         seats={seats}
+        runStream={runStream}
         isEditable={isEditable}
         onChanged={onChanged}
         onEditCard={setEditingCard}
+        onOpenRun={(card) => openFullscreenRun(card.id)}
       />
 
       {/* Card edit dialog (reused from planning). The dialog calls
@@ -145,6 +163,18 @@ export function RollingSection({
           setDagOpen(false);
           setDepEditorCard(card);
         }}
+      />
+
+      {/* Fullscreen run modal — page-singleton, opened from any tile via
+          `openFullscreenRun(cardId)`. Stays mounted so opening/closing
+          doesn't tear down the dialog primitive's portal. */}
+      <FullscreenRunModal
+        lobbyId={lobby.id}
+        cards={cards}
+        seats={seats}
+        runStream={runStream}
+        isEditable={isEditable}
+        onChanged={onChanged}
       />
     </div>
   );

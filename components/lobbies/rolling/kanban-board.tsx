@@ -74,6 +74,7 @@ import type {
   LobbySeat,
 } from "@/lib/db/sqlite-lobbies-schema";
 import type { LobbyCardColumn } from "@/lib/lobbies/types";
+import type { LobbyRunStreamHandle } from "@/lib/lobbies/client/run-stream";
 import { useSoloStoryUiStore } from "@/lib/stores/solo-story-ui-store";
 
 import {
@@ -168,6 +169,13 @@ export type KanbanBoardProps = {
   cards: LobbyCard[];
   dependencies: LobbyCardDependency[];
   seats: LobbySeat[];
+  /**
+   * Optional page-scoped run-stream handle. When present, each tile
+   * receives its `RunStreamState` slice and renders an inline progress
+   * line for `running` cards. Optional so the board stays usable in
+   * tests / storybook fixtures without a live SSE source.
+   */
+  runStream?: LobbyRunStreamHandle;
   /** True while the lobby is in `rolling`; gates DnD + action buttons. */
   isEditable: boolean;
   /** Fired after each successful mutation so the parent can refetch. */
@@ -185,6 +193,7 @@ export function KanbanBoard({
   cards,
   dependencies,
   seats,
+  runStream,
   isEditable,
   onChanged,
   onEditCard,
@@ -458,6 +467,7 @@ export function KanbanBoard({
                         ? seatById.get(card.assignedSeatId) ?? null
                         : null
                     }
+                    runState={runStream?.byCardId.get(card.id)}
                     isEditable={isEditable}
                     isBusy={busyCardIds.has(card.id)}
                     isPickedUp={

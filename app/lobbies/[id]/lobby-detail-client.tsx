@@ -80,6 +80,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 import { useLobbyDetail } from "@/lib/lobbies/client/hooks";
+import { useLobbyRunStream } from "@/lib/lobbies/client/run-stream";
 import {
   useSoloStoryUiStore,
   useSectionControls,
@@ -90,6 +91,7 @@ import { LobbyStatusBadge } from "@/components/lobbies/status-badge";
 import { RosterSection } from "@/components/lobbies/roster/roster-section";
 import { PlanningSection } from "@/components/lobbies/planning/planning-section";
 import { RollingSection } from "@/components/lobbies/rolling/rolling-section";
+import { ReviewSection } from "@/components/lobbies/review/review-section";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -140,6 +142,21 @@ export default function LobbyDetailClient() {
   const lobbyId = params?.id ?? null;
 
   const { data, loading, error, refetch } = useLobbyDetail(lobbyId);
+
+  // Sprint 8: page-scoped SSE consumer for live card runs. Mounts at the
+  // page level so a single EventSource feeds both the rolling kanban tiles
+  // and the review section. The hook gates itself on a non-null lobbyId so
+  // it stays inert during the loading skeleton.
+  //
+  // `onCardCompleted` fires once per `task:completed` for this lobby. We
+  // refetch the lobby detail so card.status / output / lockVersion land
+  // authoritatively (the SSE stream reports lifecycle, not the persisted
+  // row). Refetching is idempotent and cheap (<200ms).
+  const runStream = useLobbyRunStream(lobbyId, {
+    onCardCompleted: () => {
+      void refetch();
+    },
+  });
 
   // Wire the active lobby into the UI store so cross-component selectors
   // know which lobby is mounted. The destructive reset clears per-lobby UI
@@ -278,17 +295,19 @@ export default function LobbyDetailClient() {
                   cards={data.cards}
                   dependencies={data.dependencies}
                   seats={data.seats}
+                  runStream={runStream}
                   onChanged={() => void refetch()}
                 />
               </PhaseSection>
-              <ReviewSectionPlaceholder
-                approvedCount={
-                  data.cards.filter((c) => c.status === "approved").length
-                }
-                pendingReviewCount={
-                  data.cards.filter((c) => c.status === "awaiting_review").length
-                }
-              />
+              <PhaseSection id="review" title="Review" icon={CheckCircle2}>
+                <ReviewSection
+                  lobby={data.lobby}
+                  cards={data.cards}
+                  seats={data.seats}
+                  runStream={runStream}
+                  onChanged={() => void refetch()}
+                />
+              </PhaseSection>
               <SynthesisSectionPlaceholder
                 hasSynthesisRun={data.lobby.synthesisRunId !== null}
                 hasArtifact={data.lobby.outputArtifactId !== null}
@@ -446,25 +465,7 @@ function PhaseSection({
   );
 }
 
-// ─── Placeholder sections (Sprint 8-9 fill the rest in) ──────────────────
-
-function ReviewSectionPlaceholder({
-  approvedCount,
-  pendingReviewCount,
-}: {
-  approvedCount: number;
-  pendingReviewCount: number;
-}) {
-  return (
-    <PhaseSection id="review" title="Review" icon={CheckCircle2}>
-      <p className="font-mono text-sm text-terminal-muted">
-        Sprint 8 wires the live run embed + approve/reject/retry/edit
-        controls. Currently: {approvedCount} approved · {pendingReviewCount}{" "}
-        awaiting review.
-      </p>
-    </PhaseSection>
-  );
-}
+// ─── Placeholder sections (Sprint 9 fills the rest in) ───────────────────
 
 function SynthesisSectionPlaceholder({
   hasSynthesisRun,

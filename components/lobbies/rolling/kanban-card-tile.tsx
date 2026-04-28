@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 
 import type { LobbyCard, LobbySeat } from "@/lib/db/sqlite-lobbies-schema";
 import type { LobbyCardStatus } from "@/lib/lobbies/types";
+import type { RunStreamState } from "@/lib/lobbies/client/run-stream";
 
 import type { DnDItemProps, DnDState } from "./use-keyboard-dnd";
 
@@ -57,6 +58,14 @@ import type { DnDItemProps, DnDState } from "./use-keyboard-dnd";
 export type KanbanCardTileProps = {
   card: LobbyCard;
   seat: LobbySeat | null;
+  /**
+   * Live run-state for this card from `useLobbyRunStream`. Undefined when
+   * the SSE stream hasn't seen any progress events for this card yet (or
+   * the page is loading without an active run-stream consumer). When
+   * present and the card is `running`, the tile renders a single-line
+   * progress hint so the captain sees activity without opening the modal.
+   */
+  runState?: RunStreamState;
   /** True when the lobby is in `rolling` and the card can be edited. */
   isEditable: boolean;
   /**
@@ -149,6 +158,7 @@ const STATUS_VISUALS: Record<LobbyCardStatus, StatusVisual> = {
 export const KanbanCardTile = memo(function KanbanCardTile({
   card,
   seat,
+  runState,
   isEditable,
   isBusy,
   isPickedUp,
@@ -248,6 +258,20 @@ export const KanbanCardTile = memo(function KanbanCardTile({
             </span>
           )}
         </div>
+
+        {/* Live progress hint — only for `running` cards. Latest fragment
+            text from the SSE stream; the captain sees activity without
+            opening the modal. The `aria-live="polite"` annotation lets
+            screen readers announce updates without nagging. */}
+        {isRunning && runState?.latestText && (
+          <p
+            role="status"
+            aria-live="polite"
+            className="rounded border border-sky-500/30 bg-sky-500/5 px-2 py-1 font-mono text-[10px] text-sky-700 dark:text-sky-300 line-clamp-2"
+          >
+            {runState.latestText}
+          </p>
+        )}
 
         {/* Failure reason — visible inline so the captain doesn't have to
             open the run modal to see why a card failed. */}
