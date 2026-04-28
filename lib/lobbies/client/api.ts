@@ -337,7 +337,6 @@ export type LobbyTransitionBody =
     }
   | {
       action: "complete_synthesis";
-      expectedVersion: number;
       synthesisRunId: string;
       outputArtifactId: string;
     }

@@ -96,7 +96,6 @@ describe("lobby transition route", () => {
         headers: { "X-Internal-Auth": "test-internal-secret" },
         body: JSON.stringify({
           action: "complete_synthesis",
-          expectedVersion: 7,
           synthesisRunId: "synthesis-run-1",
           outputArtifactId: "artifact-1",
         }),

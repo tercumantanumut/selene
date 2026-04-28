@@ -5,7 +5,7 @@
  *     { action: "ready_roster" | "accept_plan" | "enter_review"
  *             | "start_synthesis" | "complete_synthesis"
  *             | "abort",
- *       expectedVersion: number,
+ *       expectedVersion: number, // omitted for internal complete_synthesis
  *       ...action-specific params }
  *
  * The action discriminator selects which `transitionLobby...` service to
@@ -86,7 +86,6 @@ const transitionBodySchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      ...baseFields,
       action: z.literal("complete_synthesis"),
       synthesisRunId: z.string().min(1),
       /**

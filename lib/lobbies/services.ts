@@ -43,6 +43,7 @@ import {
   type LobbyCardDependency,
   type LobbySeat,
 } from "@/lib/db/sqlite-lobbies-schema";
+import { taskRegistry } from "@/lib/background-tasks/registry";
 import { appendLobbyEvent } from "@/lib/lobbies/queries";
 // Sprint 5.3: `MutationResult` flipped to its canonical home in
 // `@/lib/lobbies/types`. Same fix that landed in `api-helpers.ts` during
@@ -417,6 +418,17 @@ export async function replaceDependenciesForCardWithCycleCheck(input: {
 // ---------------------------------------------------------------------------
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+function completeSoloStoryTaskRegistryRun(
+  runId: string,
+  status: "succeeded" | "cancelled" | "failed",
+): void {
+  const registryTask = taskRegistry.get(runId);
+  const durationMs = registryTask
+    ? Date.now() - new Date(registryTask.startedAt).getTime()
+    : undefined;
+  taskRegistry.updateStatus(runId, status, { durationMs });
+}
 
 /**
  * Mark every `pending` card whose required deps are all `approved` (and whose
@@ -1279,6 +1291,7 @@ export async function completeSynthesis(input: {
   outputArtifactId: string;
 }): Promise<MutationResult<Lobby>> {
   let shouldAppendEvent = false;
+  let shouldCompleteRegistry = false;
   const result = db
     .transaction((tx): MutationResult<Lobby> => {
       const [lobby] = tx
@@ -1309,6 +1322,8 @@ export async function completeSynthesis(input: {
             message: "Synthesis replay outputArtifactId does not match completed lobby.",
           };
         }
+        shouldAppendEvent = false;
+        shouldCompleteRegistry = true;
         return { ok: true, row: lobby };
       }
       if (lobby.status !== "review") {
@@ -1361,6 +1376,7 @@ export async function completeSynthesis(input: {
         };
       }
       if (run.status === "running") {
+        shouldCompleteRegistry = true;
         const completedAt = nowIso();
         tx.update(agentRuns)
           .set({
@@ -1403,14 +1419,20 @@ export async function completeSynthesis(input: {
       shouldAppendEvent = true;
       return { ok: true, row: nextLobby };
     });
-  if (result.ok && shouldAppendEvent) {
-    await appendLobbyEvent({
-      lobbyId: result.row.id,
-      type: "lobby.completed",
-      actor: "system",
-      agentRunId: input.synthesisRunId,
-      payload: { outputArtifactId: input.outputArtifactId },
-    });
+  if (result.ok) {
+    if (shouldCompleteRegistry) {
+      completeSoloStoryTaskRegistryRun(input.synthesisRunId, "succeeded");
+    }
+
+    if (shouldAppendEvent) {
+      await appendLobbyEvent({
+        lobbyId: result.row.id,
+        type: "lobby.completed",
+        actor: "system",
+        agentRunId: input.synthesisRunId,
+        payload: { outputArtifactId: input.outputArtifactId },
+      });
+    }
   }
   return result;
 }
