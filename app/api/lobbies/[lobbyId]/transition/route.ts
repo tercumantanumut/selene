@@ -47,48 +47,65 @@ const baseFields = {
   expectedVersion: expectedVersionField,
 };
 
+// Sprint 5.3: every arm is `.strict()`. The discriminated union doesn't reject
+// unknown fields by default — a typo'd `plannerScop` on `ready_roster` would
+// silently drop, the planner would launch with the default scope, and the
+// captain would never know their override didn't take effect. Strict surfaces
+// the typo as a 400 with the field name.
 const transitionBodySchema = z.discriminatedUnion("action", [
-  z.object({
-    ...baseFields,
-    action: z.literal("ready_roster"),
-    plannerScope: permissionScopeV1Schema.optional(),
-    plannerCharacterId: z.string().min(1).optional(),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("accept_plan"),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("enter_review"),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("start_synthesis"),
-    synthesizerScope: permissionScopeV1Schema.optional(),
-    synthesizerCharacterId: z.string().min(1).optional(),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("complete_synthesis"),
-    synthesisRunId: z.string().min(1),
-    /**
-     * SPEC §5: complete_synthesis stores the final artifact id on the
-     * lobby. The orchestration layer (Sprint 4) creates the artifact and
-     * passes its id here. Required.
-     */
-    outputArtifactId: z.string().min(1),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("abort"),
-    /**
-     * SPEC §5: cancel = stop now; wait = drain then stop; abandon =
-     * mark aborted and ignore late callbacks.
-     */
-    mode: z.enum(["cancel", "wait", "abandon"]).default("cancel"),
-    reason: z.string().max(500).optional(),
-  }),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("ready_roster"),
+      plannerScope: permissionScopeV1Schema.optional(),
+      plannerCharacterId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("accept_plan"),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("enter_review"),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("start_synthesis"),
+      synthesizerScope: permissionScopeV1Schema.optional(),
+      synthesizerCharacterId: z.string().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("complete_synthesis"),
+      synthesisRunId: z.string().min(1),
+      /**
+       * SPEC §5: complete_synthesis stores the final artifact id on the
+       * lobby. The orchestration layer (Sprint 4) creates the artifact and
+       * passes its id here. Required.
+       */
+      outputArtifactId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("abort"),
+      /**
+       * SPEC §5: cancel = stop now; wait = drain then stop; abandon =
+       * mark aborted and ignore late callbacks.
+       */
+      mode: z.enum(["cancel", "wait", "abandon"]).default("cancel"),
+      reason: z.string().max(500).optional(),
+    })
+    .strict(),
 ]);
 
 // ---------------------------------------------------------------------------

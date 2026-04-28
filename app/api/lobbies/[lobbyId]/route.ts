@@ -53,18 +53,27 @@ export async function GET(req: Request, { params }: RouteParams) {
 // PATCH
 // ---------------------------------------------------------------------------
 
-const patchLobbyBodySchema = z.object({
-  expectedVersion: expectedVersionField,
-  patch: z
-    .object({
-      title: z.string().min(1).max(200).optional(),
-      goal: z.string().min(1).optional(),
-      config: lobbyConfigV1Schema.optional(),
-    })
-    .refine((p) => Object.keys(p).length > 0, {
-      message: "patch must contain at least one field.",
-    }),
-});
+// `.strict()` on both the envelope and the inner patch — `{ patch: { goalTxt:
+// "x" } }` would otherwise drop the typo and the `.refine()` would then see a
+// zero-key patch and 400. With `.strict()` the typo itself is the 400 message,
+// pointing at the actual mistake. Sprint 5.3 reviewer flagged this as HIGH —
+// the original .strict() rollout in Sprint 5.2 only covered the two POST
+// routes, leaving every PATCH/PUT/transition route still loose.
+const patchLobbyBodySchema = z
+  .object({
+    expectedVersion: expectedVersionField,
+    patch: z
+      .object({
+        title: z.string().min(1).max(200).optional(),
+        goal: z.string().min(1).optional(),
+        config: lobbyConfigV1Schema.optional(),
+      })
+      .strict()
+      .refine((p) => Object.keys(p).length > 0, {
+        message: "patch must contain at least one field.",
+      }),
+  })
+  .strict();
 
 export async function PATCH(req: Request, { params }: RouteParams) {
   const ctx = await withLobbyAuth(req);

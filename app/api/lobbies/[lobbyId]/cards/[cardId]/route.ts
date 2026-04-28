@@ -33,22 +33,29 @@ import {
 
 type RouteParams = { params: Promise<{ lobbyId: string; cardId: string }> };
 
-const patchCardBodySchema = z.object({
-  expectedVersion: expectedVersionField,
-  patch: z
-    .object({
-      title: z.string().min(1).max(200).optional(),
-      description: z.string().max(8000).optional(),
-      acceptanceCriteria: z.array(acceptanceCriterionV1Schema).optional(),
-      assignedSeatId: z.string().min(1).nullable().optional(),
-      position: z.number().int().nonnegative().optional(),
-      column: cardColumnFilterSchema.optional(),
-      maxAttempts: z.number().int().positive().max(20).optional(),
-    })
-    .refine((p) => Object.keys(p).length > 0, {
-      message: "patch must include at least one field.",
-    }),
-});
+// Sprint 5.3: `.strict()` on envelope and inner patch — same rationale as
+// `patchLobbyBodySchema`. Without it, a typo'd field gets dropped and the
+// `.refine()` then 400s on "zero patch keys" instead of pointing at the
+// actual mistake.
+const patchCardBodySchema = z
+  .object({
+    expectedVersion: expectedVersionField,
+    patch: z
+      .object({
+        title: z.string().min(1).max(200).optional(),
+        description: z.string().max(8000).optional(),
+        acceptanceCriteria: z.array(acceptanceCriterionV1Schema).optional(),
+        assignedSeatId: z.string().min(1).nullable().optional(),
+        position: z.number().int().nonnegative().optional(),
+        column: cardColumnFilterSchema.optional(),
+        maxAttempts: z.number().int().positive().max(20).optional(),
+      })
+      .strict()
+      .refine((p) => Object.keys(p).length > 0, {
+        message: "patch must include at least one field.",
+      }),
+  })
+  .strict();
 
 export async function PATCH(req: Request, { params }: RouteParams) {
   const ctx = await withLobbyAuth(req);

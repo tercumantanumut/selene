@@ -98,10 +98,19 @@ export function useLobbyDetail(
   const [loading, setLoading] = useState(lobbyId !== null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Sprint 5.3: track which `lobbyId` the current `data` came from, so we
+   * can clear stale data on lobby change. Without this, navigating from
+   * lobby A to lobby B briefly renders B's page header / phase rail with
+   * A's status — every consumer downstream of `data.lobby.status` would
+   * paint the wrong phase for one tick before the new fetch resolves.
+   */
+  const dataLobbyIdRef = useRef<string | null>(null);
 
   const run = useCallback(async () => {
     if (!lobbyId) {
       setData(null);
+      dataLobbyIdRef.current = null;
       setLoading(false);
       setError(null);
       return;
@@ -110,11 +119,21 @@ export function useLobbyDetail(
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // Sprint 5.3: drop stale data BEFORE issuing the new fetch so consumers
+    // see the loading state instead of the previous lobby's snapshot.
+    if (dataLobbyIdRef.current !== lobbyId) {
+      setData(null);
+      dataLobbyIdRef.current = null;
+    }
+
     setLoading(true);
     setError(null);
     try {
       const result = await getLobbyDetail(lobbyId, controller.signal);
-      if (!controller.signal.aborted) setData(result);
+      if (!controller.signal.aborted) {
+        setData(result);
+        dataLobbyIdRef.current = lobbyId;
+      }
     } catch (err) {
       if (controller.signal.aborted) return;
       setError(getErrorMessage(err, "Failed to load lobby"));
@@ -163,6 +182,22 @@ export function useLobbyEvents(
    * lobby's UI.
    */
   const mountedRef = useRef(true);
+  /**
+   * Sprint 5.3: monotonically-incrementing generation token. The mount /
+   * lobbyId-change effect bumps it; every async closure (`run`,
+   * `appendFromAfter`) captures the value at call time and bails on
+   * resolve if the live generation has moved past it. AbortController
+   * already covers the strict in-flight case, but a captain who fires
+   * `appendFromAfter(cursor)` from a setTimeout/SSE callback is past the
+   * abort window — without this token, that response could land in the
+   * NEXT lobby's data after a lobby change.
+   *
+   * Generation also guards the post-merge sort: events arriving from the
+   * cursor request might be older than already-merged SSE events when the
+   * server replays the boundary, so re-sort by `sequence` after dedup so
+   * consumers can render in the right order.
+   */
+  const generationRef = useRef(0);
 
   const initialLimit = options.initialLimit;
   const afterSequence = options.afterSequence;
@@ -177,6 +212,7 @@ export function useLobbyEvents(
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const myGen = generationRef.current;
 
     setLoading(true);
     setError(null);
@@ -186,12 +222,15 @@ export function useLobbyEvents(
         afterSequence,
         signal: controller.signal,
       });
-      if (!controller.signal.aborted) setData(result);
+      if (controller.signal.aborted || generationRef.current !== myGen) return;
+      setData(result);
     } catch (err) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || generationRef.current !== myGen) return;
       setError(getErrorMessage(err, "Failed to load events"));
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!controller.signal.aborted && generationRef.current === myGen) {
+        setLoading(false);
+      }
     }
   }, [lobbyId, initialLimit, afterSequence]);
 
@@ -199,8 +238,10 @@ export function useLobbyEvents(
    * Pull events newer than `afterSequence` and append. Used by SSE-recovery
    * paths so we don't lose events while the stream reconnects.
    *
-   * Aborts the previous append request before starting a new one, and bails
-   * out entirely if the hook has unmounted by the time the response lands.
+   * Aborts the previous append request before starting a new one, captures
+   * the generation token at call time, and bails on resolve if either the
+   * abort fired or the live generation moved on (e.g., the captain navigated
+   * to a different lobby between our request and its response).
    */
   const appendFromAfter = useCallback(
     async (cursor: number) => {
@@ -208,13 +249,20 @@ export function useLobbyEvents(
       appendAbortRef.current?.abort();
       const controller = new AbortController();
       appendAbortRef.current = controller;
+      const myGen = generationRef.current;
 
       try {
         const result = await listLobbyEvents(lobbyId, {
           afterSequence: cursor,
           signal: controller.signal,
         });
-        if (controller.signal.aborted || !mountedRef.current) return;
+        if (
+          controller.signal.aborted ||
+          !mountedRef.current ||
+          generationRef.current !== myGen
+        ) {
+          return;
+        }
         setData((prev) => {
           const merged = [...(prev?.events ?? []), ...result.events];
           // De-dup on (lobbyId, sequence) — server allocator guarantees
@@ -226,10 +274,23 @@ export function useLobbyEvents(
             seen.add(e.sequence);
             unique.push(e);
           }
+          // Sprint 5.3: sort by sequence after dedup. SSE may have already
+          // appended events newer than the cursor's response by the time it
+          // resolves, so a naive concat leaves the timeline out of order
+          // (`unique = [old SSE batch, …, late cursor batch]`). Consumers
+          // (e.g., the activity rail) render in array order, so we re-sort
+          // to keep the timeline monotonically increasing.
+          unique.sort((a, b) => a.sequence - b.sequence);
           return { events: unique };
         });
       } catch (err) {
-        if (controller.signal.aborted || !mountedRef.current) return;
+        if (
+          controller.signal.aborted ||
+          !mountedRef.current ||
+          generationRef.current !== myGen
+        ) {
+          return;
+        }
         setError(getErrorMessage(err, "Failed to append events"));
       }
     },
@@ -238,6 +299,7 @@ export function useLobbyEvents(
 
   useEffect(() => {
     mountedRef.current = true;
+    generationRef.current += 1;
     void run();
     return () => {
       mountedRef.current = false;

@@ -32,20 +32,27 @@ type RouteParams = { params: Promise<{ lobbyId: string; seatId: string }> };
 
 const seatStatusSchema = z.enum(["empty", "ready", "busy", "idle"]);
 
-const patchSeatBodySchema = z.object({
-  expectedVersion: expectedVersionField,
-  patch: z
-    .object({
-      role: z.string().min(1).max(80).optional(),
-      agentId: z.string().min(1).nullable().optional(),
-      position: z.number().int().nonnegative().optional(),
-      permissionScope: permissionScopeV1Schema.optional(),
-      status: seatStatusSchema.optional(),
-    })
-    .refine((p) => Object.keys(p).length > 0, {
-      message: "patch must include at least one field.",
-    }),
-});
+// Sprint 5.3: `.strict()` on envelope and inner patch — same rule as every
+// other lobby route. Without it a typo'd `permssionScope` would be silently
+// dropped and the `.refine()` would then 400 with the misleading "zero patch
+// keys" message instead of pointing at the actual mistake.
+const patchSeatBodySchema = z
+  .object({
+    expectedVersion: expectedVersionField,
+    patch: z
+      .object({
+        role: z.string().min(1).max(80).optional(),
+        agentId: z.string().min(1).nullable().optional(),
+        position: z.number().int().nonnegative().optional(),
+        permissionScope: permissionScopeV1Schema.optional(),
+        status: seatStatusSchema.optional(),
+      })
+      .strict()
+      .refine((p) => Object.keys(p).length > 0, {
+        message: "patch must include at least one field.",
+      }),
+  })
+  .strict();
 
 export async function PATCH(req: Request, { params }: RouteParams) {
   const ctx = await withLobbyAuth(req);

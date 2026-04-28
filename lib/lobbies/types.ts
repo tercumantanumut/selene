@@ -22,8 +22,10 @@
  * layer validates with zod; this type is what TS code actually uses to
  * read/write the field.
  *
- * - `allowedFolderIds`: schema stub for V1.1+ folder scoping (SPEC §3 #6).
- *   Stored in V1, not yet enforced by the tool gate.
+ * - `allowedFolderIds`: schema stub for V1.1+ folder scoping (SPEC §3 #11
+ *   — "Permission scope V1 is tool-list only" — explicitly carves the
+ *   field out as a forward-looking placeholder; the V1 tool gate ignores
+ *   it). Stored in V1, not yet enforced.
  */
 export type LobbyPermissionScopeV1 = {
   version: 1;

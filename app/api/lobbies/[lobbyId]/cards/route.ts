@@ -90,16 +90,20 @@ export async function GET(req: Request, { params }: RouteParams) {
 // POST — create card.
 // ---------------------------------------------------------------------------
 
-const createCardBodySchema = z.object({
-  title: z.string().min(1).max(200),
-  description: z.string().max(8000).optional(),
-  acceptanceCriteria: z.array(acceptanceCriterionV1Schema).optional(),
-  assignedSeatId: z.string().min(1).nullable().optional(),
-  position: z.number().int().nonnegative().optional(),
-  column: cardColumnFilterSchema.optional(),
-  status: cardStatusFilterSchema.optional(),
-  maxAttempts: z.number().int().positive().max(20).optional(),
-});
+// `.strict()` — Sprint 5.3: same rule as every other lobby route. Unknown
+// keys 400 instead of being silently dropped on the way to the DB.
+const createCardBodySchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    description: z.string().max(8000).optional(),
+    acceptanceCriteria: z.array(acceptanceCriterionV1Schema).optional(),
+    assignedSeatId: z.string().min(1).nullable().optional(),
+    position: z.number().int().nonnegative().optional(),
+    column: cardColumnFilterSchema.optional(),
+    status: cardStatusFilterSchema.optional(),
+    maxAttempts: z.number().int().positive().max(20).optional(),
+  })
+  .strict();
 
 export async function POST(req: Request, { params }: RouteParams) {
   const ctx = await withLobbyAuth(req);

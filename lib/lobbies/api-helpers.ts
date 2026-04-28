@@ -81,11 +81,18 @@ export async function withLobbyAuth(
     const message =
       error instanceof Error ? error.message : "Unauthorized";
     if (message === "Unauthorized" || message === "Invalid session") {
+      // Auth-shaped failure — safe to echo back. The two strings above are
+      // the only ones `requireAuth` itself throws, and both are content-free.
       return NextResponse.json({ error: message }, { status: 401 });
     }
+    // Anything else came from `getOrCreateLocalUser` (DB outage, drizzle
+    // wrapping a sqlite error, schema mismatch, etc.). The raw `error.message`
+    // from drizzle/sqlite regularly contains file paths, schema fragments,
+    // and bound parameter values — never echo it to the client. Sprint 5.3
+    // reviewer flagged this as a HIGH information-leak risk.
     console.error("[lobbies] auth error:", error);
     return NextResponse.json(
-      { error: message },
+      { error: "Authentication system unavailable" },
       { status: 500 },
     );
   }

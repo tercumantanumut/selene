@@ -4,7 +4,10 @@
  * `/lobbies/[id]` — captain's lobby workspace shell (client component).
  *
  * Houses the full Solo Story flow as scroll-anchored sections (NOT a wizard
- * with hidden tabs — SPEC §3 #11 mandates progressive reveal). Sprint 5
+ * with hidden tabs — the FE Architect report's "progressive reveal"
+ * guidance for Solo Story Mode; SPEC §3 itself doesn't list it as a hard
+ * constraint, but it's the design intent the surface is built around).
+ * Sprint 5
  * lands the SHELL: data fetch, phase progress rail, and section placeholders
  * the later sprints fill in:
  *   - Sprint 6 → RosterSection (this page renders only the seat count today).
@@ -24,6 +27,17 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo } from "react";
+
+/**
+ * Sprint 5.3: isomorphic `useLayoutEffect` shim. `useLayoutEffect` warns
+ * during server rendering ("useLayoutEffect does nothing on the server")
+ * because it has no useful semantics there. Even with `"use client"`,
+ * Next.js renders the component once on the server for the initial HTML,
+ * so the warning fires on every cold load. Falling back to `useEffect`
+ * server-side silences the warning without changing client behaviour.
+ */
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
 import {
   AlertCircle,
   ArrowLeft,
@@ -127,18 +141,21 @@ export default function LobbyDetailClient() {
 
   // Once the lobby's status is known, seed the default expanded sections /
   // active section *idempotently*. `seedDefaultsForStatus` is a no-op after
-  // the first call per lobbyId, so:
-  //   1. user toggles between mount and data-load survive (the seed only
-  //      fires once the data lands, then never again),
-  //   2. SSE-driven status flips don't blow away expansion,
-  //   3. React 18 strict-mode double-invoke is safe.
-  // `useLayoutEffect` so the store update runs before paint — render 1
-  // (with stale store value) is committed but not yet painted; the layout
-  // effect updates the store; React schedules a re-render before paint
-  // with the right expanded sections. Eliminates the visible flicker for
-  // non-roster lobbies (HIGH finding, Sprint 5.1 review).
+  // the first call per (lobbyId, status) pair, which protects three things:
+  //   1. SSE-driven status flips don't reset expansion the captain has
+  //      manually changed since the seed fired,
+  //   2. React 18 strict-mode double-invoke can't double-seed,
+  //   3. a refetch that returns the same status is a no-op rather than a
+  //      destructive reset of the captain's section toggles.
+  // `useIsomorphicLayoutEffect` so the store update runs before paint on
+  // the client — render 1 (with stale store value) is committed but not
+  // yet painted; the layout effect updates the store; React schedules a
+  // re-render before paint with the right expanded sections. Eliminates
+  // the visible flicker for non-roster lobbies (HIGH finding, Sprint 5.1
+  // review). On the server we fall back to `useEffect` to silence the
+  // SSR warning — see shim definition above.
   const initialStatus = data?.lobby.status;
-  useLayoutEffect(() => {
+  useIsomorphicLayoutEffect(() => {
     if (lobbyId && initialStatus) {
       seedDefaultsForStatus(lobbyId, initialStatus);
     }

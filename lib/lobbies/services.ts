@@ -42,13 +42,16 @@ import {
   type LobbyCardDependency,
   type LobbySeat,
 } from "@/lib/db/sqlite-lobbies-schema";
-import {
-  appendLobbyEvent,
-  type MutationResult,
-} from "@/lib/lobbies/queries";
+import { appendLobbyEvent } from "@/lib/lobbies/queries";
+// Sprint 5.3: `MutationResult` flipped to its canonical home in
+// `@/lib/lobbies/types`. Same fix that landed in `api-helpers.ts` during
+// Sprint 5.2 — keeping the type import on `queries` would re-introduce
+// the (route|service) → queries → drizzle dependency chain that the
+// types-as-canonical-source split was meant to break.
 import type {
   LobbyCardOutputV1,
   LobbyPermissionScopeV1,
+  MutationResult,
   SoloStoryRunMetadata,
   SoloStoryRunRole,
 } from "@/lib/lobbies/types";

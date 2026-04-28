@@ -31,14 +31,23 @@ import {
 
 type RouteParams = { params: Promise<{ lobbyId: string; cardId: string }> };
 
-const replaceDependenciesBodySchema = z.object({
-  dependencies: z.array(
-    z.object({
-      dependsOnCardId: z.string().min(1),
-      optional: z.boolean().optional(),
-    }),
-  ),
-});
+// Sprint 5.3: `.strict()` on envelope and nested element. Without it a typo'd
+// `dependsOnCard` (missing the trailing `Id`) silently produces a dependency
+// with `undefined` target which the service-layer min(1) check then rejects
+// with a confusing message. With `.strict()` the typo itself surfaces as the
+// 400 reason.
+const replaceDependenciesBodySchema = z
+  .object({
+    dependencies: z.array(
+      z
+        .object({
+          dependsOnCardId: z.string().min(1),
+          optional: z.boolean().optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 export async function PUT(req: Request, { params }: RouteParams) {
   const ctx = await withLobbyAuth(req);

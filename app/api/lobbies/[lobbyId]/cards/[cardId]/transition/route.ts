@@ -50,36 +50,52 @@ const baseFields = {
   expectedVersion: expectedVersionField,
 };
 
+// Sprint 5.3: every arm is `.strict()`. Without it a `cancelDependants` typo
+// on `reopen` would be silently dropped and the captain would think they
+// cancelled in-flight dependents when they didn't. Strict surfaces the typo
+// as a 400 on the field name.
 const transitionBodySchema = z.discriminatedUnion("action", [
-  z.object({
-    ...baseFields,
-    action: z.literal("start"),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("cancel"),
-    reason: z.string().max(500).optional(),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("approve"),
-    notes: z.string().max(4000).optional(),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("reject"),
-    notes: z.string().min(1).max(4000),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("retry"),
-    overrideAttemptCap: z.boolean().optional(),
-  }),
-  z.object({
-    ...baseFields,
-    action: z.literal("reopen"),
-    cancelDependents: z.boolean().optional(),
-  }),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("start"),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("cancel"),
+      reason: z.string().max(500).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("approve"),
+      notes: z.string().max(4000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("reject"),
+      notes: z.string().min(1).max(4000),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("retry"),
+      overrideAttemptCap: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...baseFields,
+      action: z.literal("reopen"),
+      cancelDependents: z.boolean().optional(),
+    })
+    .strict(),
 ]);
 
 // ---------------------------------------------------------------------------

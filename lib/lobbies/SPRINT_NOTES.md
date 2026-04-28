@@ -269,7 +269,14 @@ before Sprint 6 begins.
 ### Verification
 
 - `npx tsc --noEmit` — clean.
-- Manual a11y sweep: filter group, status pills, and phase rail all
-  read correctly with VoiceOver (rotor → role + label + state).
-- Visual contrast spot-check on the default cream theme: muted body
-  text, status pill labels, and unreached phase pill all clear AA.
+- Contrast math (no live VoiceOver / browser run; this sprint was
+  executed autonomously). The token darkening is computed against the
+  `terminal-cream` (HSL L=89%) background:
+  - `--terminal-muted` 38% → ratio ~5.0:1 vs cream (≥4.5:1 small
+    text — passes AA),
+  - midnight/forest/mono/ocean/aurora at 35% → ~5.6:1 vs their light
+    backgrounds (passes AA),
+  - lavender/rose at 38% → ~5.0:1 vs their light backgrounds (passes
+    AA).
+  Manual VoiceOver sweep + per-theme DevTools contrast spot-check is
+  deferred to a dedicated a11y QA pass — see Deferred above.

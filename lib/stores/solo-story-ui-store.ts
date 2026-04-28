@@ -164,7 +164,8 @@ const ALL_COLLAPSED: Record<LobbyPhaseSection, boolean> = {
  * lobby has reached `review` *and* a synth run has been kicked off — the
  * caller must override `synthesis: true` when `hasSynthesisRun` is true.
  *
- * SPEC §3 #11 (progressive reveal): never collapse the active phase.
+ * Progressive-reveal rule (FE Architect report — SPEC §3 has no
+ * matching hard-constraint number): never collapse the active phase.
  */
 function defaultExpandedForStatus(
   status: LobbyStatus,

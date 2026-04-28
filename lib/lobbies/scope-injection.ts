@@ -147,6 +147,21 @@ function extractSoloStorySnapshot(
         (t): t is string => typeof t === "string",
       )
     : undefined;
+  // Sprint 5.3: rehydrate `allowedFolderIds` from the snapshot. Without
+  // this, the V1 → V1.1 upgrade path quietly loses the field on every run
+  // even though the snapshot wrote it — the V1 tool gate ignores the
+  // value but the field MUST round-trip through this reconstruction so
+  // V1.1 (which will enforce folder scoping at the FS layer) can read it
+  // off the snapshot just like every other scope dimension. Validating
+  // for `string[]` shape on the way out keeps the invariant the rest of
+  // the codebase relies on (SPEC §3 #11 — `.strict()` on the scope
+  // schema means we're allowed to assume the field is well-typed when
+  // present).
+  const allowedFolderIds = Array.isArray(scope.allowedFolderIds)
+    ? (scope.allowedFolderIds as unknown[]).filter(
+        (t): t is string => typeof t === "string",
+      )
+    : undefined;
 
   return {
     lobbyId: ss.lobbyId,
@@ -158,6 +173,7 @@ function extractSoloStorySnapshot(
       mode: "tool_list",
       allowedTools,
       deniedTools,
+      allowedFolderIds,
     },
     permissionScopeSnapshotAt:
       typeof ss.permissionScopeSnapshotAt === "string"

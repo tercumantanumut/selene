@@ -27,18 +27,27 @@ type RouteParams = { params: Promise<{ lobbyId: string }> };
 
 const seatStatusSchema = z.enum(["empty", "ready", "busy", "idle"]);
 
-const replaceSeatsBodySchema = z.object({
-  expectedLobbyVersion: expectedVersionField,
-  seats: z.array(
-    z.object({
-      role: z.string().min(1).max(80),
-      position: z.number().int().nonnegative(),
-      agentId: z.string().min(1).nullable().optional(),
-      permissionScope: permissionScopeV1Schema.optional(),
-      status: seatStatusSchema.optional(),
-    }),
-  ),
-});
+// Sprint 5.3: `.strict()` on envelope and nested seat element. Without it, a
+// typo'd `permssionScope` would be silently dropped and the seat would be
+// created without a permission scope. Same rationale as every other lobby
+// route — Sprint 5.3 reviewer flagged this as the missed PUT/PATCH/transition
+// follow-up to Sprint 5.2's POST-only `.strict()` rollout.
+const replaceSeatsBodySchema = z
+  .object({
+    expectedLobbyVersion: expectedVersionField,
+    seats: z.array(
+      z
+        .object({
+          role: z.string().min(1).max(80),
+          position: z.number().int().nonnegative(),
+          agentId: z.string().min(1).nullable().optional(),
+          permissionScope: permissionScopeV1Schema.optional(),
+          status: seatStatusSchema.optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 export async function PUT(req: Request, { params }: RouteParams) {
   const ctx = await withLobbyAuth(req);

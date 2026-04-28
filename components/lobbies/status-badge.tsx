@@ -43,8 +43,13 @@ const STATUS_CONFIG: Record<LobbyStatus, { label: string; className: string }> =
     className: "bg-terminal-muted/20 text-terminal-dark border-terminal-muted/50",
   },
   aborted: {
+    // Sprint 5.3: text-red-700 on bg-red-500/15 over the default cream
+    // background fell to ~4.36:1 — fails AA at small text. Switched to
+    // `text-terminal-dark` (light mode) / `text-red-100` (dark mode) so the
+    // tinted background carries the colour identity, identical pattern to
+    // the other 5 badges.
     label: "Aborted",
-    className: "bg-red-500/15 text-red-700 border-red-500/40 dark:text-red-200",
+    className: "bg-red-500/20 text-terminal-dark border-red-500/50 dark:text-red-100",
   },
 };
 
@@ -60,7 +65,12 @@ export function LobbyStatusBadge({
     <Badge
       variant="outline"
       aria-label={`Lobby status: ${cfg.label}`}
-      className={cn("font-mono text-xs", cfg.className, className)}
+      // `border` width is required here — shadcn's `Badge` base + `outline`
+      // variant declare colour utilities only, not border-width. Without the
+      // explicit `border`, every `border-{color}/{N}` class in STATUS_CONFIG
+      // would be a no-op and only the tint background would carry the
+      // colour identity. Sprint 5.3 audit caught this.
+      className={cn("border font-mono text-xs", cfg.className, className)}
     >
       {cfg.label}
     </Badge>
