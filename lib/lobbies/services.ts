@@ -198,10 +198,19 @@ export class DependencyCycleError extends Error {
  * Note: dependency edits don't emit a dedicated `dependencies.replaced`
  * event in V1 (the next state-affecting transition will fire its own
  * event). Add one here later if the UI needs to react in real time.
+ *
+ * Sprint 7B.1:
+ *   - R1-H2: require `expectedVersion`. Compare to `card.lockVersion`,
+ *     return VERSION_CONFLICT on mismatch, bump on success. Without this,
+ *     concurrent dep edits silently clobbered each other (SPEC §3 #10).
+ *   - R1-H3: block dep edits while the card is `running`. Dependency
+ *     edits ARE structural per SPEC §3 #13 — the file header acknowledges
+ *     it but the gate was missing. Captain must cancel + edit + retry.
  */
 export async function replaceDependenciesForCardWithCycleCheck(input: {
   lobbyId: string;
   cardId: string;
+  expectedVersion: number;
   dependencies: Array<{ dependsOnCardId: string; optional?: boolean }>;
 }): Promise<MutationResult<LobbyCardDependency[]>> {
   try {
@@ -222,6 +231,25 @@ export async function replaceDependenciesForCardWithCycleCheck(input: {
           ok: false,
           reason: "NOT_FOUND",
           message: `Card ${input.cardId} not found in lobby ${input.lobbyId}.`,
+        };
+      }
+
+      // R1-H2: optimistic-concurrency check. SPEC §3 #10.
+      if (card.lockVersion !== input.expectedVersion) {
+        return {
+          ok: false,
+          reason: "VERSION_CONFLICT",
+          message: `Card ${input.cardId} is at version ${card.lockVersion}, expected ${input.expectedVersion}.`,
+          currentVersion: card.lockVersion,
+        };
+      }
+
+      // R1-H3: SPEC §3 #13 — block structural edits to running cards.
+      if (card.status === "running") {
+        return {
+          ok: false,
+          reason: "INVALID_TRANSITION",
+          message: `Cannot edit dependencies of running card ${input.cardId}. Cancel first, then edit and retry.`,
         };
       }
 
@@ -305,6 +333,16 @@ export async function replaceDependenciesForCardWithCycleCheck(input: {
           .all();
         inserted.push(row);
       }
+
+      // R1-H2: bump card.lockVersion so concurrent dep PUTs from a stale
+      // tab see VERSION_CONFLICT on their next attempt.
+      tx.update(lobbyCards)
+        .set({
+          lockVersion: card.lockVersion + 1,
+          updatedAt: nowIso(),
+        })
+        .where(eq(lobbyCards.id, input.cardId))
+        .run();
 
       return { ok: true, row: inserted };
     });

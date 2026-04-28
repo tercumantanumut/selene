@@ -28,7 +28,7 @@
  *     validates with full DFS — this is just a fast-path UX hint.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -88,12 +88,26 @@ export function CardDependencyEditor({
   const [draft, setDraft] = useState<Map<string, DraftDep>>(() => new Map());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const errorId = useId();
 
-  // Reseed every time the dialog is (re-)opened with a different card.
+  // Sprint 7B.1 (R1-H4 + R2-H6): the reseed effect's deps used to include
+  // `card` and `allDependencies`. `allDependencies` is a fresh array
+  // reference on every parent refetch (which fires from SSE-driven
+  // `onChanged()` and from sibling kanban drops). Mid-edit, the captain
+  // lost every checkbox they toggled. Sprint 7A.1 already shipped this
+  // exact fix for `CardEditDialog` — the lesson didn't carry over to the
+  // dep editor in Sprint 7B.
+  //
+  // Fix: depend only on the open→true edge for a stable (id, lockVersion)
+  // pair. Read `allDependencies` through a ref so the seed pulls the latest
+  // snapshot when the dialog opens, but doesn't re-fire mid-edit.
+  const allDependenciesRef = useRef(allDependencies);
+  allDependenciesRef.current = allDependencies;
+
   useEffect(() => {
     if (!open || !card) return;
     const existing = new Map<string, DraftDep>();
-    for (const dep of allDependencies) {
+    for (const dep of allDependenciesRef.current) {
       if (dep.cardId !== card.id) continue;
       existing.set(dep.dependsOnCardId, {
         cardId: dep.dependsOnCardId,
@@ -102,7 +116,7 @@ export function CardDependencyEditor({
     }
     setDraft(existing);
     setError(null);
-  }, [open, card, allDependencies]);
+  }, [open, card?.id, card?.lockVersion]);
 
   // Indexes used by the candidate filter.
   const cardById = useMemo(
@@ -162,6 +176,10 @@ export function CardDependencyEditor({
     setSaving(true);
     try {
       await replaceDependencies(lobbyId, card.id, {
+        // Sprint 7B.1 (R1-H2): pass card lockVersion so concurrent dep
+        // edits 409 instead of silently clobbering. Server bumps the
+        // version on success; a stale tab's next save sees VERSION_CONFLICT.
+        expectedVersion: card.lockVersion,
         dependencies: Array.from(draft.values()).map((d) => ({
           dependsOnCardId: d.cardId,
           optional: d.optional,
@@ -171,9 +189,23 @@ export function CardDependencyEditor({
       onOpenChange(false);
     } catch (err) {
       if (err instanceof LobbyApiError) {
-        if (err.reason === "INVARIANT_VIOLATION") {
+        if (err.reason === "VERSION_CONFLICT") {
+          // Sprint 7B.1 (R1-H2): the dialog stays open so the captain's
+          // typed-but-unsaved selections aren't lost — calling onSaved
+          // refetches; the reseed effect's [open, card.id, lockVersion]
+          // deps will fire on the new lockVersion and rebuild the seed
+          // from canonical state. Captain re-applies and re-saves.
           setError(
-            err.message ||
+            "Card changed since you opened the editor — refreshing. Re-apply your edit and save again.",
+          );
+          onSaved();
+        } else if (err.reason === "INVARIANT_VIOLATION") {
+          // Sprint 7B.1 (R5-M7): the server's cycle path uses card UUIDs
+          // (e.g., `Plan has a dependency cycle: 7e3a... -> b21f... ->
+          // 7e3a...`). Substitute card titles so the captain can recognize
+          // which cards form the loop without consulting the DAG overlay.
+          setError(
+            humanizeCycleMessage(err.message, allCards) ||
               "These dependencies would create a cycle in the plan.",
           );
         } else if (err.reason === "INVALID_TRANSITION") {
@@ -281,8 +313,9 @@ export function CardDependencyEditor({
 
         {error && (
           <p
+            id={errorId}
             role="alert"
-            className="font-mono text-[11px] text-amber-700 dark:text-amber-300 inline-flex items-start gap-2"
+            className="font-mono text-[11px] text-red-700 dark:text-red-300 inline-flex items-start gap-2"
           >
             <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" aria-hidden="true" />
             <span>{error}</span>
@@ -303,11 +336,18 @@ export function CardDependencyEditor({
             type="button"
             onClick={() => void handleSave()}
             disabled={saving || !card}
+            // Sprint 7B.1 (R5-L5): aria-busy parity with AcceptPlanButton +
+            // TransitionToPlanningButton — assistive tech announces the
+            // pending state without relying on the spinner glyph alone.
+            // aria-describedby links the button to the latest error so the
+            // SR user hears the failure context after a save attempt.
+            aria-busy={saving}
+            aria-describedby={error ? errorId : undefined}
             className="font-mono"
           >
             {saving ? (
               <>
-                <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" aria-hidden="true" />
                 Saving…
               </>
             ) : (
@@ -318,4 +358,36 @@ export function CardDependencyEditor({
       </DialogContent>
     </Dialog>
   );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Sprint 7B.1 (R5-M7): the server's cycle message lives in
+ * `services.ts:findDependencyCycle` and looks like
+ * `Plan has a dependency cycle: <uuid> -> <uuid> -> <uuid>`. Rewrite
+ * each UUID to the corresponding card title so the captain sees
+ * "Plan has a dependency cycle: Frontend → Backend → Frontend" instead
+ * of three uuids. Falls back to the original message when no UUIDs match
+ * (so a service-side message change doesn't silently strip information).
+ */
+function humanizeCycleMessage(
+  message: string | undefined,
+  cards: ReadonlyArray<{ id: string; title: string }>,
+): string {
+  if (!message) return "";
+  const titleById = new Map(cards.map((c) => [c.id, c.title]));
+  // UUID v4 shape — the server uses crypto.randomUUID() everywhere so this
+  // matches every plausible card id.
+  const uuidPattern =
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+  let touched = false;
+  const rewritten = message.replace(uuidPattern, (uuid) => {
+    const title = titleById.get(uuid);
+    if (!title) return uuid;
+    touched = true;
+    // Quote so multi-word titles read cleanly inside the cycle path.
+    return `"${title}"`;
+  });
+  return touched ? rewritten : message;
 }

@@ -537,6 +537,14 @@ export async function transitionCard(
 }
 
 export type ReplaceDependenciesBody = {
+  /**
+   * Card lockVersion the captain saw when they opened the editor. Sprint
+   * 7B.1 (R1-H2) made this required so concurrent dep edits hit
+   * VERSION_CONFLICT instead of silently clobbering each other (SPEC §3
+   * #10). The server bumps the card's lockVersion on success so any racing
+   * tab learns about the change on its next save attempt.
+   */
+  expectedVersion: number;
   dependencies: Array<{ dependsOnCardId: string; optional?: boolean }>;
 };
 

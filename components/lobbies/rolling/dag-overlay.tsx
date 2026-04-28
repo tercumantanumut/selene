@@ -94,19 +94,31 @@ export function DagOverlay({
         </DialogHeader>
 
         {hasCycle && (
+          // Sprint 7B.1 (R5-L6): role="alert" interrupts every SR
+          // announcement on every overlay open if a cycle exists in stale
+          // data. role="status" + aria-live="polite" defers to the user's
+          // current focus, which is the right urgency level — the cycle
+          // residue is informational at this point in the workflow.
+          //
+          // Sprint 7B.1 (R5-M8): the cycle should be impossible during
+          // rolling (accept_plan rejects cyclic plans server-side). If it
+          // appears here, the local dep cache is stale — copy now points
+          // the captain at Refresh first, edit second.
           <div
-            role="alert"
-            className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 inline-flex items-start gap-2"
+            role="status"
+            aria-live="polite"
+            className="rounded-md border border-amber-700/40 bg-amber-500/5 px-3 py-2 inline-flex items-start gap-2"
           >
             <AlertTriangle
-              className="h-3.5 w-3.5 text-amber-700 dark:text-amber-300 mt-0.5 shrink-0"
+              className="h-3.5 w-3.5 text-amber-800 dark:text-amber-300 mt-0.5 shrink-0"
               aria-hidden="true"
             />
-            <p className="font-mono text-[11px] text-amber-700 dark:text-amber-300">
+            <p className="font-mono text-[11px] text-amber-800 dark:text-amber-300">
               Cycle detected in {unsorted.length} card
-              {unsorted.length === 1 ? "" : "s"}. The orchestrator would
-              reject this plan — fix the loop with the row's "Edit deps"
-              button before accepting.
+              {unsorted.length === 1 ? "" : "s"}. This shouldn&rsquo;t happen
+              during rolling — refresh to reload the dependency graph from
+              the server. If it persists, fix the loop with the row&rsquo;s
+              &ldquo;Edit deps&rdquo; button.
             </p>
           </div>
         )}
@@ -229,11 +241,24 @@ function DagRow({
         </Badge>
       </td>
       <td className="py-2 pr-3 align-top text-right">
+        {/* Sprint 7B.1 (R1-H3 UI parity): the service rejects dep edits on
+            running cards with INVALID_TRANSITION, but Sprint 7B left the
+            button enabled — the captain would click, see a generic toast,
+            and have no path forward. Disabling at the source mirrors the
+            kanban tile's "Cancel to edit" treatment for structural edits
+            (SPEC §3 #13). The aria-label spells out the recovery so SR
+            users get the same affordance. */}
         <Button
           type="button"
           size="sm"
           variant="ghost"
           onClick={onEdit}
+          disabled={card.status === "running"}
+          aria-label={
+            card.status === "running"
+              ? `Cannot edit dependencies of running card ${card.title} — cancel first`
+              : `Edit dependencies for ${card.title}`
+          }
           className="h-6 px-2 font-mono text-[10px]"
         >
           Edit deps

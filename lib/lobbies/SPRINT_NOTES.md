@@ -869,3 +869,253 @@ component test harness yet (same Sprint 8 follow-up as Sprint 5.3).
 - A11y changes verified by reading; no live AT run in autonomous mode.
   Roving-tabindex pattern matches the canonical aria-practices listbox.
 
+---
+
+## Sprint 7B — rolling phase (kanban + DnD + dependency editor + DAG)
+
+The rolling phase is the captain's mission control between "plan accepted"
+and "synthesis." Cards stream through six columns (`backlog → ready →
+in_progress → review → done` plus `blocked`) under SPEC §3 #13's hard
+constraint: structural edits to `running` cards are 409s. The surface
+needed three features that don't pre-exist anywhere else in Selene:
+
+1. A keyboard-first kanban board that doesn't pull in `@dnd-kit`
+   (forbidden by SPEC §3 #6) and stays usable for SR users.
+2. A dependency editor that runs cycle detection client-side and
+   surfaces server cycle errors with humanised copy.
+3. A DAG overlay so the captain can see "what runs next, what blocks X,
+   what's downstream" without leaving the page.
+
+### What landed in Sprint 7B (initial implementation)
+
+- **`use-keyboard-dnd.ts`** — custom DnD hook implementing the WAI-ARIA
+  pickup/drop pattern: pickup with Space/Enter, ↑↓←→ to navigate slots,
+  Space/Enter to drop, Esc to cancel; pointer mode shares the state
+  machine.
+- **`kanban-board.tsx`** + **`kanban-column.tsx`** + **`kanban-card-tile.tsx`** —
+  the rendered surface, with optimistic-overlay projection for in-flight
+  drops and per-card status visuals.
+- **`card-dependency-editor.tsx`** — full dep editor with cycle detection
+  (BFS), optional-vs-required toggling, and server-error surfacing.
+- **`dag-overlay.tsx`** — Kahn's-algorithm topological sort table; cycle
+  residue listed at the bottom under a banner.
+- **`rolling-section.tsx`** — composed all of the above with the existing
+  `CardEditDialog` from planning + DAG hand-off back into the dep editor.
+
+### Sprint 7B reviewer cluster (5 parallel reviewers)
+
+Reviewers R1–R5 ran in parallel on the Sprint 7B branch. After
+deduplicating convergent findings, the actionable set was:
+
+- **R1 (contract review)**: 4 HIGH, 7 MEDIUM, 5 LOW, 2 NIT.
+- **R2 (state model / optimism)**: 1 HIGH dropped, 6 HIGH live, 4 MEDIUM.
+- **R3 (a11y / DnD UX)**: 8 HIGH, several MEDIUM, focused on the WAI-ARIA
+  pattern accuracy and SR semantics.
+- **R4 (types at boundaries)**: 3 HIGH, focused on `as LobbyCardColumn`
+  casts and column-id provenance.
+- **R5 (completeness vs SPEC)**: 3 BLOCKER (later confirmed stale —
+  Sprint 8 had landed concurrently and resolved them), 5 HIGH, 8 MEDIUM,
+  6 LOW.
+
+R5's BLOCKER findings (no Start button, missing approve/reject, broken
+imports in `lobby-detail-client.tsx`) were stale because the reviewer's
+read predated commit `ca9b2194` (Sprint 8 landing). Re-scoping kept only
+genuine reviewer findings.
+
+## Sprint 7B.1 — convergent reviewer patches
+
+Sprint 7B.1 is a single phase that absorbs all surviving HIGH/MEDIUM
+findings from R1–R5. Patches are grouped by surface so the diff reads in
+review-friendly chunks.
+
+### P1 + P2 + P3 + P9 — dependency editor cluster
+
+- **R1-H4 + R2-H6 (reseed clobber)** — `card-dependency-editor.tsx` —
+  `allDependenciesRef` ref + reseed effect keyed on
+  `[open, card?.id, card?.lockVersion]` instead of object identity. The
+  prior shape rebuilt the editor's working buffer on every parent
+  re-render, silently undoing in-progress edits.
+
+- **R1-H2 (expectedVersion plumbing)** —
+  `app/api/lobbies/[lobbyId]/cards/[cardId]/dependencies/route.ts` plus
+  `lib/lobbies/services.ts` (`replaceDependenciesForCardWithCycleCheck`)
+  plus `lib/lobbies/client/api.ts` (`ReplaceDependenciesBody`) — added
+  `expectedVersion` to the dep-edit endpoint, the service contract, and
+  the client body. Two captains editing dependencies in parallel browser
+  tabs no longer silently clobber each other; the second loses with a
+  409 envelope (`reason: "VERSION_CONFLICT"` + `currentVersion`).
+  `lockVersion` bumps inside the same transaction that mutates the deps.
+
+- **R1-H3 (block dep edits on running cards)** — `lib/lobbies/services.ts`
+  rejects with `INVALID_TRANSITION` when the target card is `running`.
+  `dag-overlay.tsx` mirrors the gate by disabling the row's "Edit deps"
+  button with an aria-label that spells out the recovery
+  ("Cancel first").
+
+- **R5-M7 (cycle UUIDs → titles)** — `card-dependency-editor.tsx` —
+  `humanizeCycleMessage` rewrites the server's UUID-laden cycle message
+  using the lobby's card titles. The captain sees
+  "Refactor login flow → Update tests → Refactor login flow" instead of
+  "cd9-…-… → 7af-…-… → cd9-…-…".
+
+- **R5-L6 (cycle banner urgency)** — `dag-overlay.tsx` switched the
+  cycle banner from `role="alert"` (interrupts every announcement) to
+  `role="status"` + `aria-live="polite"` (defers to the user's focus).
+  Cycles are server-blocked during rolling, so the banner is only ever
+  shown for stale local data — informational, not interruptive.
+
+### P4 — server-side status↔column consistency
+
+- **R1-H1 (status↔column desync)** — `lib/lobbies/queries.ts`
+  (`updateCard`) now consults `ALLOWED_COLUMNS_FOR_STATUS` and rejects
+  illegal column patches with `INVARIANT_VIOLATION`. SPEC §4 lists the
+  consistency rules; before this, the kanban could ask the server to put
+  a `running` card into `backlog` and the server would oblige. The
+  client gate exists too (`canDrag` / `canDrop`), but the server gate is
+  what makes the rule load-bearing.
+
+### P5 — DnD hook correctness
+
+- **R3-H7 (keyboard race after pickup)** — `use-keyboard-dnd.ts` —
+  introduced `setDndState` helper that updates `stateRef` SYNCHRONOUSLY
+  alongside `setState`. The previous design rebuilt window-level
+  listeners on every `state` change; a fast Space-press in the same tick
+  as a setState observed the listener that captured stale `state`. The
+  rewrite uses a single mount-time keydown listener that reads from the
+  ref, so the next keystroke after a setState always sees fresh state
+  regardless of React's render schedule.
+
+- **R2-H1 (pointer-stuck after off-grid release)** — same file —
+  window-level `pointerup` fallback. `queueMicrotask` defers one tick so
+  any slot's `onPointerUp` (which transitions to idle) runs first; if
+  the state is still `active` after that tick, the release happened off
+  any drop slot and the hook cancels.
+
+- **R2-H4 + R1-M4 (optimistic overlay clobber)** — `kanban-board.tsx` —
+  removed the immediate `resolveOptimisticMove` call from the `onDrop`
+  success branch. The overlay now persists until canonical state catches
+  up (an effect compares each overlay's `toColumn` to the canonical
+  `card.column` and drops it when they agree). A 5-second watchdog effect
+  bounds the wait so a missing refetch doesn't strand the overlay.
+
+- **R2-H5 (mounted ref)** — `kanban-board.tsx` — `mountedRef` gates
+  every `setState` after `await`. An in-flight `updateCard` whose
+  Promise resolved after the parent unmounted (route change, lobby
+  switch) was calling state setters on a dead component.
+
+- **R1-M3 (canDrag busy gate)** — `kanban-board.tsx` — `canDrag` now
+  also returns false when `busyCardIds.has(cardId)`. Without this, a
+  captain who clicked a slow-moving card a second time queued a second
+  optimistic move on top of the first with `lockVersion` already
+  invalidated.
+
+### P6 — DnD a11y cluster
+
+- **R3-H2 (deprecated `aria-grabbed`)** — `use-keyboard-dnd.ts` —
+  switched to `aria-pressed`. WAI-ARIA 1.2 deprecated the old DnD
+  attributes (`aria-grabbed` / `aria-dropeffect`) — they were never
+  reliably supported by AT and the APG now points DnD at the
+  live-region + roving-tabindex pattern. The `aria-roledescription`
+  stays so AT users still hear "draggable card" instead of "button."
+
+- **R3-H6 (slot role + tabIndex)** — `use-keyboard-dnd.ts` — drop slots
+  are now `role="button"` (real keyboard tabstop, real SR target) with
+  `tabIndex` derived from active hover+keyboard mode and an `aria-label`
+  describing the drop position ("Drop in In progress at position 3").
+  `aria-disabled` reflects `canDrop`. `aria-dropeffect` removed.
+
+- **R3-H1 (focus follows hover in keyboard mode)** — `use-keyboard-dnd.ts` —
+  slots accept a `ref` callback; the hook keeps a per-slot ref map
+  (`${containerId}:${index}`) and a focus-follows-hover effect
+  programmatically focuses the active slot during keyboard nav. Pointer
+  mode does NOT steal focus (the captain owns it via mouse).
+
+- **R3-H3 (announcer copy)** — `use-keyboard-dnd.ts` — added
+  `getContainerLabel` / `getItemLabel` resolvers in the hook's options so
+  the SR announcer says "Moved Refactor login flow to In progress,
+  position 2" instead of "moved cd9-… to in_progress, slot 2." The
+  resolvers are plumbed from `kanban-board.tsx` via lookups against
+  `COLUMN_META.title` and `card.title`.
+
+- **R3-H4 (board landmark)** — `kanban-board.tsx` — the kanban surface
+  is now wrapped in `role="region"` + `aria-labelledby="kanban-board-heading"`
+  with a visually-hidden `<h2>`. SR users navigating by landmarks have a
+  named region to jump to.
+
+- **R3-H5 (ol/li semantics)** — `kanban-column.tsx` — each card AND each
+  drop slot is its own `<li>`. The previous structure nested both inside
+  a single `<li>`, which broke SR list-mode navigation. `Fragment` keys
+  the per-card pair without wrapper divs.
+
+- **R3-H8 (alert color)** — `kanban-board.tsx` — `actionError` is now
+  `text-red-700` (matching `role="alert"` semantics + WCAG AA contrast)
+  instead of the prior `text-amber-700`.
+
+### P7 — captain workflow gaps
+
+- **R5-H2 (lobby-level abort)** — `rolling-section.tsx` — added an
+  "Abort lobby" button (visible only while `isEditable`) that opens an
+  `AlertDialog` confirmation. The action calls `transitionLobby` with
+  `action: "abort"` + `mode: "cancel"`, which marks every running card
+  `cancelled` and moves the lobby to `aborted`. Confirmation is
+  destructive-styled (red); cancel is the default focus target. The
+  dialog stays open during the request so the captain sees the spinner
+  + any error inline.
+
+- **R5-H3 (`maxParallel` indicator)** — `rolling-section.tsx` — added a
+  "Running x/N" badge in the header. The badge shifts from muted to
+  amber when `runningCount >= maxParallel` so the captain can tell
+  "orchestrator is at the cap" apart from "orchestrator is idle because
+  it's done." `aria-label` + `title` spell out the meaning.
+
+- **R5-M1 (attempt-cap UI guard)** — `kanban-card-tile.tsx` — the
+  attempt count flips amber within one of the cap and red at cap; the
+  Retry button is replaced by a disabled "Cap reached" button when at
+  cap, with an `aria-label` pointing at the recovery path ("Edit the
+  card to raise max attempts first.").
+
+### P8 — type guards + fallbacks + error mapping
+
+- **R4-H1/H2/H3 (kanban↔hook column-id boundary)** — `kanban-board.tsx` —
+  added `isLobbyCardColumn` type guard and replaced every
+  `as LobbyCardColumn` cast: `canDrop` short-circuits on unknown
+  containers, `onDrop` returns early, `getContainerLabel` falls back to
+  raw id, and `projectColumns` parks unknown-column cards in `blocked`
+  (visible-but-flagged > silently-dropped).
+
+- **R1-M6 (STATUS_VISUALS fallback)** — `kanban-card-tile.tsx` — added
+  `FALLBACK_STATUS_VISUAL` so a future server-side status that hasn't
+  been added to the visual map renders a neutral "unknown" badge
+  instead of crashing the whole tile via undefined-destructuring.
+
+- **R1-M5 (INVARIANT_VIOLATION mapping)** — `kanban-board.tsx` — added
+  `INVARIANT_VIOLATION` (and `NOT_FOUND`, `TIMEOUT`, `NETWORK`)
+  branches to `describeMutationError` so a 422 from the new
+  status↔column server gate (Sprint 7B.1 P4) surfaces a captain-friendly
+  message instead of a raw engineering string.
+
+### Decisions: deferred / no-action with rationale
+
+- **R5-B2 (Start button on rolling)** — deferred to Sprint 4
+  (orchestrator). The reviewer suggested a captain-initiated "Start"
+  CTA on the rolling section; the orchestrator owns dispatch
+  scheduling, so a UI Start button without backend dispatch wiring
+  would be a dead control. Sprint 4 will add it together with the
+  scheduler. R5's other BLOCKERs (B1, B3) were stale — Sprint 8 had
+  landed concurrently and resolved them.
+
+- **R5-M5/M6 (run-stream concerns)** — owned by Sprint 8; not in
+  Sprint 7B.1's scope.
+
+- **R3-NIT items (kbd hint repetition, focus-ring tweaks)** —
+  cosmetic, deferred to a follow-up styling pass.
+
+### Verification (autonomous mode)
+
+- `npm run typecheck:app` clean (exit 0) after every patch in P1–P10.
+- `npm run typecheck:lib` clean.
+- All 11 HIGH findings (R1×3, R2×3, R3×6, R4×3, R5×2 surviving) and
+  the 7 MEDIUMs called out in the patch plan addressed.
+- No live SR run in autonomous mode; a11y changes verified against
+  the WAI-ARIA APG drag-and-drop pattern reference.
+

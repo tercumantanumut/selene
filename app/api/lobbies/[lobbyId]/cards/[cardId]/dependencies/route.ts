@@ -23,6 +23,7 @@ import { replaceDependenciesForCardWithCycleCheck } from "@/lib/lobbies/services
 import {
   assertCardInLobbyForUser,
   errorResponse,
+  expectedVersionField,
   isAuthResponse,
   mapMutationResult,
   parseBody,
@@ -36,8 +37,17 @@ type RouteParams = { params: Promise<{ lobbyId: string; cardId: string }> };
 // with `undefined` target which the service-layer min(1) check then rejects
 // with a confusing message. With `.strict()` the typo itself surfaces as the
 // 400 reason.
+//
+// Sprint 7B.1 (R1-H2): require `expectedVersion`. Without it, two captains
+// editing dependencies in parallel browser tabs would silently clobber each
+// other (the PUT replaces the entire dep set transactionally without seeing
+// the other write). Adding `expectedVersion` puts dependency edits on the
+// same optimistic-concurrency loop as every other mutation per SPEC §3 #10.
+// The service bumps card.lockVersion on success so subsequent racing PUTs
+// see VERSION_CONFLICT.
 const replaceDependenciesBodySchema = z
   .object({
+    expectedVersion: expectedVersionField,
     dependencies: z.array(
       z
         .object({
@@ -69,6 +79,7 @@ export async function PUT(req: Request, { params }: RouteParams) {
     const result = await replaceDependenciesForCardWithCycleCheck({
       lobbyId,
       cardId,
+      expectedVersion: parsed.data.expectedVersion,
       dependencies: parsed.data.dependencies,
     });
 

@@ -28,7 +28,7 @@
  * column body.
  */
 
-import { memo, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -118,7 +118,16 @@ export const KanbanColumn = memo(function KanbanColumn({
         </p>
       )}
 
-      {/* Body — interleaved slots + tiles */}
+      {/* Body — interleaved slots + tiles.
+
+          Sprint 7B.1 (R3-H5): each card AND each drop slot is its own
+          <li>. The previous structure nested both inside one <li>, which
+          broke SR navigation by list item — JAWS / NVDA list-mode read
+          "card + slot" as one entry instead of two distinct positions,
+          and `aria-setsize`/`aria-posinset` on cards (added implicitly
+          by some SRs from `<ol>`) were misleading because slots inflated
+          the count silently. Splitting them gives the SR user one
+          navigable position per real screen position. */}
       <ol className="flex-1 flex flex-col gap-1 p-2 min-h-[8rem]">
         {items.length === 0 ? (
           <li className="flex-1">
@@ -140,17 +149,19 @@ export const KanbanColumn = memo(function KanbanColumn({
               />
             </li>
             {items.map((item, idx) => (
-              <li key={item.id} className="space-y-1">
-                {item.node}
-                <DropSlot
-                  props={getDropSlotProps({
-                    containerId: columnId,
-                    index: idx + 1,
-                  })}
-                  variant={idx === items.length - 1 ? "trailing" : "between"}
-                  visible={showSlots}
-                />
-              </li>
+              <Fragment key={item.id}>
+                <li>{item.node}</li>
+                <li>
+                  <DropSlot
+                    props={getDropSlotProps({
+                      containerId: columnId,
+                      index: idx + 1,
+                    })}
+                    variant={idx === items.length - 1 ? "trailing" : "between"}
+                    visible={showSlots}
+                  />
+                </li>
+              </Fragment>
             ))}
           </>
         )}
@@ -178,11 +189,21 @@ type DropSlotProps = {
 
 function DropSlot({ props, variant, visible }: DropSlotProps) {
   const isHover = props["data-dnd-hover"] === "true";
+  // Sprint 7B.1 (R3-H1): extract the ref callback explicitly. React's
+  // createElement intercepts a `ref` key from spread on DOM intrinsics, but
+  // relying on that across spread is fragile to readers and to future
+  // refactors that might wrap this in another component. Pulling it out
+  // makes the focus-follows-hover wiring obvious.
+  const { ref, ...domProps } = props;
   const cls = cn(
     "transition-all rounded-md",
     variant === "between" && "h-1",
     variant === "trailing" && "min-h-[4rem] flex-1",
     variant === "empty" && "min-h-[6rem] h-full",
+    // Sprint 7B.1 (R3-H6): the slot is now role="button" — strip the
+    // browser's default outline only when not focused so keyboard focus
+    // remains visible (focus ring is :focus-visible by default in shadcn).
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-green",
     visible
       ? cn(
           "bg-terminal-border/30 border border-dashed border-terminal-border/60",
@@ -193,7 +214,11 @@ function DropSlot({ props, variant, visible }: DropSlotProps) {
       : "bg-transparent",
   );
   return (
-    <div {...props} className={cls}>
+    <div
+      {...domProps}
+      ref={ref as (el: HTMLDivElement | null) => void}
+      className={cls}
+    >
       {visible && variant !== "between" && (
         <span className="font-mono text-[10px] uppercase tracking-wider text-terminal-muted">
           {isHover ? "drop here" : "..."}

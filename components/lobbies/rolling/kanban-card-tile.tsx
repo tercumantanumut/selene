@@ -101,6 +101,20 @@ type StatusVisual = {
   iconClass: string;
 };
 
+// Sprint 7B.1 (R1-M6): defensive fallback. If the server adds a new
+// status before the client redeploys, `STATUS_VISUALS[card.status]`
+// would return `undefined` and the destructuring below would throw at
+// render time — taking down the entire board, not just the offending
+// tile. The fallback renders a neutral "unknown" badge so the captain
+// sees the card and can investigate via the run modal.
+const FALLBACK_STATUS_VISUAL: StatusVisual = {
+  label: "unknown",
+  badgeVariant: "outline",
+  icon: AlertCircle,
+  borderClass: "border-terminal-border/40",
+  iconClass: "text-terminal-muted",
+};
+
 const STATUS_VISUALS: Record<LobbyCardStatus, StatusVisual> = {
   pending: {
     label: "pending",
@@ -171,7 +185,9 @@ export const KanbanCardTile = memo(function KanbanCardTile({
   dependencyCount,
   hasUnmetDependency,
 }: KanbanCardTileProps) {
-  const visual = STATUS_VISUALS[card.status];
+  // Sprint 7B.1 (R1-M6): use ?? fallback so a new server-side status that
+  // hasn't been added to the visual map yet doesn't crash the tile.
+  const visual = STATUS_VISUALS[card.status] ?? FALLBACK_STATUS_VISUAL;
   const StatusIcon = visual.icon;
 
   // SPEC §3 #13: edits to `running` cards are blocked server-side. Mirror
@@ -180,8 +196,22 @@ export const KanbanCardTile = memo(function KanbanCardTile({
   const canEditNow = isEditable && !isRunning && !isBusy;
   const canCancel =
     isEditable && (card.status === "running" || card.status === "pending");
+  // Sprint 7B.1 (R5-M1): attempt-cap UI guard. The orchestrator rejects a
+  // retry once `attemptCount >= maxAttempts`, but the previous tile left
+  // the Retry button enabled — the captain would click and get a generic
+  // toast with no guidance. Showing the cap inline (and disabling the
+  // button at cap with a recovery-oriented aria-label) gives them a path
+  // forward: edit the card to bump `maxAttempts`, then retry.
+  const atAttemptCap = card.attemptCount >= card.maxAttempts;
   const canRetry =
     isEditable &&
+    !atAttemptCap &&
+    (card.status === "failed" ||
+      card.status === "rejected" ||
+      card.status === "cancelled");
+  const showRetryAtCap =
+    isEditable &&
+    atAttemptCap &&
     (card.status === "failed" ||
       card.status === "rejected" ||
       card.status === "cancelled");
@@ -237,8 +267,20 @@ export const KanbanCardTile = memo(function KanbanCardTile({
             {seat ? seat.role : "Unassigned"}
           </span>
           {card.attemptCount > 0 && (
-            <span>
+            // Sprint 7B.1 (R5-M1): make the cap visible. Color shifts to
+            // amber when within one attempt of the cap so the captain
+            // sees the constraint before clicking Retry.
+            <span
+              className={cn(
+                atAttemptCap
+                  ? "text-red-700 dark:text-red-300 font-semibold"
+                  : card.attemptCount === card.maxAttempts - 1
+                    ? "text-amber-700 dark:text-amber-300"
+                    : undefined,
+              )}
+            >
               attempt {card.attemptCount}/{card.maxAttempts}
+              {atAttemptCap ? " (cap reached)" : ""}
             </span>
           )}
           {dependencyCount > 0 && (
@@ -336,11 +378,30 @@ export const KanbanCardTile = memo(function KanbanCardTile({
                 variant="ghost"
                 onClick={onRetry}
                 data-dnd-skip="true"
-                aria-label={`Retry ${card.title}`}
+                aria-label={`Retry ${card.title} (attempt ${card.attemptCount + 1} of ${card.maxAttempts})`}
                 className="h-6 px-2 font-mono text-[10px]"
               >
                 <Repeat className="h-2.5 w-2.5 mr-1" />
                 Retry
+              </Button>
+            )}
+            {showRetryAtCap && (
+              // Sprint 7B.1 (R5-M1): cap reached — surface the recovery
+              // path inline. The button is disabled (server would reject
+              // a retry anyway), and the aria-label spells out the next
+              // step so SR users get the same affordance the visual copy
+              // gives sighted users.
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled
+                data-dnd-skip="true"
+                aria-label={`Cannot retry ${card.title} — attempt cap reached. Edit the card to raise max attempts first.`}
+                className="h-6 px-2 font-mono text-[10px] text-terminal-muted/60"
+              >
+                <Repeat className="h-2.5 w-2.5 mr-1" />
+                Cap reached
               </Button>
             )}
             {(card.status === "running" ||

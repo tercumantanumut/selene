@@ -659,8 +659,40 @@ export type UpdateCardInput = {
 };
 
 /**
+ * Sprint 7B.1 (R1-H1): SPEC §4 status↔column consistency table. Used
+ * inside `updateCard` to reject column moves that would put a card in a
+ * lane its status doesn't belong to. Until Sprint 7B.1 the rule was
+ * enforced FE-only — a scripted PATCH could put a `pending` card into
+ * `in_progress`, drag a terminal card into `ready`, or bypass the
+ * approve/reject flow by dropping an `awaiting_review` card into `done`.
+ *
+ * Each status maps to the set of columns it may legally inhabit. The
+ * FE's `KanbanBoard.canDrop` mirror is the soft gate; this is the
+ * authoritative server gate.
+ */
+const ALLOWED_COLUMNS_FOR_STATUS: Record<
+  LobbyCardStatus,
+  ReadonlySet<LobbyCardColumn>
+> = {
+  pending: new Set<LobbyCardColumn>(["backlog", "ready", "blocked"]),
+  running: new Set<LobbyCardColumn>(["in_progress"]),
+  awaiting_review: new Set<LobbyCardColumn>(["review"]),
+  approved: new Set<LobbyCardColumn>(["done"]),
+  rejected: new Set<LobbyCardColumn>(["blocked"]),
+  failed: new Set<LobbyCardColumn>(["blocked"]),
+  cancelled: new Set<LobbyCardColumn>(["blocked"]),
+};
+
+/**
  * Free-form card edit. Rejected when the card is `running` to honor the
  * "block structural edits to running cards" constraint (SPEC §3 #13).
+ *
+ * Sprint 7B.1 (R1-H1): when `patch.column` is present, the new column
+ * must be in the allowed set for the card's CURRENT status. Otherwise the
+ * captain (or a scripted client) could land a card in a lane that's
+ * inconsistent with its status — the kanban would then paint a `pending`
+ * card in the `in_progress` column and the orchestrator's transitionStart
+ * would refuse to advance it.
  */
 export async function updateCard(
   input: UpdateCardInput,
@@ -689,6 +721,16 @@ export async function updateCard(
         reason: "INVALID_TRANSITION",
         message: `Cannot edit running card ${input.cardId}. Cancel and retry instead.`,
       };
+    }
+    if (input.patch.column !== undefined) {
+      const allowed = ALLOWED_COLUMNS_FOR_STATUS[current.status];
+      if (!allowed.has(input.patch.column)) {
+        return {
+          ok: false,
+          reason: "INVARIANT_VIOLATION",
+          message: `Column '${input.patch.column}' is not valid for cards with status '${current.status}'. Use a status transition (approve/reject/retry/cancel) instead.`,
+        };
+      }
     }
     const [row] = tx
       .update(lobbyCards)

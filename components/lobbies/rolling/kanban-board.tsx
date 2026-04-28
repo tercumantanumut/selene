@@ -50,7 +50,7 @@
  * prioritize the queue.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -95,6 +95,18 @@ const COLUMN_ORDER: readonly LobbyCardColumn[] = [
   "done",
   "blocked",
 ] as const;
+
+// Sprint 7B.1 (R4-H1/H2/H3): type guard at the kanban↔hook boundary. The
+// hook works with `containerId: string` because it's column-agnostic;
+// the board needs `LobbyCardColumn`. Without a runtime check, an invalid
+// containerId (stale data, malformed event, future column id we don't
+// know about) would coerce silently via `as LobbyCardColumn` and crash
+// downstream. The guard makes the boundary explicit and gives every
+// usage a place to short-circuit safely.
+const COLUMN_SET: ReadonlySet<LobbyCardColumn> = new Set(COLUMN_ORDER);
+function isLobbyCardColumn(value: string): value is LobbyCardColumn {
+  return COLUMN_SET.has(value as LobbyCardColumn);
+}
 
 type ColumnMeta = {
   id: LobbyCardColumn;
@@ -208,6 +220,22 @@ export function KanbanBoard({
   const [liveMessage, setLiveMessage] = useState<string>("");
   const announceTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Sprint 7B.1 (R2-H5): mounted gate. Without this, an in-flight
+  // `updateCard` whose Promise resolves AFTER the parent unmounts (route
+  // change, lobby switch) calls `setBusyCardIds`/`setActionError` on a
+  // dead component. React 18 dev-mode warns; production silently leaks.
+  // The ref pattern beats AbortController here because the failure mode
+  // is "we no longer care about the result", not "stop the network call"
+  // — the server still owes the captain a confirmation, but this client
+  // session is gone.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // Optimistic store: subscribe shallowly so we don't re-render on
   // unrelated UI store changes (selected card, fullscreen, etc).
   const { optimisticMoves, queueOptimisticMove, resolveOptimisticMove, rollbackOptimisticMove } =
@@ -271,6 +299,15 @@ export function KanbanBoard({
       if (!isEditable) return false;
       const card = cards.find((c) => c.id === cardId);
       if (!card) return false;
+      // Sprint 7B.1 (R1-M3): a card with an in-flight mutation can't be
+      // re-picked-up. Without this, a captain who clicks a slow-moving
+      // card a second time would queue a second optimistic move on top of
+      // the first, with `cardLockVersion` already invalidated — the
+      // second request will either 409 (best case) or silently overwrite
+      // the position the first move was racing for. Easier to gate at
+      // the source: pickup blocked while busy, button-press visibly
+      // disabled.
+      if (busyCardIds.has(cardId)) return false;
       // Running cards must be cancelled before edits — SPEC §3 #13.
       if (card.status === "running") return false;
       // approved / awaiting_review reside in server-controlled columns.
@@ -280,13 +317,15 @@ export function KanbanBoard({
       }
       return true;
     },
-    [isEditable, cards],
+    [isEditable, cards, busyCardIds],
   );
 
   const canDrop = useCallback(
     ({ source, target }: DnDDropArgs) => {
-      // Same-column reorders always allowed (within droppable columns).
-      const meta = COLUMN_META[target.containerId as LobbyCardColumn];
+      // Sprint 7B.1 (R4-H2): defend the boundary instead of casting. An
+      // unknown containerId can't possibly be droppable.
+      if (!isLobbyCardColumn(target.containerId)) return false;
+      const meta = COLUMN_META[target.containerId];
       if (!meta) return false;
       if (source.containerId === target.containerId) return true;
       return meta.manuallyDroppable;
@@ -300,8 +339,17 @@ export function KanbanBoard({
     async ({ itemId, source, target }: DnDDropArgs) => {
       const card = cards.find((c) => c.id === itemId);
       if (!card) return;
-      const fromColumn = source.containerId as LobbyCardColumn;
-      const toColumn = target.containerId as LobbyCardColumn;
+      // Sprint 7B.1 (R4-H1): refuse mismatched column ids. The hook's
+      // type signature is intentionally loose; the board narrows here so
+      // a malformed event or stale dnd state can't reach the network.
+      if (
+        !isLobbyCardColumn(source.containerId) ||
+        !isLobbyCardColumn(target.containerId)
+      ) {
+        return;
+      }
+      const fromColumn: LobbyCardColumn = source.containerId;
+      const toColumn: LobbyCardColumn = target.containerId;
 
       // Compute the canonical "before card id" — the card the captain is
       // dropping above. null when dropping at the end of the column.
@@ -337,18 +385,34 @@ export function KanbanBoard({
             position: adjustedIndex,
           },
         });
-        resolveOptimisticMove(itemId, queued.optimisticVersion);
-        onChanged();
+        // Sprint 7B.1 (R2-H4 + R1-M4): do NOT call resolveOptimisticMove
+        // here. The overlay must persist until canonical state catches up
+        // (canonical card.column === overlay.toColumn). Resolving early
+        // produced a flicker: overlay drops → projection snaps back to
+        // server's old column → refetch lands → projection snaps to new
+        // column. The canonical-driven drop in the effect below removes
+        // the overlay only once both sides agree, eliminating the flash.
+        // A watchdog in the same effect bounds the wait so a missing
+        // refetch doesn't strand the overlay forever.
+        if (mountedRef.current) onChanged();
       } catch (err) {
         rollbackOptimisticMove(itemId, queued.optimisticVersion);
-        setActionError(describeMutationError(err, "Failed to move card"));
+        if (mountedRef.current) {
+          setActionError(describeMutationError(err, "Failed to move card"));
+        }
         // If it's a 409, refetch so the captain has fresh state.
-        if (err instanceof LobbyApiError && err.reason === "VERSION_CONFLICT") {
+        if (
+          err instanceof LobbyApiError &&
+          err.reason === "VERSION_CONFLICT" &&
+          mountedRef.current
+        ) {
           onChanged();
         }
         throw err;
       } finally {
-        setBusyCardIds((prev) => removeFrom(prev, itemId));
+        if (mountedRef.current) {
+          setBusyCardIds((prev) => removeFrom(prev, itemId));
+        }
       }
     },
     [
@@ -356,10 +420,72 @@ export function KanbanBoard({
       lobbyId,
       projectedColumns,
       queueOptimisticMove,
-      resolveOptimisticMove,
       rollbackOptimisticMove,
       onChanged,
     ],
+  );
+
+  // Sprint 7B.1 (R2-H4 + R1-M4): canonical-driven overlay drop. After
+  // `onDrop` lands successfully, the overlay sits in the store until the
+  // canonical `cards` prop reflects the new column. This effect compares
+  // each overlay's `toColumn` to the matching canonical card; if they
+  // agree (or the canonical card has vanished), the overlay is no longer
+  // doing useful work and can be dropped.
+  useEffect(() => {
+    if (optimisticMoves.size === 0) return;
+    const cardById = new Map(cards.map((c) => [c.id, c]));
+    for (const [cardId, overlay] of optimisticMoves) {
+      const canonical = cardById.get(cardId);
+      // Card vanished server-side (orchestrator deleted, lobby reset, ...)
+      // — drop the now-meaningless overlay.
+      if (!canonical) {
+        resolveOptimisticMove(cardId, overlay.optimisticVersion);
+        continue;
+      }
+      if (canonical.column === overlay.toColumn) {
+        resolveOptimisticMove(cardId, overlay.optimisticVersion);
+      }
+    }
+  }, [cards, optimisticMoves, resolveOptimisticMove]);
+
+  // Sprint 7B.1 (R2-H4 watchdog): bound the wait so a missing refetch
+  // doesn't strand the overlay indefinitely. 5s is generous — covers
+  // network jitter on a slow connection but well under the human "did my
+  // click work?" threshold. After the watchdog fires, the next refetch
+  // (or any other mutation that calls onChanged) will reconcile.
+  useEffect(() => {
+    if (optimisticMoves.size === 0) return;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    const now = Date.now();
+    for (const [cardId, overlay] of optimisticMoves) {
+      const queuedAt = new Date(overlay.queuedAt).getTime();
+      const elapsed = Number.isFinite(queuedAt) ? now - queuedAt : 0;
+      const remaining = Math.max(0, 5000 - elapsed);
+      timers.push(
+        setTimeout(() => {
+          resolveOptimisticMove(cardId, overlay.optimisticVersion);
+        }, remaining),
+      );
+    }
+    return () => {
+      for (const t of timers) clearTimeout(t);
+    };
+  }, [optimisticMoves, resolveOptimisticMove]);
+
+  // Sprint 7B.1 (R3-H3): label resolvers for the SR announcer. Look up
+  // column titles via COLUMN_META and card titles via the cards prop so
+  // SR users hear "Moved Refactor login flow to In progress, position 2"
+  // instead of "Moved cd9-…-… to in_progress, slot 2".
+  const getContainerLabel = useCallback((containerId: string): string => {
+    if (!isLobbyCardColumn(containerId)) return containerId;
+    return COLUMN_META[containerId].title;
+  }, []);
+  const getItemLabel = useCallback(
+    (itemId: string): string => {
+      const card = cards.find((c) => c.id === itemId);
+      return card ? card.title : itemId;
+    },
+    [cards],
   );
 
   const dnd = useKanbanDnd({
@@ -369,6 +495,8 @@ export function KanbanBoard({
     canDrag,
     canDrop,
     announce,
+    getContainerLabel,
+    getItemLabel,
   });
 
   // ── Card-level actions (cancel / retry) ────────────────────────────────
@@ -382,11 +510,15 @@ export function KanbanBoard({
           action: "cancel",
           expectedVersion: card.lockVersion,
         });
-        onChanged();
+        if (mountedRef.current) onChanged();
       } catch (err) {
-        setActionError(describeMutationError(err, "Failed to cancel card"));
+        if (mountedRef.current) {
+          setActionError(describeMutationError(err, "Failed to cancel card"));
+        }
       } finally {
-        setBusyCardIds((prev) => removeFrom(prev, card.id));
+        if (mountedRef.current) {
+          setBusyCardIds((prev) => removeFrom(prev, card.id));
+        }
       }
     },
     [lobbyId, onChanged],
@@ -401,11 +533,15 @@ export function KanbanBoard({
           action: "retry",
           expectedVersion: card.lockVersion,
         });
-        onChanged();
+        if (mountedRef.current) onChanged();
       } catch (err) {
-        setActionError(describeMutationError(err, "Failed to retry card"));
+        if (mountedRef.current) {
+          setActionError(describeMutationError(err, "Failed to retry card"));
+        }
       } finally {
-        setBusyCardIds((prev) => removeFrom(prev, card.id));
+        if (mountedRef.current) {
+          setBusyCardIds((prev) => removeFrom(prev, card.id));
+        }
       }
     },
     [lobbyId, onChanged],
@@ -426,9 +562,14 @@ export function KanbanBoard({
       </div>
 
       {actionError && (
+        // Sprint 7B.1 (R3-H8): alert role + destructive copy must use
+        // destructive color tokens (red), not amber. Amber-700 on the
+        // terminal-cream background also fell short of WCAG AA contrast
+        // for body text. Switching to red-700 brings both color semantics
+        // and contrast into line.
         <p
           role="alert"
-          className="font-mono text-[11px] text-amber-700 dark:text-amber-300"
+          className="font-mono text-[11px] text-red-700 dark:text-red-300"
         >
           {actionError}
         </p>
@@ -441,8 +582,21 @@ export function KanbanBoard({
         </p>
       )}
 
-      {/* Horizontal scroll on small screens; columns flex-grow on wide. */}
-      <div className="flex gap-2 overflow-x-auto pb-2">
+      {/* Sprint 7B.1 (R3-H4): board landmark. Without role="region" +
+          aria-labelledby, an SR user navigating by landmarks (most common
+          screen-reader workflow on a complex page) skipped the entire
+          kanban surface — there was no anchor to jump to. The visually-
+          hidden heading anchors the region without changing the visual
+          layout. Horizontal scroll on small screens; columns flex-grow
+          on wide. */}
+      <h2 id="kanban-board-heading" className="sr-only">
+        Card kanban board
+      </h2>
+      <div
+        role="region"
+        aria-labelledby="kanban-board-heading"
+        className="flex gap-2 overflow-x-auto pb-2"
+      >
         {COLUMN_ORDER.map((colId) => {
           const meta = COLUMN_META[colId];
           const items = projectedColumns[colId] ?? [];
@@ -542,10 +696,14 @@ function projectColumns(
   };
   for (const card of cards) {
     const overlay = optimisticMoves.get(card.id);
-    const targetCol = (overlay?.toColumn ?? card.column) as LobbyCardColumn;
-    const bucket = buckets[targetCol];
-    if (!bucket) continue;
-    bucket.push(card);
+    const candidate = overlay?.toColumn ?? card.column;
+    // Sprint 7B.1 (R4-H3): unknown column id → drop into `blocked` so
+    // the card is still visible but flagged. Silently dropping
+    // server-supplied data is worse than parking it somewhere visible.
+    const targetCol: LobbyCardColumn = isLobbyCardColumn(candidate)
+      ? candidate
+      : "blocked";
+    buckets[targetCol].push(card);
   }
   // Sort each bucket by position. Optimistic moves don't update position
   // here — refetch lands the canonical order — so we use the existing
@@ -598,8 +756,28 @@ function describeMutationError(err: unknown, fallback: string): string {
     if (err.reason === "INVALID_TRANSITION") {
       return err.message || "Move not allowed in the current phase.";
     }
+    // Sprint 7B.1 (R1-M5): INVARIANT_VIOLATION mapping. The server-side
+    // status↔column consistency check (Sprint 7B.1 P4 / R1-H1) returns
+    // INVARIANT_VIOLATION when a captain drops a card into a column that
+    // can't hold its current status. Without this branch the captain sees
+    // the raw "Column 'review' is not valid for cards with status 'pending'"
+    // engineering message, which is correct but unhelpful — the fallback
+    // copy + the server message together let them recover (move to a
+    // valid column, or wait for the orchestrator to advance status).
+    if (err.reason === "INVARIANT_VIOLATION") {
+      return err.message || "Card can't be in that column right now.";
+    }
     if (err.reason === "FORBIDDEN") {
       return "You don't have permission to modify this card.";
+    }
+    if (err.reason === "NOT_FOUND") {
+      return "This card no longer exists — refreshing.";
+    }
+    if (err.reason === "TIMEOUT") {
+      return "The server is taking too long — please retry.";
+    }
+    if (err.reason === "NETWORK") {
+      return "Network error — check your connection and try again.";
     }
     return err.message;
   }

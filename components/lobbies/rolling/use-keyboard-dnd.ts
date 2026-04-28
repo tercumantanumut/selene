@@ -103,6 +103,17 @@ export type UseKanbanDndOptions = {
   canDrop?: (args: DnDDropArgs) => boolean;
   /** Optional ARIA-live announcer. Pass a setter that writes to a `polite` region. */
   announce?: (message: string) => void;
+  /**
+   * Sprint 7B.1 (R3-H3): label resolvers used by the live-region
+   * announcer. Without these, the SR user hears raw column ids and uuids
+   * — "in_progress, slot 3", "Picked up cd9-...". Both look fine in a
+   * dev tool and make zero sense to a captain. Resolvers turn them into
+   * the same labels the captain sees on screen ("In progress, position
+   * 3", "Picked up Refactor login flow"). Optional so the hook stays
+   * usable in tests with synthetic data.
+   */
+  getContainerLabel?: (containerId: string) => string;
+  getItemLabel?: (itemId: string) => string;
 };
 
 export type UseKanbanDndResult = {
@@ -123,12 +134,20 @@ export type UseKanbanDndResult = {
  * Props returned by `getItemProps` — spread onto the draggable card root.
  * Exported so consumers (e.g. `KanbanCardTile`) can declare the prop in
  * their own type without re-deriving it.
+ *
+ * Sprint 7B.1 (R3-H2): WAI-ARIA 1.2 deprecated `aria-grabbed` and
+ * `aria-dropeffect` — they were never reliably supported by AT and ARIA's
+ * APG now points DnD at the live-region + roving-tabindex pattern. We
+ * drop both attributes and rely on `aria-pressed` (toggle button
+ * semantics for "card picked up") + the live region in `KanbanBoard` for
+ * narration. The `aria-roledescription` stays so AT users hear "draggable
+ * card" instead of "button".
  */
 export type DnDItemProps = {
   role: "button";
   tabIndex: 0;
   "aria-roledescription": "draggable card";
-  "aria-grabbed": boolean;
+  "aria-pressed": boolean;
   "aria-disabled"?: true;
   onKeyDown: (e: React.KeyboardEvent) => void;
   onPointerDown: (e: React.PointerEvent) => void;
@@ -137,14 +156,29 @@ export type DnDItemProps = {
 
 /**
  * Props returned by `getDropSlotProps` — spread onto a slot element.
+ *
+ * Sprint 7B.1 (R3-H6): the slot element receives pointer events and a
+ * click handler — it's interactive, not presentational. role="button"
+ * makes it a real keyboard tabstop and a real SR target. The slot
+ * advertises itself with an `aria-label` describing the drop position
+ * ("Drop in column X at position N") so the SR user hears the target as
+ * focus moves.
+ *
+ * Sprint 7B.1 (R3-H1): slots accept a `ref` callback so the hook can
+ * focus the active hover slot during keyboard nav. Without this, the SR
+ * user picks up a card and arrows around with focus stuck on the source
+ * tile — they have no idea where the cursor went.
  */
 export type DnDDropSlotProps = {
-  role: "presentation";
-  "aria-dropeffect": "move" | "none";
+  role: "button";
+  tabIndex: number;
+  "aria-label": string;
+  "aria-disabled": boolean;
   "data-dnd-target": "true";
   "data-dnd-container": string;
   "data-dnd-index": string;
   "data-dnd-hover"?: "true";
+  ref: (el: HTMLElement | null) => void;
   onPointerEnter: () => void;
   onPointerUp: (e: React.PointerEvent) => void;
   onClick: () => void;
@@ -161,20 +195,59 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
   // re-binding on every state change.
   const optsRef = useRef(opts);
   optsRef.current = opts;
-  const stateRef = useRef(state);
-  stateRef.current = state;
+
+  // Sprint 7B.1 (R3-H7): stateRef must be updated SYNCHRONOUSLY at every
+  // call-site that calls setState — not lazily during render — because the
+  // window-level keydown listener registered on mount reads stateRef.current
+  // immediately. If we waited for React to commit and then assigned
+  // `stateRef.current = state` during render, a fast Space-press in the same
+  // tick as a setState would observe stale state. The helper below pairs the
+  // two updates so it's impossible to update one without the other.
+  const stateRef = useRef<DnDState>({ kind: "idle" });
+  const setDndState = useCallback((next: DnDState) => {
+    stateRef.current = next;
+    setState(next);
+  }, []);
+
+  // Sprint 7B.1 (R3-H1): one ref per drop slot, keyed by
+  // `${containerId}:${index}`. The hook focuses the active hover slot during
+  // keyboard nav so SR users hear the cursor's new position instead of
+  // having focus stuck on the source tile. Pointer-mode hover does NOT
+  // steal focus — the captain is using the mouse and pulling focus would
+  // disrupt their flow.
+  const slotRefs = useRef(new Map<string, HTMLElement>());
+  const slotKey = useCallback(
+    (target: DnDPosition) => `${target.containerId}:${target.index}`,
+    [],
+  );
 
   const announce = useCallback((msg: string) => {
     optsRef.current.announce?.(msg);
   }, []);
 
+  // Sprint 7B.1 (R3-H3): label helpers for SR announcements. Falls back
+  // to the raw id when the consumer didn't supply a resolver, so the
+  // hook still works with synthetic test fixtures.
+  const labelForContainer = useCallback((containerId: string): string => {
+    const fn = optsRef.current.getContainerLabel;
+    return fn ? fn(containerId) : containerId;
+  }, []);
+  const labelForItem = useCallback((itemId: string): string => {
+    const fn = optsRef.current.getItemLabel;
+    return fn ? fn(itemId) : itemId;
+  }, []);
+
   // ── Cancel / commit ────────────────────────────────────────────────────
 
   const cancel = useCallback(() => {
-    if (stateRef.current.kind !== "active") return;
-    setState({ kind: "idle" });
-    announce("Drag cancelled");
-  }, [announce]);
+    const cur = stateRef.current;
+    if (cur.kind !== "active") return;
+    setDndState({ kind: "idle" });
+    // Sprint 7B.1 (R3-H3): include card title so the SR user hears which
+    // gesture was undone (a captain who picked up two cards in a row and
+    // hit Esc on one needs the disambiguation).
+    announce(`Cancelled drag of ${labelForItem(cur.itemId)}`);
+  }, [announce, setDndState, labelForItem]);
 
   /**
    * `override` lets a slot's pointerup pass its known target directly, so
@@ -191,8 +264,8 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         target.index === cur.source.index
       ) {
         // No-op drop: pickup → release on same slot.
-        setState({ kind: "idle" });
-        announce("Drop cancelled — same position");
+        setDndState({ kind: "idle" });
+        announce(`${labelForItem(cur.itemId)} stayed in place`);
         return;
       }
       if (
@@ -203,27 +276,31 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
           target,
         })
       ) {
-        announce("Drop not allowed here");
+        announce(
+          `Cannot drop ${labelForItem(cur.itemId)} in ${labelForContainer(target.containerId)}`,
+        );
         return;
       }
       // Clear DnD state immediately so the captain can pick up another card
       // while the network call is still in flight. The caller's optimistic
       // overlay is what visually moves the card; this hook only owns the
       // pickup-to-drop gesture.
-      setState({ kind: "idle" });
+      setDndState({ kind: "idle" });
       try {
         await optsRef.current.onDrop({
           itemId: cur.itemId,
           source: cur.source,
           target,
         });
-        announce("Card moved");
+        announce(
+          `Moved ${labelForItem(cur.itemId)} to ${labelForContainer(target.containerId)}, position ${target.index + 1}`,
+        );
       } catch {
         // Caller is responsible for any rollback + visible error UX.
-        announce("Move failed");
+        announce(`Failed to move ${labelForItem(cur.itemId)}`);
       }
     },
-    [announce],
+    [announce, setDndState, labelForItem, labelForContainer],
   );
 
   // ── Keyboard hover navigation ─────────────────────────────────────────
@@ -256,29 +333,44 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
             : Math.min(cap - 1, cur.hover.index + 1);
       }
 
-      setState({
+      setDndState({
         ...cur,
         hover: { containerId: nextCol, index: nextIndex },
       });
-      announce(`${nextCol}, slot ${nextIndex + 1}`);
+      announce(`${labelForContainer(nextCol)}, position ${nextIndex + 1}`);
     },
-    [announce],
+    [announce, setDndState, labelForContainer],
   );
 
-  // ── Window-scoped keyboard handler (active-keyboard mode) ─────────────
+  // ── Mount-time global listeners (read state via stateRef) ─────────────
+  //
+  // Note: previous design exposed an `activeMode` derivation in the
+  // dependency arrays of state-gated effects. With one mount-time listener
+  // per concern reading `stateRef`, that derivation became dead code and
+  // was removed.
 
-  // Pull `mode` out as `null` when idle so the effect deps stay
-  // type-safe (state.mode is only present on the `active` variant).
-  const activeMode = state.kind === "active" ? state.mode : null;
-
+  // Sprint 7B.1 (R3-H7): one mount-time keydown listener replaces the
+  // previous state-gated effect. The previous design re-registered the
+  // listener every time `state` or `mode` changed — fine in steady state,
+  // but a setState followed by a fast key-press in the same tick observed
+  // the old listener (which had captured stale `state`). The mount-time
+  // listener reads `stateRef.current` so it sees whatever setDndState just
+  // wrote, regardless of React's render schedule.
   useEffect(() => {
-    if (state.kind !== "active" || state.mode !== "keyboard") return;
     function onKey(e: KeyboardEvent) {
+      const cur = stateRef.current;
+      if (cur.kind !== "active") return;
+      // Escape works in both modes.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancel();
+        return;
+      }
+      // Arrow + commit keys are keyboard-mode only — pointer mode commits
+      // via slot pointerup, and we don't want arrow keys to fight the
+      // captain's mouse position.
+      if (cur.mode !== "keyboard") return;
       switch (e.key) {
-        case "Escape":
-          e.preventDefault();
-          cancel();
-          break;
         case "ArrowLeft":
           e.preventDefault();
           moveHover("left");
@@ -301,38 +393,67 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
           void commit();
           break;
         default:
-          // ignore everything else (typing in a focused input shouldn't
-          // disturb the drag, but we don't proactively check focus —
-          // captain who picks up a card and starts typing gets keystrokes
-          // routed here, which is acceptable for a transient gesture).
           break;
       }
     }
     // useCapture so we beat any focused button's onKeyDown.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [state.kind, activeMode, cancel, commit, moveHover]);
+  }, [cancel, commit, moveHover]);
 
-  // ── Pointer mode: pointercancel + Escape ──────────────────────────────
-
+  // Sprint 7B.1 (R2-H1): window-level pointerup fallback. Without this,
+  // releasing the mouse outside any drop slot left the hook in `active`
+  // state forever — the captain would see a phantom hover badge and the
+  // next click would commit at the stale hover position. The fallback
+  // cancels the drag if no slot's onPointerUp ran first (slots stop the
+  // gesture by calling commit, which transitions to idle before this
+  // fallback fires).
+  //
+  // pointercancel handles the OS yanking the gesture (browser tab switch,
+  // touch interrupted, etc).
   useEffect(() => {
-    if (state.kind !== "active" || state.mode !== "pointer") return;
-    function onCancel() {
-      cancel();
+    function onPointerUp() {
+      // Defer one tick so any slot's onPointerUp has a chance to run first
+      // (slots → commit → setDndState({ kind: "idle" })). If we still see
+      // active state after that, the release happened off-grid and we
+      // cancel.
+      queueMicrotask(() => {
+        const cur = stateRef.current;
+        if (cur.kind === "active" && cur.mode === "pointer") {
+          cancel();
+        }
+      });
     }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
+    function onPointerCancel() {
+      const cur = stateRef.current;
+      if (cur.kind === "active" && cur.mode === "pointer") {
         cancel();
       }
     }
-    window.addEventListener("pointercancel", onCancel);
-    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
     return () => {
-      window.removeEventListener("pointercancel", onCancel);
-      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
     };
-  }, [state.kind, activeMode, cancel]);
+  }, [cancel]);
+
+  // Sprint 7B.1 (R3-H1): focus-follows-hover for keyboard mode. When the
+  // captain arrows around with a card picked up, focus has to move to the
+  // hover slot — otherwise SR users hear the live-region announcement but
+  // their actual cursor stays on the source tile, and the next Tab jumps
+  // somewhere unrelated. We only do this in keyboard mode; in pointer mode
+  // the captain owns the focus position via mouse.
+  useEffect(() => {
+    if (state.kind !== "active" || state.mode !== "keyboard") return;
+    const key = slotKey(state.hover);
+    const el = slotRefs.current.get(key);
+    // Only refocus if focus isn't already on the slot (avoids fighting the
+    // SR's own virtual cursor when nothing has changed).
+    if (el && document.activeElement !== el) {
+      el.focus({ preventScroll: false });
+    }
+  }, [state, slotKey]);
 
   // ── Public handle factories ──────────────────────────────────────────
 
@@ -349,18 +470,21 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         role: "button",
         tabIndex: 0,
         "aria-roledescription": "draggable card",
-        "aria-grabbed": isMe,
+        // Sprint 7B.1 (R3-H2): aria-pressed replaces deprecated
+        // aria-grabbed. The card behaves as a toggle button — pressed when
+        // picked up, released when idle.
+        "aria-pressed": isMe,
         ...(draggable ? {} : { "aria-disabled": true as const }),
         onKeyDown: (e) => {
           if (!draggable) return;
-          if (state.kind !== "idle") return;
+          if (stateRef.current.kind !== "idle") return;
           if (!PICKUP_KEYS.has(e.key)) return;
           e.preventDefault();
           const source: DnDPosition = {
             containerId: args.containerId,
             index: args.index,
           };
-          setState({
+          setDndState({
             kind: "active",
             itemId: args.itemId,
             source,
@@ -368,14 +492,14 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
             mode: "keyboard",
           });
           announce(
-            "Picked up. Arrow keys to move, space to drop, escape to cancel.",
+            `Picked up ${labelForItem(args.itemId)}. Arrow keys to move, space to drop, escape to cancel.`,
           );
         },
         onPointerDown: (e) => {
           if (!draggable) return;
           // Only primary button (mouse left / touch / pen).
           if (e.button !== 0) return;
-          if (state.kind !== "idle") return;
+          if (stateRef.current.kind !== "idle") return;
           // Skip pickup if the click landed on a nested control marked
           // `data-dnd-skip` (e.g. an inline edit / cancel button on the
           // tile). Caller is responsible for marking those.
@@ -385,7 +509,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
             containerId: args.containerId,
             index: args.index,
           };
-          setState({
+          setDndState({
             kind: "active",
             itemId: args.itemId,
             source,
@@ -398,7 +522,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         ...(isMe ? { "data-dnd-pickup": "true" as const } : {}),
       };
     },
-    [state, announce],
+    [state, announce, setDndState, labelForItem],
   );
 
   const getDropSlotProps = useCallback<UseKanbanDndResult["getDropSlotProps"]>(
@@ -407,22 +531,40 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         state.kind === "active" &&
         state.hover.containerId === target.containerId &&
         state.hover.index === target.index;
-      // `aria-dropeffect="none"` when the active drag would be rejected
-      // here, so screen-readers announce non-droppable slots correctly.
+      const isActive = state.kind === "active";
       const valid =
-        state.kind !== "active" ||
+        !isActive ||
         (optsRef.current.canDrop?.({
           itemId: state.itemId,
           source: state.source,
           target,
         }) ?? true);
+      // Sprint 7B.1 (R3-H6): role="button" makes the slot a real keyboard
+      // tabstop and a real SR target. tabIndex is -1 when no drag is
+      // active (so the captain doesn't tab through hundreds of empty drop
+      // slots), 0 only on the active hover slot during keyboard mode, -1
+      // on other slots during a drag (we drive nav via arrow keys, not
+      // Tab). We keep slots reachable to programmatic focus via the ref
+      // (focus-follows-hover effect).
+      const tabIndex = isActive && isHover && state.mode === "keyboard" ? 0 : -1;
+      const ariaLabel = `Drop in ${labelForContainer(target.containerId)} at position ${target.index + 1}`;
+      const key = slotKey(target);
       return {
-        role: "presentation",
-        "aria-dropeffect": valid ? "move" : "none",
+        role: "button",
+        tabIndex,
+        "aria-label": ariaLabel,
+        "aria-disabled": isActive && !valid,
         "data-dnd-target": "true",
         "data-dnd-container": target.containerId,
         "data-dnd-index": String(target.index),
         ...(isHover ? { "data-dnd-hover": "true" as const } : {}),
+        ref: (el: HTMLElement | null) => {
+          if (el) {
+            slotRefs.current.set(key, el);
+          } else {
+            slotRefs.current.delete(key);
+          }
+        },
         onPointerEnter: () => {
           const cur = stateRef.current;
           if (cur.kind !== "active" || cur.mode !== "pointer") return;
@@ -432,7 +574,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
           ) {
             return;
           }
-          setState({ ...cur, hover: target });
+          setDndState({ ...cur, hover: target });
         },
         onPointerUp: (e) => {
           const cur = stateRef.current;
@@ -452,7 +594,7 @@ export function useKanbanDnd(opts: UseKanbanDndOptions): UseKanbanDndResult {
         },
       };
     },
-    [state, commit],
+    [state, commit, slotKey, setDndState, labelForContainer],
   );
 
   return useMemo(
