@@ -14,9 +14,10 @@ import type {
   TaskEvent,
   TaskProgressEvent,
 } from "./types";
-import { nowISO, isStale } from "@/lib/utils/timestamp";
+import { nowISO } from "@/lib/utils/timestamp";
+import { touchAgentRun } from "@/lib/observability/queries";
 
-const STALE_THRESHOLD_MS = 30 * 60 * 1000;
+const RUN_TOUCH_INTERVAL_MS = 60 * 1000;
 const DEBUG_TASK_REGISTRY = process.env.DEBUG_TASK_REGISTRY === "true";
 
 const globalForRegistry = globalThis as typeof globalThis & {
@@ -29,6 +30,8 @@ class TaskRegistry extends EventEmitter {
   private static COMPLETED_TTL_MS = 10 * 60 * 1000; // 10 minutes
   private static MAX_COMPLETED_BUFFER = 200; // size cap to prevent unbounded growth
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private heartbeatIntervals: Map<string, NodeJS.Timeout> = new Map();
+  private lastRunTouchAt: Map<string, number> = new Map();
   private cleanupStats = {
     totalCleaned: 0,
     lastCleanupAt: null as string | null,
@@ -57,6 +60,7 @@ class TaskRegistry extends EventEmitter {
     // Clear any stale completed entry for reused runIds
     this.recentlyCompleted.delete(task.runId);
     this.tasks.set(task.runId, task);
+    this.startRunHeartbeat(task.runId);
 
     const event: TaskEvent = {
       eventType: "task:started",
@@ -68,6 +72,43 @@ class TaskRegistry extends EventEmitter {
     this.emit(`task:started:${task.userId}`, event);
 
     console.log(`[TaskRegistry] Registered ${task.type} task: ${task.runId}`);
+  }
+
+  private touchRun(runId: string, activityAt: string): void {
+    const lastTouchAt = this.lastRunTouchAt.get(runId) ?? 0;
+    if (Date.now() - lastTouchAt < RUN_TOUCH_INTERVAL_MS) return;
+
+    this.lastRunTouchAt.set(runId, Date.now());
+    void touchAgentRun(runId, { lastHeartbeatAt: activityAt }).catch((error) => {
+      console.warn("[TaskRegistry] Failed to touch agent run:", { runId, error });
+    });
+  }
+
+  private startRunHeartbeat(runId: string): void {
+    if (this.heartbeatIntervals.has(runId)) return;
+
+    const interval = setInterval(() => {
+      const task = this.tasks.get(runId);
+      if (!task || task.status !== "running") {
+        this.stopRunHeartbeat(runId);
+        return;
+      }
+
+      const activityAt = nowISO();
+      task.lastActivityAt = activityAt;
+      this.tasks.set(runId, task);
+      this.touchRun(runId, activityAt);
+    }, RUN_TOUCH_INTERVAL_MS);
+
+    this.heartbeatIntervals.set(runId, interval);
+  }
+
+  private stopRunHeartbeat(runId: string): void {
+    const interval = this.heartbeatIntervals.get(runId);
+    if (interval) {
+      clearInterval(interval);
+      this.heartbeatIntervals.delete(runId);
+    }
   }
 
   updateStatus(
@@ -86,8 +127,14 @@ class TaskRegistry extends EventEmitter {
       ...(shouldComplete && { completedAt: nowISO() }),
     } as UnifiedTask;
 
+    if (status === "running") {
+      this.startRunHeartbeat(runId);
+    }
+
     if (shouldComplete) {
       this.tasks.delete(runId);
+      this.stopRunHeartbeat(runId);
+      this.lastRunTouchAt.delete(runId);
       this.recentlyCompleted.set(runId, { task: updated, completedAt: Date.now() });
       // Enforce size cap by evicting oldest entries
       if (this.recentlyCompleted.size > TaskRegistry.MAX_COMPLETED_BUFFER) {
@@ -131,10 +178,13 @@ class TaskRegistry extends EventEmitter {
       });
     }
 
-    // Update lastActivityAt for stale detection
+    // Update volatile activity and durable DB liveness independently of model output.
     if (task) {
-      task.lastActivityAt = nowISO();
+      const activityAt = nowISO();
+      task.lastActivityAt = activityAt;
       this.tasks.set(runId, task);
+
+      this.touchRun(runId, activityAt);
     }
 
     if (!task) {
@@ -298,21 +348,9 @@ class TaskRegistry extends EventEmitter {
   }
 
   private cleanupStaleTasks(): void {
+    // Do not evict running tasks only because they are quiet. Long-running
+    // providers can spend long periods without emitting progress while still alive.
     const staleRunIds: string[] = [];
-
-    for (const [runId, task] of this.tasks) {
-      if (isStale(task.lastActivityAt ?? task.startedAt, STALE_THRESHOLD_MS)) {
-        staleRunIds.push(runId);
-      }
-    }
-
-    for (const runId of staleRunIds) {
-      this.updateStatus(runId, "stale", {
-        error: "Task marked stale by cleanup",
-      });
-      this.cleanupStats.totalCleaned += 1;
-      this.cleanupStats.cleanupsByReason.stale += 1;
-    }
 
     // Prune expired recently-completed entries
     const now = Date.now();
@@ -320,6 +358,7 @@ class TaskRegistry extends EventEmitter {
     for (const [runId, entry] of this.recentlyCompleted) {
       if (now - entry.completedAt > TaskRegistry.COMPLETED_TTL_MS) {
         this.recentlyCompleted.delete(runId);
+        this.lastRunTouchAt.delete(runId);
         expiredCount++;
       }
     }
@@ -347,6 +386,11 @@ class TaskRegistry extends EventEmitter {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
     }
+    for (const interval of this.heartbeatIntervals.values()) {
+      clearInterval(interval);
+    }
+    this.heartbeatIntervals.clear();
+    this.lastRunTouchAt.clear();
     this.removeAllListeners();
     this.tasks.clear();
     this.recentlyCompleted.clear();
@@ -354,4 +398,4 @@ class TaskRegistry extends EventEmitter {
 }
 
 export const taskRegistry = TaskRegistry.getInstance();
-{ TaskRegistry };
+export { TaskRegistry };

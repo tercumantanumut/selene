@@ -2,8 +2,8 @@
  * Shared types for the TruncatedContentStore abstraction.
  */
 
-// Default TTL: 1 hour (content expires after this time)
-export const DEFAULT_TTL_MS = 60 * 60 * 1000;
+// Default TTL: 7 days (long-running agents may need to retrieve old tool output)
+export const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Cleanup interval: run every 15 minutes
 export const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;

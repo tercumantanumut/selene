@@ -45,7 +45,7 @@ import { emitDelegationCompleted } from "@/lib/background-tasks/delegation-compl
  * When `initiatorSessionId` is provided, only delegations created in that
  * session are returned — this prevents cross-session leakage.
  */
-const DELEGATION_STALE_TTL_MS = 60 * 60 * 1000;
+const DELEGATION_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isDelegationExpired(delegation: ActiveDelegation, now = Date.now()): boolean {
   const referenceTime = delegation.settledAt ?? delegation.startedAt;

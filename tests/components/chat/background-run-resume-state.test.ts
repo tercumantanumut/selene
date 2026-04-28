@@ -14,6 +14,7 @@ describe("background run resume state", () => {
     expect(state.resumedForegroundRunId).toBeNull();
     expect(state.trackedRunId).toBe("run-chat");
     expect(state.shouldShowBackgroundRun).toBe(true);
+    expect(state.shouldPollRun).toBe(false);
   });
 
   it("resumes background polling for a normal active run", () => {
@@ -28,6 +29,21 @@ describe("background run resume state", () => {
     expect(state.resumedForegroundRunId).toBe("run-chat");
     expect(state.trackedRunId).toBe("run-chat");
     expect(state.shouldShowBackgroundRun).toBe(true);
+    expect(state.shouldPollRun).toBe(true);
+  });
+
+  it("polls stale-suspected runs even when resume is otherwise disabled", () => {
+    const state = resolveBackgroundRunState({
+      isForegroundStreaming: false,
+      hasActiveRun: true,
+      runId: "run-chat",
+      health: "stale_suspected",
+      shouldResumeBackgroundRun: false,
+    });
+
+    expect(state.trackedRunId).toBe("run-chat");
+    expect(state.isStaleSuspected).toBe(true);
+    expect(state.shouldPollRun).toBe(true);
   });
 
   it("does not treat a foreground-streaming turn as resumable background work", () => {
@@ -42,5 +58,6 @@ describe("background run resume state", () => {
     expect(state.resumedForegroundRunId).toBeNull();
     expect(state.trackedRunId).toBeNull();
     expect(state.shouldShowBackgroundRun).toBe(false);
+    expect(state.shouldPollRun).toBe(false);
   });
 });

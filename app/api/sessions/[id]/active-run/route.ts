@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth/local-auth";
-import { listAgentRunsBySession, completeAgentRun } from "@/lib/observability/queries";
+import { listAgentRunsBySession } from "@/lib/observability/queries";
 import { getOrCreateLocalUser } from "@/lib/db/queries";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { isStale } from "@/lib/utils/timestamp";
@@ -33,29 +33,24 @@ export async function GET(req: Request, { params }: RouteParams) {
     const dbUser = await getOrCreateLocalUser(userId, settings.localUserEmail);
     const { id: sessionId } = await params;
 
-    // Get all runs for this session
+    // Get all runs for this session. Read endpoints must not finalize stale-looking
+    // runs; long-running providers can be silent while still healthy.
     const runs = await listAgentRunsBySession(sessionId);
     const THIRTY_MINUTES = 30 * 60 * 1000;
-    const staleRunIds = new Set<string>();
     const hasInteractiveWait = hasPendingInteractiveWait(sessionId);
 
-    for (const run of runs) {
-      if (run.status !== "running") continue;
-      if (hasInteractiveWait) continue;
-      if (!isStale(run.updatedAt ?? run.startedAt, THIRTY_MINUTES)) continue;
-      staleRunIds.add(run.id);
-      await completeAgentRun(run.id, "failed", { error: "stale_run_cleanup" });
-    }
-
-    const nonStaleRuns = runs.filter((run) => !staleRunIds.has(run.id));
-
-    const activeForegroundChatRun = nonStaleRuns.find((run) =>
+    const activeForegroundChatRun = runs.find((run) =>
       run.status === "running" &&
       run.pipelineName === "chat" &&
       !isBackgroundChatRun(run.metadata)
     );
+    const activeRunHealth = activeForegroundChatRun &&
+      !hasInteractiveWait &&
+      isStale(activeForegroundChatRun.updatedAt ?? activeForegroundChatRun.startedAt, THIRTY_MINUTES)
+        ? "stale_suspected"
+        : "running";
 
-    const latestDeepResearchRun = nonStaleRuns.find((run) => run.pipelineName === "deep-research");
+    const latestDeepResearchRun = runs.find((run) => run.pipelineName === "deep-research");
     const latestDeepResearchMetadata = (
       latestDeepResearchRun?.metadata && typeof latestDeepResearchRun.metadata === "object"
     )
@@ -69,6 +64,7 @@ export async function GET(req: Request, { params }: RouteParams) {
         pipelineName: null,
         startedAt: null,
         hasInteractiveWait,
+        health: null,
         shouldResumeBackgroundRun: false,
         latestDeepResearchRunId: latestDeepResearchRun?.id ?? null,
         latestDeepResearchStatus: latestDeepResearchRun?.status ?? null,
@@ -81,6 +77,7 @@ export async function GET(req: Request, { params }: RouteParams) {
       runId: activeForegroundChatRun.id,
       pipelineName: activeForegroundChatRun.pipelineName,
       startedAt: activeForegroundChatRun.startedAt,
+      health: activeRunHealth,
       hasInteractiveWait,
       shouldResumeBackgroundRun: hasInteractiveWait !== true,
       latestDeepResearchRunId: latestDeepResearchRun?.id ?? null,

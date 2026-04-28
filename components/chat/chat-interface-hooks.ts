@@ -266,7 +266,11 @@ export function useBackgroundProcessing({
 
         const pollOnce = async () => {
             try {
-                const { data, error, status } = await resilientFetch<{ status: string; isZombie?: boolean }>(
+                const { data, error, status } = await resilientFetch<{
+                    status: string;
+                    isZombie?: boolean;
+                    health?: "running" | "stale_suspected";
+                }>(
                     `/api/agent-runs/${runId}/status`,
                     { retries: 0 }
                 );
@@ -311,13 +315,10 @@ export function useBackgroundProcessing({
                 if (data.status === "running") {
                     setIsZombieRun(Boolean(data.isZombie));
                     if (data.isZombie) {
-                        console.warn("[Background Processing] Zombie run detected, stopping polling");
-                        if (pollingIntervalRef.current) {
-                            clearInterval(pollingIntervalRef.current);
-                            pollingIntervalRef.current = null;
-                        }
-                        activePollingRunIdRef.current = null;
-                        return;
+                        console.warn("[Background Processing] Zombie run detected; keeping recovery polling active", { runId });
+                    }
+                    if (data.health === "stale_suspected") {
+                        console.warn("[Background Processing] Run is stale-suspected but still running", { runId });
                     }
                     // Fetch intermediate messages while still running for live updates
                     await refreshMessagesRef.current();

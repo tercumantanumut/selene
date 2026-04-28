@@ -236,6 +236,7 @@ interface BackgroundRunResolutionInput {
     isForegroundStreaming: boolean;
     hasActiveRun?: boolean;
     runId?: string | null;
+    health?: "running" | "stale_suspected" | null;
     shouldResumeBackgroundRun?: boolean;
     latestDeepResearchStatus?: string | null;
     latestDeepResearchRunId?: string | null;
@@ -247,6 +248,8 @@ interface BackgroundRunResolution {
     deepResearchRunId: string | null;
     trackedRunId: string | null;
     shouldShowBackgroundRun: boolean;
+    shouldPollRun: boolean;
+    isStaleSuspected: boolean;
 }
 
 interface SessionScopedAsyncResultInput {
@@ -280,6 +283,7 @@ export const resolveBackgroundRunState = (
         : null;
 
     const trackedRunId = activeForegroundRunId ?? deepResearchRunId;
+    const isStaleSuspected = input.health === "stale_suspected";
 
     return {
         activeForegroundRunId,
@@ -287,5 +291,7 @@ export const resolveBackgroundRunState = (
         deepResearchRunId,
         trackedRunId,
         shouldShowBackgroundRun: Boolean(activeForegroundRunId || deepResearchRunId),
+        shouldPollRun: Boolean(resumedForegroundRunId || deepResearchRunId || isStaleSuspected),
+        isStaleSuspected,
     };
 };

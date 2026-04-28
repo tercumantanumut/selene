@@ -14,7 +14,6 @@ const dbMocks = vi.hoisted(() => ({
 
 const observabilityMocks = vi.hoisted(() => ({
   listAgentRunsBySession: vi.fn(),
-  completeAgentRun: vi.fn(async () => undefined),
 }));
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -156,5 +155,34 @@ describe("GET /api/sessions/[id]/active-run", () => {
       shouldResumeBackgroundRun: false,
     });
     expect(bridgeMocks.hasPendingInteractiveWait).toHaveBeenCalledWith("session-1");
+  });
+
+  it("keeps stale-looking foreground chat runs active instead of failing them from GET", async () => {
+    const oldTimestamp = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+    observabilityMocks.listAgentRunsBySession.mockResolvedValue([
+      {
+        id: "run-long",
+        sessionId: "session-1",
+        pipelineName: "chat",
+        status: "running",
+        startedAt: oldTimestamp,
+        updatedAt: oldTimestamp,
+        metadata: {},
+      },
+    ]);
+
+    const response = await GET(
+      new Request("http://localhost/api/sessions/session-1/active-run") as any,
+      { params: Promise.resolve({ id: "session-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      hasActiveRun: true,
+      runId: "run-long",
+      health: "stale_suspected",
+      shouldResumeBackgroundRun: true,
+    });
   });
 });

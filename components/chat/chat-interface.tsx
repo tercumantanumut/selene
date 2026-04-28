@@ -39,6 +39,7 @@ import {
     shouldDeferLivePromptForegroundReconciliation,
     shouldSkipEnsureCurrentSessionOpen,
     shouldApplySessionScopedAsyncResult,
+    resolveBackgroundRunState,
     toOpenChatWorkspaceSession,
 } from "@/components/chat/chat-interface-utils";
 import { ChatSidebarHeader, ScheduledRunBanner } from "@/components/chat/chat-interface-parts";
@@ -1056,22 +1057,23 @@ export default function ChatInterface({
                 return;
             }
 
-            const activeForegroundRunId =
-                !isForegroundStreamingRef.current && data.hasActiveRun
-                    ? data.runId ?? null
-                    : null;
-
-            const resumedForegroundRunId =
-                activeForegroundRunId && data.shouldResumeBackgroundRun !== false
-                    ? activeForegroundRunId
-                    : null;
-
-            const deepResearchRunId = data.latestDeepResearchStatus === "running"
-                ? data.latestDeepResearchRunId ?? null
-                : null;
-
-            const trackedRunId = activeForegroundRunId ?? deepResearchRunId;
-            const shouldShowBackgroundRun = Boolean(activeForegroundRunId || deepResearchRunId);
+            const {
+                activeForegroundRunId,
+                resumedForegroundRunId,
+                deepResearchRunId,
+                trackedRunId,
+                shouldShowBackgroundRun,
+                shouldPollRun,
+                isStaleSuspected,
+            } = resolveBackgroundRunState({
+                isForegroundStreaming: isForegroundStreamingRef.current,
+                hasActiveRun: data.hasActiveRun,
+                runId: data.runId,
+                health: data.health,
+                shouldResumeBackgroundRun: data.shouldResumeBackgroundRun,
+                latestDeepResearchStatus: data.latestDeepResearchStatus,
+                latestDeepResearchRunId: data.latestDeepResearchRunId,
+            });
 
             if (trackedRunId) {
                 const isSameTrackedRun =
@@ -1086,6 +1088,8 @@ export default function ChatInterface({
                         JSON.stringify({
                             hasInteractiveWait: data.hasInteractiveWait,
                             shouldResumeBackgroundRun: data.shouldResumeBackgroundRun,
+                            health: data.health,
+                            staleSuspected: isStaleSuspected,
                         }),
                     );
                     lastDetectedRunIdRef.current = trackedRunId;
@@ -1097,7 +1101,7 @@ export default function ChatInterface({
                     bg.setIsZombieRun(false);
                 }
 
-                if (resumedForegroundRunId || deepResearchRunId) {
+                if (shouldPollRun) {
                     bg.startPollingForCompletion(trackedRunId);
                 } else if (bg.pollingIntervalRef.current) {
                     clearInterval(bg.pollingIntervalRef.current);

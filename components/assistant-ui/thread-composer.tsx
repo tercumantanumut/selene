@@ -1671,7 +1671,7 @@ export const Composer: FC<{
       || deepResearch.phase === "error"
     )
   );
-  const isBackgroundProcessingVisible = isProcessingInBackground || isDeepResearchBackgroundPolling;
+  const isBackgroundProcessingVisible = isProcessingInBackground || isDeepResearchBackgroundPolling || hasTrackedBackgroundRun;
 
   return (
     <div className="relative w-full">

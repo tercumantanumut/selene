@@ -271,8 +271,8 @@ export function finalizeStreamingToolCalls(state: StreamingMessageState): boolea
  * Delegated tool calls can remain legitimately unresolved while the sub-agent is
  * still running. Keep those pending instead of sealing them into synthetic errors.
  */
-/** Max time a delegation can remain "pending" before we consider it stale (1h). */
-const DELEGATION_PENDING_TTL_MS = 60 * 60 * 1000;
+/** Max time a delegation can remain "pending" before we consider it stale (7d). */
+const DELEGATION_PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function shouldKeepDelegatedToolCallPending(
   part: Pick<DBToolCallPart, "toolName" | "args" | "active" | "timestamp">

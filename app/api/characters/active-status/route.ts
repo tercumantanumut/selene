@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth/local-auth";
-import { listRunningRunsByCharacter, completeAgentRun } from "@/lib/observability/queries";
+import { listRunningRunsByCharacter } from "@/lib/observability/queries";
 import { getOrCreateLocalUser } from "@/lib/db/queries";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { isStale } from "@/lib/utils/timestamp";
@@ -27,7 +27,7 @@ export async function GET(req: Request) {
     }
 
     const THIRTY_MINUTES = 30 * 60 * 1000;
-    const statuses: Record<string, { hasActiveSession: boolean; activeSessionId: string | null }> = {};
+    const statuses: Record<string, { hasActiveSession: boolean; activeSessionId: string | null; health?: "running" | "stale_suspected" }> = {};
 
     // Check all characters in parallel
     await Promise.all(
@@ -37,11 +37,11 @@ export async function GET(req: Request) {
           const hasInteractiveWait = runs.some((run) => hasPendingInteractiveWait(run.sessionId));
           let hasRunning = false;
           let activeSessionId: string | null = null;
+          let hasStaleSuspected = false;
 
           for (const run of runs) {
             if (!hasInteractiveWait && isStale(run.updatedAt ?? run.startedAt, THIRTY_MINUTES)) {
-              await completeAgentRun(run.id, "failed", { error: "stale_run_cleanup" });
-              continue;
+              hasStaleSuspected = true;
             }
             hasRunning = true;
             if (!activeSessionId) {
@@ -49,7 +49,11 @@ export async function GET(req: Request) {
             }
           }
 
-          statuses[characterId] = { hasActiveSession: hasRunning, activeSessionId };
+          statuses[characterId] = {
+            hasActiveSession: hasRunning,
+            activeSessionId,
+            health: hasStaleSuspected ? "stale_suspected" : "running",
+          };
         } catch {
           statuses[characterId] = { hasActiveSession: false, activeSessionId: null };
         }

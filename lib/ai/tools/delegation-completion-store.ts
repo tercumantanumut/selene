@@ -16,7 +16,7 @@ export interface DelegationCompletion {
 
 type DelegationCompletionStore = Map<string, DelegationCompletion[]>;
 
-const DELEGATION_COMPLETION_TTL_MS = 60 * 60 * 1000;
+const DELEGATION_COMPLETION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const globalForDelegationCompletions = globalThis as typeof globalThis & {
   delegationCompletions?: DelegationCompletionStore;
