@@ -63,6 +63,11 @@ export const ContextWindowIndicator: FC<ContextWindowIndicatorProps> = ({
   const percentage = Math.min(status.percentage, 100);
   const statusKey = status.status;
   const decisionMaxTokens = status.maxInputTokens ?? status.maxTokens;
+  const advertisedMaxTokens = status.maxTokens;
+  const usesReducedInputBudget = decisionMaxTokens !== advertisedMaxTokens;
+  const effectiveBudgetLabel = usesReducedInputBudget
+    ? `${status.formatted.max} effective input budget, ${Math.round(advertisedMaxTokens / 1000)}K advertised context`
+    : `${status.formatted.max} context budget`;
   const warningPct = Math.round((status.thresholds.warning / decisionMaxTokens) * 100);
   const criticalPct = Math.round((status.thresholds.critical / decisionMaxTokens) * 100);
   const hardPct = Math.round((status.thresholds.hardLimit / decisionMaxTokens) * 100);
@@ -106,7 +111,7 @@ export const ContextWindowIndicator: FC<ContextWindowIndicatorProps> = ({
               {status.formatted.percentage}
             </span>
             <span className="text-[9px] font-mono text-terminal-muted/60 tabular-nums">
-              {thresholdsLabel}
+              {usesReducedInputBudget ? `${status.formatted.max} eff` : thresholdsLabel}
             </span>
             {statusKey === "exceeded" && (
               <AlertTriangleIcon className="size-3 text-red-500" />
@@ -118,6 +123,7 @@ export const ContextWindowIndicator: FC<ContextWindowIndicatorProps> = ({
           className="bg-terminal-dark text-terminal-cream font-mono text-xs max-w-xs"
         >
           <p>{tooltipText}</p>
+          <p className="mt-1 text-terminal-cream/80">{effectiveBudgetLabel}</p>
           <p className="mt-1 text-terminal-cream/80">
             {t("indicator.thresholdsTooltip", { thresholds: thresholdsLabel })}
           </p>
@@ -164,7 +170,10 @@ export const ContextWindowIndicator: FC<ContextWindowIndicatorProps> = ({
       </div>
 
       <div className="flex items-center justify-between text-[10px] font-mono text-terminal-muted/50">
-        <span>{status.formatted.current} / {status.formatted.max}</span>
+        <span>
+          {status.formatted.current} / {status.formatted.max}
+          {usesReducedInputBudget ? ` effective, ${Math.round(advertisedMaxTokens / 1000)}K advertised` : ""}
+        </span>
         <span className="tabular-nums">{thresholdsLabel}</span>
         {showAction && (
           <Button

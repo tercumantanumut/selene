@@ -622,9 +622,12 @@ export async function POST(req: Request) {
     let requestMessages = messages as FrontendMessage[];
     let sessionSummaryForRequest: string | null | undefined;
 
-    if (contextCheck.compactionResult?.success) {
-      const refreshedSession = await getSessionWithMessages(sessionId);
-      if (refreshedSession) {
+    const refreshedSession = await getSessionWithMessages(sessionId);
+    if (refreshedSession) {
+      const hasCompactedHistory = Boolean(refreshedSession.session.summary?.trim()) ||
+        refreshedSession.messages.some((message) => message.isCompacted);
+
+      if (contextCheck.compactionResult?.success || hasCompactedHistory) {
         requestMessages = convertDBMessagesToUIMessages(
           refreshedSession.messages.filter((message) => !message.isCompacted) as any,
         ) as FrontendMessage[];

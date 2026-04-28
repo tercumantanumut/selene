@@ -9,6 +9,7 @@ import { getCanonicalToolName, humanizeToolName, loadToolNameCache } from "./too
 import { useToolExpansion } from "./tool-expansion-context";
 import { stripXmlStatusTags } from "./claude-code-tools/parse-text-result";
 import { DiffStyledPre } from "./diff-styled-pre";
+import { useChatSessionId } from "@/components/chat-provider";
 // Define the tool call component type manually since it's no longer exported
 type ToolCallContentPartComponent = FC<{
   toolName: string;
