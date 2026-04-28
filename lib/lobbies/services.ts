@@ -182,7 +182,10 @@ export class DependencyCycleError extends Error {
  * cyclic state, and rolling back via a follow-up "restore" write opens a
  * write-skew window.
  *
- * Guards (SPEC §3 #6/#13):
+ * Guards (SPEC §3 implicit + #13 — DAG correctness is a data-model
+ * invariant rather than a numbered hard constraint, but #13 — block
+ * structural edits to running cards — applies because dependency edits
+ * are structural):
  *   - card belongs to lobby,
  *   - no self-dependency,
  *   - all `dependsOnCardId` belong to the same lobby,

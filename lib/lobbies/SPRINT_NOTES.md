@@ -280,3 +280,195 @@ before Sprint 6 begins.
     AA).
   Manual VoiceOver sweep + per-theme DevTools contrast spot-check is
   deferred to a dedicated a11y QA pass — see Deferred above.
+
+---
+
+## Sprint 5.3 — third-pass review patch
+
+Five reviewers re-audited the Sprint 5.2 patch and surfaced 6 HIGH
+findings (1 a11y / contrast, 1 info-leak, 1 schema-rollout completeness,
+2 hook race conditions) plus a handful of MEDIUM/LOW polish items. This
+patch resolves all of them before Sprint 6 begins.
+
+### What changed
+
+**Accessibility / contrast (HIGH)**
+
+- `components/lobbies/status-badge.tsx`: the `aborted` variant was
+  still reading `text-red-700` over `bg-red-500/15` on the default
+  cream theme — measured ~4.36:1, fails AA at small text (font-mono
+  text-xs, 4.5:1 required). Switched to the same pattern as the other
+  five badges (`text-terminal-dark` light / `text-red-100` dark, on a
+  slightly bumped `bg-red-500/20` + `border-red-500/50`). Background +
+  border now carry the colour identity, label stays AA-readable.
+- Same file: shadcn's `Badge` base + `outline` variant only declare
+  *colour* utilities, not `border-width`. Without an explicit `border`
+  on the wrapper, every `border-{color}/{N}` class in `STATUS_CONFIG`
+  was a no-op and only the tinted background carried the colour
+  identity. Added `border` to the wrapper className so the bordered
+  pill the design intended actually renders.
+
+**API hardening (HIGH info-leak + HIGH schema-rollout completeness)**
+
+- `lib/lobbies/api-helpers.ts`: `withLobbyAuth()`'s 500 path used to
+  echo `error.message` back to the client. Drizzle / sqlite errors can
+  include file paths and column names (SPEC §3 #7-style info-leak).
+  Now logs the full error server-side via `console.error` and returns
+  a generic `{ error: "Authentication system unavailable" }` to the
+  client.
+- Sprint 5.2's `.strict()` rollout only covered the two POST routes
+  (`/api/lobbies` and `/api/lobby-templates`). Every PATCH / PUT /
+  transition route was still loose. This sprint completes the rollout:
+  - `app/api/lobbies/[lobbyId]/route.ts` — `patchLobbyBodySchema`
+    envelope + inner patch both `.strict()`.
+  - `app/api/lobbies/[lobbyId]/cards/route.ts` — `createCardBodySchema`.
+  - `app/api/lobbies/[lobbyId]/cards/[cardId]/route.ts` —
+    `patchCardBodySchema` envelope + inner patch.
+  - `app/api/lobbies/[lobbyId]/seats/route.ts` — `replaceSeatsBodySchema`
+    envelope + nested seat element.
+  - `app/api/lobbies/[lobbyId]/seats/[seatId]/route.ts` —
+    `patchSeatBodySchema` envelope + inner patch.
+  - `app/api/lobbies/[lobbyId]/cards/[cardId]/dependencies/route.ts` —
+    `replaceDependenciesBodySchema` envelope + nested element.
+  - `app/api/lobbies/[lobbyId]/transition/route.ts` — every arm of the
+    discriminated union is `.strict()`. Without it a typo'd
+    `plannerScop` on `ready_roster` would silently drop and the
+    planner would launch with the default scope.
+  - `app/api/lobbies/[lobbyId]/cards/[cardId]/transition/route.ts` —
+    every arm is `.strict()`. Without it a typo'd `cancelDependants`
+    on `reopen` would silently drop and the captain would think they
+    cancelled in-flight dependents when they didn't.
+  All of these now 400 with the offending field name in the error
+  message instead of silently routing the typo to the underlying
+  `MutationResult` failure path.
+
+**Client hooks (HIGH race conditions × 2)**
+
+- `lib/lobbies/client/hooks.ts` — `useLobbyDetail`: track a
+  `dataLobbyIdRef` and clear stale `data` BEFORE issuing the next
+  fetch when `lobbyId` changes. Without this, navigating from lobby A
+  → lobby B briefly renders B's page header / phase rail with A's
+  status (every consumer downstream of `data.lobby.status` paints the
+  wrong phase for one tick before the new fetch resolves). The seed
+  effect in `lobby-detail-client.tsx` would have used A's status to
+  expand the wrong sections for B.
+- `lib/lobbies/client/hooks.ts` — `useLobbyEvents`: added a
+  monotonically-incrementing `generationRef` token. Mount / lobbyId
+  change bumps it; every async closure (`run`, `appendFromAfter`)
+  captures the value at call time and bails on resolve if the live
+  generation has moved past it. AbortController already covers the
+  strict in-flight case, but a captain who fires `appendFromAfter` from
+  a setTimeout / SSE callback is past the abort window — without this
+  token, that response could land in the NEXT lobby's data after a
+  lobby change.
+- Same file, same hook: `appendFromAfter` now sorts the merged event
+  list by `sequence` after dedup. SSE may have already appended events
+  newer than the cursor's response by the time it resolves, so a naive
+  concat leaves the timeline out of order. Consumers (the activity
+  rail) render in array order, so we re-sort to keep the timeline
+  monotonically increasing.
+
+**Hydration & error boundary (MEDIUM × 2)**
+
+- `app/lobbies/[id]/lobby-detail-client.tsx`: replaced raw
+  `useLayoutEffect` with an `useIsomorphicLayoutEffect` shim
+  (`typeof window !== "undefined" ? useLayoutEffect : useEffect`).
+  `useLayoutEffect` warns during SSR ("does nothing on the server"),
+  and even with `"use client"` Next.js still SSRs the component once
+  for initial HTML — the warning fires on every cold load. Falling
+  back to `useEffect` server-side silences the warning without
+  changing client behaviour.
+- `app/lobbies/error.tsx` (new): segment-level error boundary for
+  `/lobbies/*`. Catches uncaught React errors that escape the lobby
+  pages (a render crash inside `lobby-detail-client`, a hook throw, a
+  `requireAuth` server-side throw) and shows a contained recovery UI
+  without trashing the root layout (sidebar, theme, providers all
+  survive). The captain sees "Try again" / "Back to lobbies" buttons
+  and can recover without a full reload. Visible message stays
+  generic; the actual `error.message` + stack are logged to
+  DevTools — thrown error strings can include DB / file paths so we
+  don't echo them.
+
+**Comment / documentation honesty (MEDIUM × 2)**
+
+- `app/lobbies/[id]/lobby-detail-client.tsx`: the
+  `seedDefaultsForStatus` rationale comment was muddled — it claimed
+  to protect "user toggles between mount and data-load" which can't
+  actually happen (the section content isn't visible / interactive
+  yet). Rewrote to the actual three protections: SSE-driven status
+  flips, React 18 strict-mode double-invoke, refetch returning the
+  same status.
+- This file's own Sprint 5.2 Verification section claimed VoiceOver
+  + visual contrast were performed. They weren't — the sprint was
+  executed autonomously. Replaced with the actual contrast math (token
+  darkening × theme background) and an explicit "Manual VoiceOver
+  sweep + per-theme DevTools contrast spot-check is deferred."
+
+**Spec drift / dependency direction (LOW × 3)**
+
+- `lib/lobbies/types.ts`: the `allowedFolderIds` doc string referenced
+  the wrong SPEC constraint (`§3 #6 = "No new heavy UI dependencies"`).
+  Fixed to `§3 #11 = "Permission scope V1 is tool-list only"`, which
+  is the constraint that actually carves the field out as a V1.1
+  placeholder.
+- `app/lobbies/[id]/lobby-detail-client.tsx` and
+  `lib/stores/solo-story-ui-store.ts`: two `SPEC §3 #11 (progressive
+  reveal)` references were stale — `§3 #11` is permission-scope, not
+  progressive reveal. Reworded both to attribute "progressive reveal"
+  to the FE Architect report (where it actually originates) and call
+  out that SPEC §3 has no matching numbered constraint.
+- `lib/lobbies/services.ts`: `replaceDependenciesForCardWithCycleCheck`
+  guard comment referenced `SPEC §3 #6/#13`. `§3 #6` is "No new heavy
+  UI dependencies" — clearly not a dependency-graph guard. Reworded
+  to attribute the DAG correctness invariant to the data model
+  (`#13` correctly applies — dependency edits are structural).
+
+**Snapshot rehydration (LOW)**
+
+- `lib/lobbies/scope-injection.ts`: `extractSoloStorySnapshot` was
+  dropping `allowedFolderIds` when reconstructing the snapshot scope
+  from `agent_runs.metadata`. The V1 tool gate ignores the value but
+  the field MUST round-trip through this reconstruction so the V1.1
+  upgrade path (which will enforce folder scoping at the FS layer)
+  can read it off the snapshot just like every other scope dimension.
+  Rebuild now defensively filters for `string[]` shape and includes
+  the field in the returned `permissionScope`.
+
+**Type import direction (LOW)**
+
+- `lib/lobbies/services.ts`: flipped `MutationResult` from
+  `@/lib/lobbies/queries` → `@/lib/lobbies/types` (same fix that
+  landed in `api-helpers.ts` during Sprint 5.2). Keeping the type
+  import on `queries` would re-introduce the `(route|service) →
+  queries → drizzle` dependency chain that the
+  types-as-canonical-source split was meant to break.
+
+### Deferred (intentionally, again)
+
+- **Other light theme variants below default AA target.** Same as
+  Sprint 5.2 — the math now passes for every light theme, but only
+  the default cream theme has been visually QA'd. A dedicated a11y
+  QA pass per theme is the right venue.
+- **`useLobbyEvents` is still not wired into `lobby-detail-client.tsx`.**
+  Same as Sprint 5.2 — lands with Sprint 8 when the SSE stream has
+  events to deliver.
+- **`error.tsx` is plain English, not next-intl.** The rest of the
+  lobby surface is also plain English. When (if) the lobby surface
+  gets translated wholesale, the error boundary copy folds into the
+  same migration; doing it standalone now would be a noisy isolated
+  wire-up.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- No browser / VoiceOver / runtime verification (autonomous sprint).
+  The new contrast math math fix (status badge `aborted` variant) is:
+  - foreground `text-terminal-dark` (HSL L=15%) on
+    `bg-red-500/20` over `bg-terminal-cream` (effective L≈80%) ≈
+    **8.2:1** vs prior ≈4.36:1, well over AA.
+  - dark mode: `text-red-100` (L=92%) on `bg-red-500/20` over the
+    dark theme background ≈ **9:1**, well over AA.
+- Race-condition fixes are logic-only; the AbortController +
+  generation-token contract is testable but no test was added in this
+  sprint (lobby hooks have no test harness yet — that's a Sprint 8
+  follow-up when SSE arrives).
