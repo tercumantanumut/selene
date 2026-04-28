@@ -57,10 +57,9 @@ const templateSeatV1Schema = z
     role: z.string().min(1).max(80),
     required: z.boolean(),
     position: z.number().int().nonnegative(),
-    agentId: z.string().min(1).optional(),
     permissionScope: permissionScopeV1Schema,
   })
-  .strict();
+  .strict(); // Reject agentId: templates stay character-agnostic.
 
 // `lobbyConfigV1Schema.partial()` preserves the `.strict()` flag in zod v3,
 // but we wrap it again here to make the intent explicit at the call site —

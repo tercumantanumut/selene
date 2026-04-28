@@ -164,6 +164,85 @@ describe("seedLobbyStarterTemplatesWith", () => {
     }
   });
 
+  it("locks the code-task reviewer to read-only tools with explicit write denials", () => {
+    seedLobbyStarterTemplatesWith(db);
+
+    const row = db
+      .prepare("SELECT default_seats FROM lobby_templates WHERE id = ?")
+      .get("builtin-lobby-template-code-task") as { default_seats: string };
+    const seats = JSON.parse(row.default_seats) as Array<Record<string, unknown>>;
+    const reviewer = seats.find((seat) => seat.role === "Reviewer");
+
+    expect(reviewer).toBeDefined();
+    expect(reviewer).toMatchObject({
+      role: "Reviewer",
+      required: true,
+      position: 1,
+      permissionScope: {
+        version: 1,
+        mode: "tool_list",
+        allowedTools: ["localGrep", "readFile", "editFile", "writeFile", "bash"],
+        deniedTools: ["editFile", "writeFile", "bash"],
+      },
+    });
+  });
+
+  it("enforces template visibility ownership at the database layer", () => {
+    db.prepare("INSERT INTO users (id) VALUES (?)").run("user-1");
+
+    expect(() =>
+      db.prepare(
+        `INSERT INTO lobby_templates (
+          id,
+          name,
+          description,
+          default_seats,
+          planning_prompt,
+          synthesis_prompt,
+          user_id,
+          visibility,
+          config
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "invalid-public-owned",
+        "Invalid public owned",
+        null,
+        "[]",
+        "plan",
+        "synth",
+        "user-1",
+        "public",
+        "{}",
+      ),
+    ).toThrow();
+
+    expect(() =>
+      db.prepare(
+        `INSERT INTO lobby_templates (
+          id,
+          name,
+          description,
+          default_seats,
+          planning_prompt,
+          synthesis_prompt,
+          user_id,
+          visibility,
+          config
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "invalid-private-unowned",
+        "Invalid private unowned",
+        null,
+        "[]",
+        "plan",
+        "synth",
+        null,
+        "private",
+        "{}",
+      ),
+    ).toThrow();
+  });
+
   it("does not crash if the lobby_templates table is missing (defensive guard)", () => {
     const bareDb = new Database(":memory:");
     expect(() => seedLobbyStarterTemplatesWith(bareDb)).not.toThrow();

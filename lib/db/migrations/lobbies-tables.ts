@@ -10,7 +10,10 @@ export function initLobbiesTablesWith(sqlite: Database.Database): void {
       planning_prompt TEXT NOT NULL,
       synthesis_prompt TEXT NOT NULL,
       user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-      visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private', 'public')),
+      visibility TEXT NOT NULL DEFAULT 'private' CHECK(
+        visibility IN ('private', 'public')
+        AND ((visibility = 'private' AND user_id IS NOT NULL) OR (visibility = 'public' AND user_id IS NULL))
+      ),
       config TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -109,6 +112,32 @@ export function initLobbiesTablesWith(sqlite: Database.Database): void {
       agent_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
+  `);
+
+  // Existing SQLite tables cannot gain a CHECK constraint via ALTER TABLE; the
+  // triggers make the visibility ownership invariant idempotent for upgrades.
+  sqlite.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_lobby_templates_visibility_owner_insert
+    BEFORE INSERT ON lobby_templates
+    WHEN NOT (
+      (NEW.visibility = 'private' AND NEW.user_id IS NOT NULL)
+      OR (NEW.visibility = 'public' AND NEW.user_id IS NULL)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'lobby_templates visibility/user_id invariant violated');
+    END
+  `);
+
+  sqlite.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_lobby_templates_visibility_owner_update
+    BEFORE UPDATE OF visibility, user_id ON lobby_templates
+    WHEN NOT (
+      (NEW.visibility = 'private' AND NEW.user_id IS NOT NULL)
+      OR (NEW.visibility = 'public' AND NEW.user_id IS NULL)
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'lobby_templates visibility/user_id invariant violated');
+    END
   `);
 
   sqlite.exec(`

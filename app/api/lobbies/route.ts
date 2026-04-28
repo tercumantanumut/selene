@@ -166,13 +166,24 @@ export async function POST(req: Request) {
       metadata: {},
     });
 
+    const config = {
+      version: 1 as const,
+      ...(template
+        ? {
+            plannerPromptOverride: template.planningPrompt,
+            synthesisPromptOverride: template.synthesisPrompt,
+          }
+        : {}),
+      ...(body.config ?? {}),
+    };
+
     const lobby = await createLobby({
       userId: ctx.userId,
       sessionId: session.id,
       title: body.title,
       goal: body.goal,
       templateId: body.templateId ?? null,
-      config: body.config ?? { version: 1 },
+      config,
     });
 
     // Materialize seats: explicit > template defaults > none.
