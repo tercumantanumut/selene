@@ -115,6 +115,18 @@ export function shouldApplyScopeTightening(
   return scope.allowedTools.length > 0;
 }
 
+/**
+ * Empty `allowedTools` is the inherit-all sentinel. It should not tighten MCP
+ * tools either, unless a future scope starts carrying explicit deny entries.
+ */
+export function shouldApplyMcpScopeTightening(
+  scope: LobbyPermissionScopeV1,
+): boolean {
+  return (
+    shouldApplyScopeTightening(scope) || (scope.deniedTools?.length ?? 0) > 0
+  );
+}
+
 function extractSoloStorySnapshot(
   raw: unknown,
 ): SoloStoryRunMetadata["soloStory"] | null {

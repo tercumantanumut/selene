@@ -277,6 +277,7 @@ export function RosterSection({ lobby, seats, onChanged }: RosterSectionProps) {
           // belt-and-braces around a phantom undefined; removing it lets
           // TS narrow correctly downstream.
           initialScope={scopeSeat.permissionScope as LobbyPermissionScopeV1}
+          scopeVersion={scopeSeat.lockVersion}
           saving={scopeSaving}
           error={scopeError}
           onSave={(scope) => void handleScopeSave(scope)}

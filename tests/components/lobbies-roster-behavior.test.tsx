@@ -9,10 +9,20 @@ import { SeatCard } from "@/components/lobbies/roster/seat-card";
 import {
   buildScopeFromSelection,
   deriveScopeSelection,
+  SeatPermissionScopeSheet,
 } from "@/components/lobbies/roster/seat-permission-scope-sheet";
 import { preflight } from "@/components/lobbies/roster/transition-to-planning-button";
+import {
+  applyScopeToMcpTools,
+  shouldApplyMcpScopeTightening,
+} from "@/lib/lobbies/scope-injection";
 import type { CharacterSummary } from "@/lib/lobbies/client/character-hooks";
 import type { LobbySeat } from "@/lib/lobbies/types";
+import type { Tool } from "ai";
+
+vi.mock("next-intl", () => ({
+  useTranslations: () => (key: string) => key,
+}));
 
 const tools = ["readFile", "writeFile", "bash"];
 const agent: CharacterSummary = {
@@ -90,6 +100,139 @@ describe("roster permission scope helpers", () => {
       mode: "tool_list",
       allowedTools: ["writeFile"],
     });
+  });
+});
+
+describe("roster MCP permission enforcement", () => {
+  const mcpTools = {
+    readFile: { inputSchema: {} },
+    writeFile: { inputSchema: {} },
+  } as Record<string, Tool>;
+
+  it("does not tighten MCP tools for the empty inherit-all sentinel", () => {
+    const scope = { version: 1, mode: "tool_list", allowedTools: [] } as const;
+
+    expect(shouldApplyMcpScopeTightening(scope)).toBe(false);
+  });
+
+  it("denies all MCP tools for an explicit None scope", () => {
+    const scope = {
+      version: 1,
+      mode: "tool_list",
+      allowedTools: ["readFile", "writeFile"],
+      deniedTools: ["readFile", "writeFile"],
+    } as const;
+
+    expect(shouldApplyMcpScopeTightening(scope)).toBe(true);
+    expect(applyScopeToMcpTools(mcpTools, scope)).toEqual({
+      kept: {},
+      denied: ["readFile", "writeFile"],
+    });
+  });
+});
+
+describe("SeatPermissionScopeSheet reseeding", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const onSave = vi.fn();
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    onSave.mockReset();
+  });
+
+  afterEach(() => {
+    flushSync(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  function renderSheet(props: {
+    initialScope: LobbySeat["permissionScope"];
+    scopeVersion: number;
+  }) {
+    flushSync(() => {
+      root.render(
+        createElement(SeatPermissionScopeSheet, {
+          open: true,
+          onOpenChange: vi.fn(),
+          seatRole: "Writer",
+          agent,
+          initialScope: props.initialScope,
+          scopeVersion: props.scopeVersion,
+          onSave,
+        }),
+      );
+    });
+  }
+
+  function allowedCountText(): string | null {
+    return (
+      Array.from(document.body.querySelectorAll("span")).find((node) =>
+        node.textContent?.includes(" of 3 allowed"),
+      )?.textContent ?? null
+    );
+  }
+
+  function renderSameVersionTightenedScope() {
+    flushSync(() => {
+      root.render(
+        createElement(SeatPermissionScopeSheet, {
+          open: true,
+          onOpenChange: vi.fn(),
+          seatRole: "Writer",
+          agent,
+          initialScope: {
+            version: 1,
+            mode: "tool_list",
+            allowedTools: ["writeFile", "bash"],
+          },
+          scopeVersion: 1,
+          onSave,
+        }),
+      );
+    });
+  }
+
+  it("keeps local edits across same-version refetches", () => {
+    renderSheet({
+      initialScope: { version: 1, mode: "tool_list", allowedTools: [] },
+      scopeVersion: 1,
+    });
+
+    renderSameVersionTightenedScope();
+    expect(allowedCountText()).toBe("3 of 3 allowed");
+
+    renderSheet({
+      initialScope: { version: 1, mode: "tool_list", allowedTools: [] },
+      scopeVersion: 1,
+    });
+
+    expect(allowedCountText()).toBe("3 of 3 allowed");
+  });
+
+  it("reseeds while open when the backing server version changes", () => {
+    renderSheet({
+      initialScope: { version: 1, mode: "tool_list", allowedTools: [] },
+      scopeVersion: 1,
+    });
+
+    renderSameVersionTightenedScope();
+    expect(allowedCountText()).toBe("3 of 3 allowed");
+
+    renderSheet({
+      initialScope: {
+        version: 1,
+        mode: "tool_list",
+        allowedTools: ["writeFile"],
+      },
+      scopeVersion: 2,
+    });
+
+    expect(allowedCountText()).toBe("1 of 3 allowed");
   });
 });
 

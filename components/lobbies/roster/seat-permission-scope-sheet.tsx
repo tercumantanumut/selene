@@ -43,8 +43,10 @@ export type SeatPermissionScopeSheetProps = {
   onOpenChange: (open: boolean) => void;
   seatRole: string;
   agent: CharacterSummary | null;
-  /** Existing scope on the seat (undefined → seat inherits agent default). */
+  /** Existing scope on the seat (undefined -> seat inherits agent default). */
   initialScope: LobbyPermissionScopeV1 | undefined;
+  /** Backing row version for conflict refresh reseeds while the sheet is open. */
+  scopeVersion?: number;
   saving?: boolean;
   error?: string | null;
   onSave: (scope: LobbyPermissionScopeV1) => void;
@@ -56,6 +58,7 @@ export function SeatPermissionScopeSheet({
   seatRole,
   agent,
   initialScope,
+  scopeVersion,
   saving = false,
   error = null,
   onSave,
@@ -79,27 +82,29 @@ export function SeatPermissionScopeSheet({
     buildInitial(initialScope, agentTools),
   );
 
-  // Re-seed when the dialog reopens for a different seat / agent. Without
-  // this, switching seats while the sheet is mounted carries the previous
-  // seat's checkbox state forward — exactly the kind of stale state that
-  // causes accidental tightening.
-  //
-  // Sprint 6.1 (S6 R2 HIGH): only re-seed on the open→true edge. The
-  // previous deps `[open, initialScope, agentTools]` triggered a reset on
-  // EVERY parent refetch (any sibling mutation produces a new
-  // `initialScope` object reference), silently clobbering captain's
-  // in-progress checkbox edits. We track `prevOpen` via a ref and only
-  // run the seed logic when `open` flips from false → true. The agentTools
-  // / initialScope reads inside the effect still pick up the current
-  // values, so the seed is correct.
-  const prevOpenRef = useRef(false);
+  // Re-seed when the dialog opens and when the backing seat version changes
+  // while it is open (for example after VERSION_CONFLICT refetch). Ordinary
+  // parent refetches keep the same version, so they do not clobber local edits.
+  const prevSeedRef = useRef<{ open: boolean; scopeVersion?: number }>({
+    open: false,
+    scopeVersion: undefined,
+  });
   useEffect(() => {
-    if (open && !prevOpenRef.current) {
+    const previous = prevSeedRef.current;
+    const opened = open && !previous.open;
+    const serverVersionChanged =
+      open &&
+      previous.open &&
+      scopeVersion !== undefined &&
+      previous.scopeVersion !== undefined &&
+      scopeVersion !== previous.scopeVersion;
+
+    if (opened || serverVersionChanged) {
       setAllowed(buildInitial(initialScope, agentTools));
     }
-    prevOpenRef.current = open;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: edge-only seed
-  }, [open]);
+
+    prevSeedRef.current = { open, scopeVersion };
+  }, [open, scopeVersion, initialScope, agentTools]);
 
   function toggle(tool: string) {
     setAllowed((prev) => {

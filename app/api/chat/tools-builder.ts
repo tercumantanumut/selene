@@ -60,7 +60,10 @@ import {
   WEB_SEARCH_NO_RESULT_GUARD,
 } from "./content-sanitizer";
 import { mcpContextStore } from "@/lib/ai/providers/mcp-context-store";
-import { applyScopeToMcpTools } from "@/lib/lobbies/scope-injection";
+import {
+  applyScopeToMcpTools,
+  shouldApplyMcpScopeTightening,
+} from "@/lib/lobbies/scope-injection";
 import type { LobbyPermissionScopeV1 } from "@/lib/lobbies/types";
 
 const SDK_PASSTHROUGH_LARGE_INPUT_BYTES = (() => {
@@ -423,13 +426,16 @@ export async function buildToolsForRequest(
     mcpToolResult = await loadMCPToolsForCharacter(character || undefined);
 
     // Solo Story Mode SPEC §7 step 4: intersect MCP tools with the seat's
-    // permission scope. V1 simply denies any tool whose name is not in
-    // `scope.allowedTools` (or is in `scope.deniedTools`). Done here — not
-    // earlier in the registry filter pass — because MCP tool names aren't
-    // known until `loadMCPToolsForCharacter` returns. Tools dropped here are
-    // also stripped from the alwaysLoad / deferred id lists so the deferred
-    // gate doesn't try to surface them later in the request.
-    if (ctx.soloStoryPermissionScope) {
+    // permission scope only for explicit narrowed/denied scopes. Empty
+    // `allowedTools` is the inherit-all sentinel and must not strip MCP tools.
+    // Done here — not earlier in the registry filter pass — because MCP tool
+    // names aren't known until `loadMCPToolsForCharacter` returns. Tools dropped
+    // here are also stripped from the alwaysLoad / deferred id lists so the
+    // deferred gate doesn't try to surface them later in the request.
+    if (
+      ctx.soloStoryPermissionScope &&
+      shouldApplyMcpScopeTightening(ctx.soloStoryPermissionScope)
+    ) {
       const before = Object.keys(mcpToolResult.allTools).length;
       const { kept, denied } = applyScopeToMcpTools(
         mcpToolResult.allTools,
