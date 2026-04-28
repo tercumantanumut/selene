@@ -34,13 +34,22 @@
  * job. Stay in our lane.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type {
   TaskEvent,
   TaskProgressEvent,
   UnifiedTask,
 } from "@/lib/background-tasks/types";
+import type { SoloStoryRunRole } from "@/lib/lobbies/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -77,8 +86,16 @@ export type RunStreamState = {
   runId: string;
   /** Lobby id this run belongs to. Sanity check; always equals `lobbyId`. */
   lobbyId: string;
-  /** Card id this run is executing. */
-  cardId: string;
+  /**
+   * Card id this run is executing. Undefined for lobby-level runs (planner
+   * and synthesizer): those are tagged with `lobbyId` only.
+   */
+  cardId?: string;
+  /**
+   * Solo Story role for this run. Lobby-level runs (no `cardId`) use this
+   * to bucket into `byRole`. Worker runs (with `cardId`) carry "worker".
+   */
+  role?: SoloStoryRunRole;
   /** Lifecycle phase. Mapped from TaskStatus. */
   phase: RunStreamPhase;
   /** First-seen-at timestamp (ISO). */
@@ -96,6 +113,13 @@ export type RunStreamState = {
 export type LobbyRunStreamHandle = {
   /** Map<cardId, RunStreamState>. Snapshot — render against this directly. */
   byCardId: ReadonlyMap<string, RunStreamState>;
+  /**
+   * Lobby-level runs keyed by Solo Story role. The planner banner and the
+   * synthesis section subscribe to this slice. Worker runs are NOT mirrored
+   * here — they live in `byCardId` (a single lobby can have many concurrent
+   * worker runs, one per card; planner/synthesizer are singletons per phase).
+   */
+  byRole: ReadonlyMap<SoloStoryRunRole, RunStreamState>;
   /** True when the EventSource is open. */
   isConnected: boolean;
   /** Number of completed runs since mount (informational; not for refetch gating). */
@@ -104,13 +128,24 @@ export type LobbyRunStreamHandle = {
 
 export type UseLobbyRunStreamOptions = {
   /**
-   * Fired once per `task:completed` for this lobby. The parent should
-   * call `useLobbyDetail.refetch()` here so card status / output / lockVersion
-   * land authoritatively. We deliberately don't refetch from inside the hook
-   * to keep server fetch ownership in the parent (SPEC §3 #6 = no global
-   * refetch authority).
+   * Fired once per `task:completed` for a worker run (carrying `cardId`).
+   * The parent should call `useLobbyDetail.refetch()` here so card status /
+   * output / lockVersion land authoritatively. We deliberately don't
+   * refetch from inside the hook to keep server fetch ownership in the
+   * parent (SPEC §3 #6 = no global refetch authority).
    */
   onCardCompleted?: (cardId: string, runId: string, succeeded: boolean) => void;
+  /**
+   * Fired once per `task:completed` for a lobby-level run (planner or
+   * synthesizer — `cardId` absent). The parent typically refetches here
+   * too: planner completion creates new card rows; synthesizer completion
+   * may flip the lobby to `completed`.
+   */
+  onRoleRunCompleted?: (
+    role: SoloStoryRunRole,
+    runId: string,
+    succeeded: boolean,
+  ) => void;
 };
 
 // ─── Internal: SSE wire shape ─────────────────────────────────────────────
@@ -154,6 +189,30 @@ function mapTaskStatusToPhase(
   }
 }
 
+/**
+ * Extract the Solo Story role from a UnifiedTask's metadata. The lobby
+ * runtime stores the role at `metadata.soloStory.role`. Falls back to a
+ * conservative role inference based on whether the task carries a
+ * `cardId` — present ⇒ worker; absent ⇒ planner (we can't tell planner
+ * from synthesizer without metadata, so callers should rely on the
+ * metadata path when available).
+ */
+function extractRole(
+  task: UnifiedTask | undefined,
+  hasCardId: boolean,
+): SoloStoryRunRole | undefined {
+  if (task?.metadata && typeof task.metadata === "object") {
+    const meta = task.metadata as { soloStory?: { role?: SoloStoryRunRole } };
+    if (meta.soloStory?.role) return meta.soloStory.role;
+  }
+  // Inference fallback: a worker run always carries cardId; a lobby-level
+  // run never does. We can't disambiguate planner vs synthesizer without
+  // the metadata, so leave it undefined and let the caller filter on
+  // lobby phase if needed.
+  if (hasCardId) return "worker";
+  return undefined;
+}
+
 function fragmentFromProgress(event: TaskProgressEvent): RunStreamFragment {
   const seq = `${event.runId}:${event.timestamp}`;
   return {
@@ -166,6 +225,242 @@ function fragmentFromProgress(event: TaskProgressEvent): RunStreamFragment {
       ? event.progressContent.length
       : undefined,
   };
+}
+
+/**
+ * Apply a single SSE event to the worker-run map (`byCardId`). Pulled out
+ * of the hook body so the lobby-level (`byRole`) variant can mirror its
+ * shape without duplicating the started/progress/completed switch.
+ *
+ * Side-effects:
+ *   - calls `setByCardId` with a new Map.
+ *   - on `task:completed` for a finished status, fires the parent's
+ *     `onCardCompleted` callback (via microtask) and increments the
+ *     completed-count.
+ */
+function updateCardSlot(args: {
+  setByCardId: Dispatch<SetStateAction<ReadonlyMap<string, RunStreamState>>>;
+  event: TaskEvent;
+  eventCardId: string;
+  expectedLobbyId: string;
+  inferredRole: SoloStoryRunRole | undefined;
+  onCompletedRef: MutableRefObject<UseLobbyRunStreamOptions["onCardCompleted"]>;
+  setCompletedCount: Dispatch<SetStateAction<number>>;
+}) {
+  const {
+    setByCardId,
+    event,
+    eventCardId,
+    expectedLobbyId,
+    inferredRole,
+    onCompletedRef,
+    setCompletedCount,
+  } = args;
+
+  setByCardId((prev) => {
+    const next = new Map(prev);
+    const existing = next.get(eventCardId);
+
+    switch (event.eventType) {
+      case "task:started": {
+        const task = event.task;
+        const startedState: RunStreamState = {
+          runId: task.runId,
+          lobbyId: expectedLobbyId,
+          cardId: eventCardId,
+          role: inferredRole ?? "worker",
+          phase: mapTaskStatusToPhase(task.status),
+          startedAt: task.startedAt ?? event.timestamp,
+          lastEventAt: event.timestamp,
+          fragments: [],
+        };
+        // If we already have fragments for this card from a prior run
+        // (retry case), the server emits a NEW runId — replace the slot
+        // wholesale so the captain sees a clean timeline.
+        next.set(eventCardId, startedState);
+        return next;
+      }
+
+      case "task:progress": {
+        const fragment = fragmentFromProgress(event);
+        if (!existing) {
+          // We missed the started event (race or reconnect). Fabricate a
+          // running state so the captain still sees activity. The runId
+          // arrives on the next started/completed event — store it now so
+          // we can correlate.
+          next.set(eventCardId, {
+            runId: event.runId,
+            lobbyId: expectedLobbyId,
+            cardId: eventCardId,
+            role: inferredRole ?? "worker",
+            phase: "running",
+            startedAt: event.startedAt ?? event.timestamp,
+            lastEventAt: event.timestamp,
+            fragments: [fragment],
+            latestText: fragment.text,
+          });
+          return next;
+        }
+        // Drop stale events that belong to a previous run for this card.
+        // Server emits monotonically per (runId), so a runId mismatch is
+        // an in-flight retry.
+        if (existing.runId !== event.runId) return next;
+        next.set(eventCardId, pushFragment(existing, fragment));
+        return next;
+      }
+
+      case "task:completed": {
+        const task = event.task;
+        const phase = mapTaskStatusToPhase(task.status);
+        const isFinished = FINISHED_STATUSES.has(task.status);
+        const completedState: RunStreamState = existing
+          ? {
+              ...existing,
+              phase,
+              lastEventAt: event.timestamp,
+              error: task.error ?? existing.error,
+            }
+          : {
+              runId: task.runId,
+              lobbyId: expectedLobbyId,
+              cardId: eventCardId,
+              role: inferredRole ?? "worker",
+              phase,
+              startedAt: task.startedAt ?? event.timestamp,
+              lastEventAt: event.timestamp,
+              fragments: [],
+              error: task.error,
+            };
+        next.set(eventCardId, completedState);
+
+        if (isFinished) {
+          // Defer the parent callback to a microtask so we don't fire it
+          // inside React's setState callback (which can cause cascading
+          // updates if the parent triggers a re-render path that loops
+          // back here). The completedCount setter below is independent.
+          queueMicrotask(() => {
+            onCompletedRef.current?.(
+              eventCardId,
+              task.runId,
+              task.status === "succeeded",
+            );
+          });
+          queueMicrotask(() => setCompletedCount((c) => c + 1));
+        }
+        return next;
+      }
+
+      default:
+        return next;
+    }
+  });
+}
+
+/**
+ * Apply a single SSE event to the lobby-level role map (`byRole`). Same
+ * shape as `updateCardSlot` but keyed on `SoloStoryRunRole` ("planner" |
+ * "synthesizer") and without the `cardId` slot.
+ */
+function updateRoleSlot(args: {
+  setByRole: Dispatch<
+    SetStateAction<ReadonlyMap<SoloStoryRunRole, RunStreamState>>
+  >;
+  event: TaskEvent;
+  role: SoloStoryRunRole;
+  expectedLobbyId: string;
+  onRoleCompletedRef: MutableRefObject<
+    UseLobbyRunStreamOptions["onRoleRunCompleted"]
+  >;
+  setCompletedCount: Dispatch<SetStateAction<number>>;
+}) {
+  const {
+    setByRole,
+    event,
+    role,
+    expectedLobbyId,
+    onRoleCompletedRef,
+    setCompletedCount,
+  } = args;
+
+  setByRole((prev) => {
+    const next = new Map(prev);
+    const existing = next.get(role);
+
+    switch (event.eventType) {
+      case "task:started": {
+        const task = event.task;
+        next.set(role, {
+          runId: task.runId,
+          lobbyId: expectedLobbyId,
+          role,
+          phase: mapTaskStatusToPhase(task.status),
+          startedAt: task.startedAt ?? event.timestamp,
+          lastEventAt: event.timestamp,
+          fragments: [],
+        });
+        return next;
+      }
+
+      case "task:progress": {
+        const fragment = fragmentFromProgress(event);
+        if (!existing) {
+          next.set(role, {
+            runId: event.runId,
+            lobbyId: expectedLobbyId,
+            role,
+            phase: "running",
+            startedAt: event.startedAt ?? event.timestamp,
+            lastEventAt: event.timestamp,
+            fragments: [fragment],
+            latestText: fragment.text,
+          });
+          return next;
+        }
+        if (existing.runId !== event.runId) return next;
+        next.set(role, pushFragment(existing, fragment));
+        return next;
+      }
+
+      case "task:completed": {
+        const task = event.task;
+        const phase = mapTaskStatusToPhase(task.status);
+        const isFinished = FINISHED_STATUSES.has(task.status);
+        const completedState: RunStreamState = existing
+          ? {
+              ...existing,
+              phase,
+              lastEventAt: event.timestamp,
+              error: task.error ?? existing.error,
+            }
+          : {
+              runId: task.runId,
+              lobbyId: expectedLobbyId,
+              role,
+              phase,
+              startedAt: task.startedAt ?? event.timestamp,
+              lastEventAt: event.timestamp,
+              fragments: [],
+              error: task.error,
+            };
+        next.set(role, completedState);
+
+        if (isFinished) {
+          queueMicrotask(() => {
+            onRoleCompletedRef.current?.(
+              role,
+              task.runId,
+              task.status === "succeeded",
+            );
+          });
+          queueMicrotask(() => setCompletedCount((c) => c + 1));
+        }
+        return next;
+      }
+
+      default:
+        return next;
+    }
+  });
 }
 
 function pushFragment(
@@ -208,24 +503,34 @@ export function useLobbyRunStream(
   const [byCardId, setByCardId] = useState<ReadonlyMap<string, RunStreamState>>(
     () => new Map(),
   );
+  const [byRole, setByRole] = useState<
+    ReadonlyMap<SoloStoryRunRole, RunStreamState>
+  >(() => new Map());
   const [isConnected, setIsConnected] = useState(false);
   const [completedCount, setCompletedCount] = useState(0);
 
-  // Hold the latest `onCardCompleted` in a ref so consumers can pass an
-  // inline closure without restarting the EventSource on every render.
+  // Hold the latest `onCardCompleted` / `onRoleRunCompleted` in refs so
+  // consumers can pass inline closures without restarting the EventSource
+  // on every render.
   const onCompletedRef = useRef(options.onCardCompleted);
   useEffect(() => {
     onCompletedRef.current = options.onCardCompleted;
   }, [options.onCardCompleted]);
+
+  const onRoleCompletedRef = useRef(options.onRoleRunCompleted);
+  useEffect(() => {
+    onRoleCompletedRef.current = options.onRoleRunCompleted;
+  }, [options.onRoleRunCompleted]);
 
   const lobbyIdRef = useRef(lobbyId);
   useEffect(() => {
     lobbyIdRef.current = lobbyId;
   }, [lobbyId]);
 
-  // Reset the Map when the lobbyId changes (or the page unmounts the hook).
+  // Reset the Maps when the lobbyId changes (or the page unmounts the hook).
   useEffect(() => {
     setByCardId(new Map());
+    setByRole(new Map());
     setCompletedCount(0);
   }, [lobbyId]);
 
@@ -236,8 +541,9 @@ export function useLobbyRunStream(
 
     const event = envelope.data;
 
-    // Pull lobbyId / cardId off the event in a discriminator-aware way. For
-    // started/completed it's on `task`, for progress it's on the event root.
+    // Pull lobbyId / cardId / role off the event in a discriminator-aware
+    // way. Started/completed carry the full task record (with metadata);
+    // progress events carry only the routing fields.
     const eventLobbyId =
       event.eventType === "task:progress"
         ? event.lobbyId
@@ -248,106 +554,41 @@ export function useLobbyRunStream(
       event.eventType === "task:progress"
         ? event.cardId
         : event.task.cardId;
-    // Planner / synthesizer runs carry lobbyId but no cardId — ignore here;
-    // those land on the planner banner (Sprint 7A) and synthesis surface
-    // (Sprint 9).
-    if (!eventCardId) return;
 
-    setByCardId((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(eventCardId);
+    // Role inference: prefer the metadata stamped at run-start over our
+    // cardId-based fallback. Progress events don't carry full task
+    // metadata, so we lean on the slot we already have for the runId
+    // when extracting role (it was set at task:started).
+    const taskForRole =
+      event.eventType === "task:progress" ? undefined : event.task;
+    const inferredRole = extractRole(taskForRole, !!eventCardId);
 
-      switch (event.eventType) {
-        case "task:started": {
-          const task = event.task;
-          const startedState: RunStreamState = {
-            runId: task.runId,
-            lobbyId: expectedLobbyId,
-            cardId: eventCardId,
-            phase: mapTaskStatusToPhase(task.status),
-            startedAt: task.startedAt ?? event.timestamp,
-            lastEventAt: event.timestamp,
-            fragments: [],
-          };
-          // If we already have fragments for this card from a prior run
-          // (retry case), the server emits a NEW runId — replace the slot
-          // wholesale so the captain sees a clean timeline.
-          next.set(eventCardId, startedState);
-          return next;
-        }
+    if (eventCardId) {
+      // Worker run — route into byCardId.
+      updateCardSlot({
+        setByCardId,
+        event,
+        eventCardId,
+        expectedLobbyId,
+        inferredRole,
+        onCompletedRef,
+        setCompletedCount,
+      });
+      return;
+    }
 
-        case "task:progress": {
-          const fragment = fragmentFromProgress(event);
-          if (!existing) {
-            // We missed the started event (race or reconnect). Fabricate a
-            // running state so the captain still sees activity. The runId
-            // arrives on the next started/completed event — store it now so
-            // we can correlate.
-            next.set(eventCardId, {
-              runId: event.runId,
-              lobbyId: expectedLobbyId,
-              cardId: eventCardId,
-              phase: "running",
-              startedAt: event.startedAt ?? event.timestamp,
-              lastEventAt: event.timestamp,
-              fragments: [fragment],
-              latestText: fragment.text,
-            });
-            return next;
-          }
-          // Drop stale events that belong to a previous run for this card.
-          // Server emits monotonically per (runId), so a runId mismatch is
-          // an in-flight retry.
-          if (existing.runId !== event.runId) return next;
-          next.set(eventCardId, pushFragment(existing, fragment));
-          return next;
-        }
+    // Lobby-level run (planner or synthesizer). We need a role to bucket
+    // the slot — ignore events that don't yield one (the server should
+    // always stamp metadata, but be defensive).
+    if (!inferredRole || inferredRole === "worker") return;
 
-        case "task:completed": {
-          const task = event.task;
-          const phase = mapTaskStatusToPhase(task.status);
-          const isFinished = FINISHED_STATUSES.has(task.status);
-          const completedState: RunStreamState = existing
-            ? {
-                ...existing,
-                phase,
-                lastEventAt: event.timestamp,
-                error: task.error ?? existing.error,
-              }
-            : {
-                runId: task.runId,
-                lobbyId: expectedLobbyId,
-                cardId: eventCardId,
-                phase,
-                startedAt: task.startedAt ?? event.timestamp,
-                lastEventAt: event.timestamp,
-                fragments: [],
-                error: task.error,
-              };
-          next.set(eventCardId, completedState);
-
-          if (isFinished) {
-            // Defer the parent callback to a microtask so we don't fire it
-            // inside React's setState callback (which can cause cascading
-            // updates if the parent triggers a re-render path that loops
-            // back here). The completedCount setter below is independent.
-            queueMicrotask(() => {
-              onCompletedRef.current?.(
-                eventCardId,
-                task.runId,
-                task.status === "succeeded",
-              );
-            });
-            // Increment the completed counter outside this setter — same
-            // microtask is fine.
-            queueMicrotask(() => setCompletedCount((c) => c + 1));
-          }
-          return next;
-        }
-
-        default:
-          return next;
-      }
+    updateRoleSlot({
+      setByRole,
+      event,
+      role: inferredRole,
+      expectedLobbyId,
+      onRoleCompletedRef,
+      setCompletedCount,
     });
   }, []);
 
@@ -414,7 +655,7 @@ export function useLobbyRunStream(
     };
   }, [lobbyId, handleEvent]);
 
-  return { byCardId, isConnected, completedCount };
+  return { byCardId, byRole, isConnected, completedCount };
 }
 
 /**

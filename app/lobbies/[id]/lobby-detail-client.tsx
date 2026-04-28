@@ -28,7 +28,10 @@
  *                   optimistic move overlay (`useSoloStoryUiStore`),
  *                   per-card cancel/retry, dependency editor + DAG overlay.
  *   - Sprint 8    → ReviewSection (live run embed + approve/reject/retry).
- *   - Sprint 9    → SynthesisSection (final artifact).
+ *   - Sprint 9    → SynthesisSection wired in (StartSynthesisCard +
+ *                   SynthesisRunProgress + ArtifactViewer); page-level
+ *                   `useLobbyRunStream` now feeds both rolling and
+ *                   synthesis via the `byRole` extension.
  *
  * Server-authoritative data lives on the server; this client calls
  * `useLobbyDetail` (fetch + useEffect) and feeds the cross-component UI
@@ -92,6 +95,7 @@ import { RosterSection } from "@/components/lobbies/roster/roster-section";
 import { PlanningSection } from "@/components/lobbies/planning/planning-section";
 import { RollingSection } from "@/components/lobbies/rolling/rolling-section";
 import { ReviewSection } from "@/components/lobbies/review/review-section";
+import { SynthesisSection } from "@/components/lobbies/synthesis/synthesis-section";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -154,6 +158,16 @@ export default function LobbyDetailClient() {
   // row). Refetching is idempotent and cheap (<200ms).
   const runStream = useLobbyRunStream(lobbyId, {
     onCardCompleted: () => {
+      void refetch();
+    },
+    // Sprint 9: lobby-level (planner/synthesizer) run completions also
+    // need a refetch so the persisted lobby fields land:
+    //   - planner finish → cards rows materialize, lobby flips to `planning`.
+    //   - synthesizer finish → `outputArtifactId` lands, status flips to
+    //     `completed`. Without this refetch the SynthesisSection would
+    //     remain stuck on the SynthesisRunProgress timeline even after
+    //     the run reported succeeded.
+    onRoleRunCompleted: () => {
       void refetch();
     },
   });
@@ -308,10 +322,14 @@ export default function LobbyDetailClient() {
                   onChanged={() => void refetch()}
                 />
               </PhaseSection>
-              <SynthesisSectionPlaceholder
-                hasSynthesisRun={data.lobby.synthesisRunId !== null}
-                hasArtifact={data.lobby.outputArtifactId !== null}
-              />
+              <PhaseSection id="synthesis" title="Synthesis" icon={Sparkles}>
+                <SynthesisSection
+                  lobby={data.lobby}
+                  cards={data.cards}
+                  runStream={runStream}
+                  onChanged={() => void refetch()}
+                />
+              </PhaseSection>
             </>
           )}
         </div>
@@ -462,29 +480,6 @@ function PhaseSection({
         {isExpanded ? children : null}
       </CardContent>
     </Card>
-  );
-}
-
-// ─── Placeholder sections (Sprint 9 fills the rest in) ───────────────────
-
-function SynthesisSectionPlaceholder({
-  hasSynthesisRun,
-  hasArtifact,
-}: {
-  hasSynthesisRun: boolean;
-  hasArtifact: boolean;
-}) {
-  return (
-    <PhaseSection id="synthesis" title="Synthesis" icon={Sparkles}>
-      <p className="font-mono text-sm text-terminal-muted">
-        Sprint 9 lands the synthesizer kickoff + artifact viewer.{" "}
-        {hasSynthesisRun
-          ? hasArtifact
-            ? "Artifact ready."
-            : "Synthesis running."
-          : "Not started."}
-      </p>
-    </PhaseSection>
   );
 }
 
