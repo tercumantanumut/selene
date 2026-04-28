@@ -29,6 +29,7 @@
 
 import { db } from "@/lib/db/sqlite-client";
 import {
+  agentRunEvents,
   agentRuns,
   type AgentRun,
 } from "@/lib/db/sqlite-observability-schema";
@@ -58,6 +59,59 @@ import type {
 import { and, eq, inArray } from "drizzle-orm";
 
 const nowIso = () => new Date().toISOString();
+
+function durationMsFrom(startedAt: string | null | undefined, completedAt: string): number | null {
+  if (!startedAt) return null;
+  const start = Date.parse(startedAt);
+  const end = Date.parse(completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, end - start);
+}
+
+function cancelAgentRunInTx(input: {
+  tx: Tx;
+  runId: string | null | undefined;
+  reason: string;
+}): string | null {
+  if (!input.runId) return null;
+  const [run] = input.tx
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.id, input.runId))
+    .limit(1)
+    .all();
+  if (!run || run.status !== "running") return null;
+
+  const completedAt = nowIso();
+  input.tx
+    .update(agentRuns)
+    .set({
+      status: "cancelled",
+      completedAt,
+      durationMs: durationMsFrom(run.startedAt, completedAt),
+      updatedAt: completedAt,
+      metadata: {
+        ...((run.metadata as object | null) ?? {}),
+        cancelReason: input.reason,
+        cancelledAt: completedAt,
+      },
+    })
+    .where(eq(agentRuns.id, run.id))
+    .run();
+  input.tx
+    .insert(agentRunEvents)
+    .values({
+      runId: run.id,
+      eventType: "run_completed",
+      level: "warn",
+      pipelineName: run.pipelineName,
+      data: { status: "cancelled", reason: input.reason },
+      timestamp: completedAt,
+      durationMs: durationMsFrom(run.startedAt, completedAt),
+    })
+    .run();
+  return run.id;
+}
 
 // ---------------------------------------------------------------------------
 // Permission scope snapshot
@@ -706,13 +760,17 @@ export async function applyPlannerOutput(input: {
           };
         }
 
-        // Idempotency: if planner cards already exist for this lobby, skip.
+        // Idempotency only applies to replayed planner output, not captain-made
+        // human cards that may exist before the planner callback arrives.
         const existing = tx
           .select()
           .from(lobbyCards)
           .where(eq(lobbyCards.lobbyId, input.lobbyId))
           .all();
-        if (existing.length > 0) {
+        const existingPlannerCards = existing.filter(
+          (card) => card.createdBy === "planner",
+        );
+        if (existingPlannerCards.length > 0) {
           const existingDeps = tx
             .select()
             .from(lobbyCardDependencies)
@@ -720,8 +778,24 @@ export async function applyPlannerOutput(input: {
             .all();
           return {
             ok: true,
-            row: { lobby, cards: existing, dependencies: existingDeps },
+            row: { lobby, cards: existingPlannerCards, dependencies: existingDeps },
           };
+        }
+
+        const seats = tx
+          .select()
+          .from(lobbySeats)
+          .where(eq(lobbySeats.lobbyId, input.lobbyId))
+          .all();
+        const seatIds = new Set(seats.map((seat) => seat.id));
+        for (const card of input.cards) {
+          if (card.assignedSeatId && !seatIds.has(card.assignedSeatId)) {
+            return {
+              ok: false,
+              reason: "INVARIANT_VIOLATION",
+              message: `Planner card references seat ${card.assignedSeatId} not in lobby.`,
+            };
+          }
         }
 
         const insertedCards: LobbyCard[] = [];
@@ -908,7 +982,13 @@ export async function transitionLobbyAcceptPlan(input: {
         for (const s of seats) seatById.set(s.id, s);
 
         for (const card of cards) {
-          if (!card.assignedSeatId) continue;
+          if (!card.assignedSeatId) {
+            return {
+              ok: false,
+              reason: "INVARIANT_VIOLATION",
+              message: `Card ${card.id} is unassigned. Assign every card before accepting the plan.`,
+            };
+          }
           const seat = seatById.get(card.assignedSeatId);
           if (!seat) {
             return {
@@ -1125,8 +1205,23 @@ export async function transitionLobbyStartSynthesis(input: {
           .from(lobbyCards)
           .where(eq(lobbyCards.lobbyId, input.lobbyId))
           .all();
+        if (cards.length === 0) {
+          return {
+            ok: false,
+            reason: "INVARIANT_VIOLATION",
+            message: "Cannot synthesize an empty lobby. Approve at least one card first.",
+          };
+        }
         const required = cards; // V1: all cards required (no per-card "required" flag yet).
         const unapproved = required.filter((c) => c.status !== "approved");
+        const unassigned = required.filter((c) => !c.assignedSeatId);
+        if (unassigned.length > 0) {
+          return {
+            ok: false,
+            reason: "INVARIANT_VIOLATION",
+            message: `Cannot synthesize while ${unassigned.length} cards are unassigned.`,
+          };
+        }
         if (unapproved.length > 0) {
           return {
             ok: false,
@@ -1183,6 +1278,7 @@ export async function completeSynthesis(input: {
   synthesisRunId: string;
   outputArtifactId: string;
 }): Promise<MutationResult<Lobby>> {
+  let shouldAppendEvent = false;
   const result = db
     .transaction((tx): MutationResult<Lobby> => {
       const [lobby] = tx
@@ -1198,6 +1294,23 @@ export async function completeSynthesis(input: {
           message: `Lobby ${input.lobbyId} not found.`,
         };
       }
+      if (lobby.synthesisRunId !== input.synthesisRunId) {
+        return {
+          ok: false,
+          reason: "INVARIANT_VIOLATION",
+          message: `Synthesis run id mismatch (lobby: ${lobby.synthesisRunId ?? "null"}, supplied: ${input.synthesisRunId}).`,
+        };
+      }
+      if (lobby.status === "completed") {
+        if (lobby.outputArtifactId !== input.outputArtifactId) {
+          return {
+            ok: false,
+            reason: "INVARIANT_VIOLATION",
+            message: "Synthesis replay outputArtifactId does not match completed lobby.",
+          };
+        }
+        return { ok: true, row: lobby };
+      }
       if (lobby.status !== "review") {
         return {
           ok: false,
@@ -1205,12 +1318,74 @@ export async function completeSynthesis(input: {
           message: `Cannot complete_synthesis from status '${lobby.status}'. Required: 'review'.`,
         };
       }
-      if (lobby.synthesisRunId !== input.synthesisRunId) {
+
+      const cards = tx
+        .select()
+        .from(lobbyCards)
+        .where(eq(lobbyCards.lobbyId, input.lobbyId))
+        .all();
+      if (cards.length === 0) {
         return {
           ok: false,
           reason: "INVARIANT_VIOLATION",
-          message: `Synthesis run id mismatch (lobby: ${lobby.synthesisRunId ?? "null"}, supplied: ${input.synthesisRunId}).`,
+          message: "Cannot complete synthesis for an empty lobby.",
         };
+      }
+      const unapproved = cards.filter((card) => card.status !== "approved");
+      if (unapproved.length > 0) {
+        return {
+          ok: false,
+          reason: "INVARIANT_VIOLATION",
+          message: `Cannot complete synthesis with ${unapproved.length} unapproved cards.`,
+        };
+      }
+
+      const [run] = tx
+        .select()
+        .from(agentRuns)
+        .where(eq(agentRuns.id, input.synthesisRunId))
+        .limit(1)
+        .all();
+      if (!run || run.pipelineName !== "solo_story.synthesizer") {
+        return {
+          ok: false,
+          reason: "INVARIANT_VIOLATION",
+          message: `Synthesis run ${input.synthesisRunId} not found or not a synthesizer run.`,
+        };
+      }
+      if (run.status === "cancelled" || run.status === "failed") {
+        return {
+          ok: false,
+          reason: "INVALID_TRANSITION",
+          message: `Cannot complete synthesis run in status '${run.status}'.`,
+        };
+      }
+      if (run.status === "running") {
+        const completedAt = nowIso();
+        tx.update(agentRuns)
+          .set({
+            status: "succeeded",
+            completedAt,
+            durationMs: durationMsFrom(run.startedAt, completedAt),
+            updatedAt: completedAt,
+            metadata: {
+              ...((run.metadata as object | null) ?? {}),
+              outputArtifactId: input.outputArtifactId,
+            },
+          })
+          .where(eq(agentRuns.id, run.id))
+          .run();
+        tx.insert(agentRunEvents)
+          .values({
+            runId: run.id,
+            eventType: "run_completed",
+            level: "info",
+            pipelineName: run.pipelineName,
+            data: { status: "succeeded", outputArtifactId: input.outputArtifactId },
+            timestamp: completedAt,
+            durationMs: durationMsFrom(run.startedAt, completedAt),
+          })
+          .run();
       }
 
       const [nextLobby] = tx
@@ -1225,9 +1400,10 @@ export async function completeSynthesis(input: {
         .where(eq(lobbies.id, lobby.id))
         .returning()
         .all();
+      shouldAppendEvent = true;
       return { ok: true, row: nextLobby };
     });
-  if (result.ok) {
+  if (result.ok && shouldAppendEvent) {
     await appendLobbyEvent({
       lobbyId: result.row.id,
       type: "lobby.completed",
@@ -2093,11 +2269,11 @@ export async function transitionCardRetry(input: {
             currentVersion: card.lockVersion,
           };
         }
-        if (!["rejected", "failed"].includes(card.status)) {
+        if (card.status !== "rejected") {
           return {
             ok: false,
             reason: "INVALID_TRANSITION",
-            message: `Cannot retry card in status '${card.status}'. Required: 'rejected' or 'failed'.`,
+            message: `Cannot retry card in status '${card.status}'. Required: 'rejected'.`,
           };
         }
         if (
@@ -2177,11 +2353,21 @@ export async function transitionCardReopen(input: {
   userId: string;
   cancelDependents?: boolean;
 }): Promise<
-  MutationResult<{ card: LobbyCard; staledCardIds: string[] }>
+  MutationResult<{
+    card: LobbyCard;
+    staledCardIds: string[];
+    cancelledDependentIds: string[];
+    cancelledRunIds: string[];
+  }>
 > {
   const result = db
     .transaction(
-      (tx): MutationResult<{ card: LobbyCard; staledCardIds: string[] }> => {
+      (tx): MutationResult<{
+        card: LobbyCard;
+        staledCardIds: string[];
+        cancelledDependentIds: string[];
+        cancelledRunIds: string[];
+      }> => {
         const [card] = tx
           .select()
           .from(lobbyCards)
@@ -2256,6 +2442,8 @@ export async function transitionCardReopen(input: {
         }
 
         const staledCardIds: string[] = [];
+        const cancelledDependentIds: string[] = [];
+        const cancelledRunIds: string[] = [];
         if (reachable.size > 0) {
           const reachableArr = Array.from(reachable);
           const dependents = tx
@@ -2280,16 +2468,24 @@ export async function transitionCardReopen(input: {
               staledCardIds.push(dep.id);
             }
             if (dep.status === "running" && input.cancelDependents) {
+              const cancelledRunId = cancelAgentRunInTx({
+                tx,
+                runId: dep.agentRunId,
+                reason: `Card ${input.cardId} reopened with cancelDependents=true.`,
+              });
+              if (cancelledRunId) cancelledRunIds.push(cancelledRunId);
               tx.update(lobbyCards)
                 .set({
                   status: "cancelled",
                   column: "blocked",
+                  agentRunId: null,
                   completedAt: nowIso(),
                   lockVersion: dep.lockVersion + 1,
                   updatedAt: nowIso(),
                 })
                 .where(eq(lobbyCards.id, dep.id))
                 .run();
+              cancelledDependentIds.push(dep.id);
             }
           }
         }
@@ -2316,7 +2512,10 @@ export async function transitionCardReopen(input: {
 
         recomputeReadyCardsInTx({ tx, lobbyId: card.lobbyId });
 
-        return { ok: true, row: { card: nextCard, staledCardIds } };
+        return {
+          ok: true,
+          row: { card: nextCard, staledCardIds, cancelledDependentIds, cancelledRunIds },
+        };
       },
     );
   if (result.ok) {
@@ -2329,6 +2528,8 @@ export async function transitionCardReopen(input: {
       payload: {
         cancelDependents: input.cancelDependents ?? false,
         staledCardIds: result.row.staledCardIds,
+        cancelledDependentIds: result.row.cancelledDependentIds,
+        cancelledRunIds: result.row.cancelledRunIds,
       },
     });
   }

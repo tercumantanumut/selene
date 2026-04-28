@@ -24,6 +24,9 @@ import {
 } from "@/lib/ai/session-model-resolver";
 import { generateSessionTitle } from "@/lib/ai/title-generator";
 import { createSession, createMessage, updateMessage, getSession, getOrCreateLocalUser, updateSession, deleteMessagesNotIn, getInjectedMessageIds, getSessionWithMessages } from "@/lib/db/queries";
+import { db } from "@/lib/db/sqlite-client";
+import { agentRuns, type AgentRun } from "@/lib/db/sqlite-observability-schema";
+import { eq } from "drizzle-orm";
 import { requireAuth } from "@/lib/auth/local-auth";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { sessionHasTruncatedContent } from "@/lib/ai/truncated-content-store";
@@ -151,7 +154,7 @@ registerAllTools();
 const hasStylyApiKey = () => !!process.env.STYLY_AI_API_KEY;
 
 export async function POST(req: Request) {
-  let agentRun: { id: string } | null = null;
+  let agentRun: Pick<AgentRun, "id" | "startedAt"> | null = null;
   let chatTaskRegistered = false;
   let configuredProvider: string | undefined;
   let activeSessionId: string | undefined;
@@ -478,14 +481,28 @@ export async function POST(req: Request) {
     // ── Create agent run ───────────────────────────────────────────────────────
     const resolvedCharacterId =
       characterId || ((sessionMetadata?.characterId as string | undefined) ?? undefined);
+    const headerAgentRunId = req.headers.get("X-Agent-Run-Id");
 
-    agentRun = await createAgentRun({
-      sessionId,
-      userId: dbUser.id,
-      pipelineName: "chat",
-      triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : "chat",
-      metadata: { characterId: resolvedCharacterId || null, messageCount: messages.length, taskSource: taskSource || "chat" },
-    });
+    if (isInternalAuth && headerAgentRunId) {
+      const existingRun = await db.query.agentRuns.findFirst({
+        where: eq(agentRuns.id, headerAgentRunId),
+      });
+      if (!existingRun || existingRun.sessionId !== sessionId || existingRun.userId !== dbUser.id) {
+        return new Response(
+          JSON.stringify({ error: "Invalid internal agent run id" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      agentRun = existingRun;
+    } else {
+      agentRun = await createAgentRun({
+        sessionId,
+        userId: dbUser.id,
+        pipelineName: "chat",
+        triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : "chat",
+        metadata: { characterId: resolvedCharacterId || null, messageCount: messages.length, taskSource: taskSource || "chat" },
+      });
+    }
     const chatAbortController = new AbortController();
     registerChatAbortController(agentRun.id, chatAbortController);
     // Promote the earlier reservation (or create afresh if the reservation

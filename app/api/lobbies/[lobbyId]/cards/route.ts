@@ -26,6 +26,7 @@ import {
   cardColumnFilterSchema,
   cardStatusFilterSchema,
   errorResponse,
+  expectedVersionField,
   isAuthResponse,
   parseBody,
   withLobbyAuth,
@@ -94,6 +95,7 @@ export async function GET(req: Request, { params }: RouteParams) {
 // keys 400 instead of being silently dropped on the way to the DB.
 const createCardBodySchema = z
   .object({
+    expectedVersion: expectedVersionField,
     title: z.string().min(1).max(200),
     description: z.string().max(8000).optional(),
     acceptanceCriteria: z.array(acceptanceCriterionV1Schema).optional(),
@@ -112,15 +114,22 @@ export async function POST(req: Request, { params }: RouteParams) {
   try {
     const { lobbyId } = await params;
 
-    const ownership = await assertLobbyOwnershipAndVersion({
-      lobbyId,
-      userId: ctx.userId,
-    });
-    if (!ownership.ok) return ownership.response;
-
     const parsed = await parseBody(req, createCardBodySchema);
     if (!parsed.ok) return parsed.response;
     const body = parsed.data;
+
+    const ownership = await assertLobbyOwnershipAndVersion({
+      lobbyId,
+      userId: ctx.userId,
+      expectedVersion: body.expectedVersion,
+    });
+    if (!ownership.ok) return ownership.response;
+    if (ownership.lobby.status !== "planning") {
+      return NextResponse.json(
+        { error: `Cannot create cards while lobby is '${ownership.lobby.status}'. Required: 'planning'.` },
+        { status: 422 },
+      );
+    }
 
     // Acceptance criteria need stable ids so the synthesizer can refer to
     // specific bullets across cards. Mint a UUID when the captain didn't
@@ -130,6 +139,17 @@ export async function POST(req: Request, { params }: RouteParams) {
       text: c.text,
       required: c.required,
     }));
+
+    if (body.assignedSeatId) {
+      const { getSeat } = await import("@/lib/lobbies/queries");
+      const seat = await getSeat(body.assignedSeatId);
+      if (!seat || seat.lobbyId !== lobbyId) {
+        return NextResponse.json(
+          { error: `Seat ${body.assignedSeatId} is not in lobby ${lobbyId}.`, reason: "INVARIANT_VIOLATION" },
+          { status: 422 },
+        );
+      }
+    }
 
     const card = await createCard({
       lobbyId,

@@ -4,7 +4,7 @@
  * Uses discriminated unions for type-safe task handling.
  */
 
-export type TaskType = "scheduled" | "channel" | "chat";
+export type TaskType = "scheduled" | "channel" | "chat" | "solo_story";
 
 export type TaskStatus =
   | "queued"

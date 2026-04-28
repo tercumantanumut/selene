@@ -732,6 +732,21 @@ export async function updateCard(
         };
       }
     }
+    if (input.patch.assignedSeatId) {
+      const [seat] = tx
+        .select()
+        .from(lobbySeats)
+        .where(eq(lobbySeats.id, input.patch.assignedSeatId))
+        .limit(1)
+        .all();
+      if (!seat || seat.lobbyId !== current.lobbyId) {
+        return {
+          ok: false,
+          reason: "INVARIANT_VIOLATION",
+          message: `Seat ${input.patch.assignedSeatId} is not in lobby ${current.lobbyId}.`,
+        };
+      }
+    }
     const [row] = tx
       .update(lobbyCards)
       .set({

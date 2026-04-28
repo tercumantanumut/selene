@@ -16,8 +16,11 @@
  * callback (see Sprint 4).
  */
 
+import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { INTERNAL_API_SECRET } from "@/lib/config/internal-api-secret";
+import { queueSoloStoryAgentRun } from "@/lib/lobbies/orchestrator";
 import {
   completeSynthesis,
   transitionLobbyAbort,
@@ -162,16 +165,18 @@ export async function POST(req: Request, { params }: RouteParams) {
           synthesizerScope: body.synthesizerScope,
           synthesizerCharacterId: body.synthesizerCharacterId,
         });
+        if (result.ok) {
+          await queueSoloStoryAgentRun(result.row.synthesisRun.id);
+        }
         return mapMutationResult(result);
       }
       case "complete_synthesis": {
-        // Same shared-with-orchestrator caveat as enter_review.
-        const ownership = await assertLobbyOwnershipAndVersion({
-          lobbyId,
-          userId: ctx.userId,
-          expectedVersion: body.expectedVersion,
-        });
-        if (!ownership.ok) return ownership.response;
+        if (req.headers.get("X-Internal-Auth") !== INTERNAL_API_SECRET) {
+          return NextResponse.json(
+            { error: "complete_synthesis is internal-only.", reason: "FORBIDDEN" },
+            { status: 403 },
+          );
+        }
         const result = await completeSynthesis({
           lobbyId,
           synthesisRunId: body.synthesisRunId,
