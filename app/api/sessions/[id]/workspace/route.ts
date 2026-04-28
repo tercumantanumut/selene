@@ -18,6 +18,7 @@ import { GitService } from "@/lib/workspace/git-service";
 import { getSyncFolders } from "@/lib/vectordb/sync-folder-crud";
 import { runGitCommand } from "@/lib/workspace/git-runner";
 import {
+  resolveWorkspaceInfoFromSession,
   updateWorkspaceLifecycleMetadata,
   writeWorkspaceInfo,
 } from "@/lib/workspace/metadata";
@@ -571,7 +572,12 @@ export async function GET(
 
     const { session } = authResult;
     const metadata = session.metadata as Record<string, unknown> | null;
-    const workspaceInfo = getWorkspaceInfo(metadata);
+    // Use the verified resolver — `getWorkspaceInfo(metadata)` returns whatever
+    // the session metadata claims, including stale identities whose sync folder
+    // has since been removed. The prompt-builder and localGrep already reject
+    // those, so this endpoint must do the same to avoid reporting workspaces
+    // the rest of the system treats as invalid.
+    const workspaceInfo = await resolveWorkspaceInfoFromSession(session);
     const url = new URL(req.url);
     const wantDetect = url.searchParams.get("detect") === "true";
     const wantDiff = url.searchParams.get("diff") === "true";
@@ -690,7 +696,10 @@ export async function PATCH(
     const safePayload = sanitizeWorkspacePatch(await req.json());
 
     const existingMetadata = (session.metadata as Record<string, unknown>) || {};
-    if (!getWorkspaceInfo(existingMetadata)) {
+    // Verified resolver — reject patches that target a sync-folder-less stale
+    // workspace, mirroring what prompt-builder/localGrep already do.
+    const existingWorkspaceInfo = await resolveWorkspaceInfoFromSession(session);
+    if (!existingWorkspaceInfo) {
       return NextResponse.json(
         { error: "No workspace exists for this session." },
         { status: 404 }
@@ -745,7 +754,12 @@ export async function POST(
       return await handleEnableGit(id, session, metadata, body.folderPath);
     }
 
-    const workspaceInfo = getWorkspaceInfo(metadata);
+    // Verified resolver — refuse to act on stale workspace metadata whose
+    // sync folder has been removed. The prompt-builder and localGrep already
+    // ignore those, so refresh/cleanup/push/sync routes must too instead of
+    // silently operating on a workspace the rest of the system treats as
+    // invalid.
+    const workspaceInfo = await resolveWorkspaceInfoFromSession(session);
     if (!workspaceInfo) {
       return NextResponse.json(
         { error: "No workspace info for this session" },

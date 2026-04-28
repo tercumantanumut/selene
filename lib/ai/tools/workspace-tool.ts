@@ -21,6 +21,7 @@ import { runGitCommand } from "@/lib/workspace/git-runner";
 import { cleanupWorkspace } from "@/lib/workspace/cleanup";
 import { recordWorkspaceCreate } from "@/lib/workspace/metrics";
 import {
+  resolveWorkspaceInfoFromSession,
   updateWorkspaceLifecycleMetadata,
   writeWorkspaceInfo,
 } from "@/lib/workspace/metadata";
@@ -289,6 +290,41 @@ async function handleCreate(
     };
   }
 
+  // Stale metadata guard: if we get here with metadata pointing at a worktree
+  // that no longer exists on disk, clear it BEFORE we do any side effects.
+  // Without this, the call below creates the git worktree + sync-folder row,
+  // and only then `writeWorkspaceInfo` detects the identity change and rejects
+  // — leaking the new worktree and stranding the session on the stale identity.
+  if (existingWorkspace) {
+    console.warn("[workspace-tool:create] Clearing stale workspace metadata before re-create", {
+      sessionId,
+      stale: {
+        type: existingWorkspace.type,
+        branch: existingWorkspace.branch,
+        worktreePath: existingWorkspace.worktreePath,
+        syncFolderId: existingWorkspace.syncFolderId,
+      },
+    });
+    try {
+      // Best-effort cleanup of any orphaned sync-folder row pointing at the
+      // missing worktree. Tool-created workspaces own this row; local Git Mode
+      // doesn't, so skip cleanup for that case.
+      if (existingWorkspace.type !== "local") {
+        // Reuse the workspace-tool-delete trigger — semantically we ARE deleting
+        // the stale workspace, just immediately followed by a fresh create.
+        await cleanupWorkspace({
+          syncFolderId: existingWorkspace.syncFolderId,
+          worktreePath: existingWorkspace.worktreePath,
+          trigger: "workspace-tool-delete",
+        });
+      }
+    } catch (cleanupErr) {
+      console.warn("[workspace-tool:create] Stale cleanup non-fatal:", cleanupErr);
+    }
+    const { workspaceInfo: _stale, ...restMetadata } = metadata;
+    await updateSession(sessionId, { metadata: restMetadata });
+  }
+
   // Determine base branch
   let resolvedBaseBranch = baseBranch;
   if (!resolvedBaseBranch) {
@@ -410,8 +446,10 @@ async function handleStatus(sessionId: string) {
     return { status: "error" as const, error: "Session not found." };
   }
 
-  const metadata = (session.metadata || {}) as Record<string, unknown>;
-  const workspaceInfo = getWorkspaceInfo(metadata);
+  // Verified resolver — stale metadata pointing at a removed sync folder
+  // is treated the same as "no workspace configured" so we don't run git
+  // commands against a directory the rest of the system has unbound.
+  const workspaceInfo = await resolveWorkspaceInfoFromSession(session);
 
   if (!workspaceInfo) {
     return {
@@ -500,8 +538,10 @@ async function handleUpdateMetadata(sessionId: string, input: WorkspaceInput) {
     return { status: "error" as const, error: "Session not found." };
   }
 
-  const metadata = (session.metadata || {}) as Record<string, unknown>;
-  const workspaceInfo = getWorkspaceInfo(metadata);
+  // Verified resolver — refuse PR/status patches against a stale workspace
+  // whose sync folder is gone; otherwise we'd record metadata against an
+  // identity the prompt-builder/localGrep already treat as invalid.
+  const workspaceInfo = await resolveWorkspaceInfoFromSession(session);
 
   if (!workspaceInfo) {
     return { status: "error" as const, error: "No workspace exists for this session. Create one first." };
