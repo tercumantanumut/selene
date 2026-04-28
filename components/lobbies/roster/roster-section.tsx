@@ -196,12 +196,19 @@ export function RosterSection({ lobby, seats, onChanged }: RosterSectionProps) {
       <LobbyGoalEditor lobby={lobby} isEditable={isEditable} onSaved={onChanged} />
 
       {error && (
+        // Sprint 6.1 (S6 R3 HIGH): destructive token (#ef4444) on cream is
+        // ~3.4:1 (fails AA). Use red-700 (#b91c1c) → ~5.9:1.
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3"
+          className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/5 p-3"
         >
-          <AlertCircle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
-          <p className="font-mono text-xs text-destructive">{error}</p>
+          <AlertCircle
+            className="h-3.5 w-3.5 text-red-700 dark:text-red-300 mt-0.5 shrink-0"
+            aria-hidden="true"
+          />
+          <p className="font-mono text-xs text-red-700 dark:text-red-300">
+            {error}
+          </p>
         </div>
       )}
 
@@ -261,10 +268,12 @@ export function RosterSection({ lobby, seats, onChanged }: RosterSectionProps) {
           }}
           seatRole={scopeSeat.role}
           agent={scopeSeatAgent}
-          initialScope={
-            (scopeSeat.permissionScope as LobbyPermissionScopeV1 | undefined) ??
-            undefined
-          }
+          // Sprint 6.1 (S6 R4 LOW): drop the `| undefined` widening on the
+          // cast. The DB column is `permissionScope: LobbyPermissionScopeV1`
+          // (`$inferSelect` types it as never-undefined). The `??` was
+          // belt-and-braces around a phantom undefined; removing it lets
+          // TS narrow correctly downstream.
+          initialScope={scopeSeat.permissionScope as LobbyPermissionScopeV1}
           saving={scopeSaving}
           error={scopeError}
           onSave={(scope) => void handleScopeSave(scope)}
@@ -283,12 +292,16 @@ function seatToReplaceItem(seat: LobbySeat): {
   permissionScope?: LobbyPermissionScopeV1;
   status: LobbySeat["status"];
 } {
+  // Sprint 6.1 (S6 R4 LOW): the schema types `permissionScope` as
+  // `LobbyPermissionScopeV1` (never undefined). The previous `?? undefined`
+  // dance was meaningless, but kept for the optional `permissionScope?:`
+  // contract on the replaceSeats body — drop the cast widening, keep the
+  // optional projection to preserve the wire shape.
   return {
     role: seat.role,
     position: seat.position,
     agentId: seat.agentId,
-    permissionScope:
-      (seat.permissionScope as LobbyPermissionScopeV1 | null) ?? undefined,
+    permissionScope: seat.permissionScope as LobbyPermissionScopeV1,
     status: seat.status,
   };
 }

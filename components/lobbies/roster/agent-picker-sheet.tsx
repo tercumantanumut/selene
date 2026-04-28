@@ -17,7 +17,7 @@
  * unfilled.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Bot, Check, Loader2, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -75,6 +75,68 @@ export function AgentPickerSheet({
     });
   }, [characters, query]);
 
+  // Sprint 6.1 (S6 R3 HIGH): roving-tabindex keyboard navigation.
+  //
+  // Without arrow-key support, the agent list is a flat tabstop hell — TAB
+  // walks every button (one per agent), and screen reader users have no
+  // "next item" affordance. The roving pattern keeps a single tabstop
+  // (`tabIndex={0}` on the focused row, -1 on the rest) and lets ↑/↓/Home/
+  // End move focus inside the list. Enter / Space activate the focused
+  // button via native button semantics.
+  //
+  // `focusedIndex` clamps to filtered.length - 1 whenever the visible list
+  // shrinks (search filter typed, or list reloads) so we never end up
+  // pointing at a row that no longer exists.
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [focusedIndex, setFocusedIndex] = useState(0);
+
+  // Reset focus to the seeded selection (or first row) when the dialog opens
+  // or the list changes shape. Prevents focus from getting stuck on a stale
+  // index after the captain types in the search box.
+  useEffect(() => {
+    if (!open || filtered.length === 0) return;
+    const seedIdx = filtered.findIndex((a) => a.id === seedSelectedAgentId);
+    setFocusedIndex(seedIdx >= 0 ? seedIdx : 0);
+  }, [open, filtered, seedSelectedAgentId]);
+
+  // Clamp focused index when filter shrinks the list.
+  useEffect(() => {
+    if (filtered.length === 0) return;
+    setFocusedIndex((idx) => Math.min(idx, filtered.length - 1));
+  }, [filtered.length]);
+
+  function moveFocus(nextIdx: number) {
+    if (filtered.length === 0) return;
+    const wrapped =
+      ((nextIdx % filtered.length) + filtered.length) % filtered.length;
+    setFocusedIndex(wrapped);
+    // `requestAnimationFrame` is unnecessary — refs are populated by render
+    // before this handler fires from a later keydown.
+    itemRefs.current[wrapped]?.focus();
+  }
+
+  function handleListKeyDown(e: React.KeyboardEvent<HTMLUListElement>) {
+    if (filtered.length === 0) return;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        moveFocus(focusedIndex + 1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        moveFocus(focusedIndex - 1);
+        break;
+      case "Home":
+        e.preventDefault();
+        moveFocus(0);
+        break;
+      case "End":
+        e.preventDefault();
+        moveFocus(filtered.length - 1);
+        break;
+    }
+  }
+
   function handlePick(agent: CharacterSummary) {
     onPick(agent.id);
     onOpenChange(false);
@@ -116,16 +178,26 @@ export function AgentPickerSheet({
               <span className="font-mono text-xs">Loading agents…</span>
             </div>
           ) : error ? (
+            // Sprint 6.1 (S6 R3 HIGH): destructive token (#ef4444) on cream
+            // is ~3.4:1 — fails AA. Use red-700/red-300 for ~5.9:1.
             <div
               role="alert"
-              className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3"
+              className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/5 p-3"
             >
-              <AlertCircle className="h-3.5 w-3.5 text-destructive mt-0.5 shrink-0" />
-              <p className="font-mono text-xs text-destructive">{error}</p>
+              <AlertCircle
+                className="h-3.5 w-3.5 text-red-700 dark:text-red-300 mt-0.5 shrink-0"
+                aria-hidden="true"
+              />
+              <p className="font-mono text-xs text-red-700 dark:text-red-300">
+                {error}
+              </p>
             </div>
           ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-2 text-center">
-              <Bot className="h-6 w-6 text-terminal-muted" />
+            <div
+              role="status"
+              className="flex flex-col items-center justify-center py-8 gap-2 text-center"
+            >
+              <Bot className="h-6 w-6 text-terminal-muted" aria-hidden="true" />
               <p className="font-mono text-xs text-terminal-muted">
                 {characters.length === 0
                   ? "No active agents in your library yet."
@@ -133,24 +205,51 @@ export function AgentPickerSheet({
               </p>
             </div>
           ) : (
-            <ul className="space-y-1 py-1">
-              {filtered.map((agent) => {
+            <ul
+              className="space-y-1 py-1"
+              role="listbox"
+              aria-label={`Agents available for ${seatRole}`}
+              aria-activedescendant={
+                filtered[focusedIndex]
+                  ? `agent-pick-${filtered[focusedIndex].id}`
+                  : undefined
+              }
+              onKeyDown={handleListKeyDown}
+            >
+              {filtered.map((agent, index) => {
                 const isSelected = agent.id === seedSelectedAgentId;
+                const isFocused = index === focusedIndex;
                 const toolCount =
                   agent.metadata?.enabledTools?.length ?? 0;
                 return (
-                  <li key={agent.id}>
+                  <li key={agent.id} role="presentation">
                     <button
                       type="button"
+                      id={`agent-pick-${agent.id}`}
+                      ref={(el) => {
+                        itemRefs.current[index] = el;
+                      }}
+                      role="option"
+                      aria-selected={isSelected}
+                      // Sprint 6.1 (S6 R3 MEDIUM): aria-current marks the
+                      // seat's existing assignment (semantically distinct
+                      // from "selected for this dialog action").
+                      aria-current={isSelected ? "true" : undefined}
+                      tabIndex={isFocused ? 0 : -1}
                       onClick={() => handlePick(agent)}
+                      onFocus={() => setFocusedIndex(index)}
                       className={cn(
                         "w-full flex items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-dark focus-visible:ring-offset-1",
                         isSelected
                           ? "border-terminal-green bg-terminal-green/10"
                           : "border-terminal-border/60 hover:border-terminal-dark hover:bg-terminal-cream/60",
                       )}
                     >
-                      <Bot className="h-4 w-4 text-terminal-dark mt-0.5 shrink-0" />
+                      <Bot
+                        className="h-4 w-4 text-terminal-dark mt-0.5 shrink-0"
+                        aria-hidden="true"
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <p className="font-mono text-sm font-semibold text-terminal-dark truncate">

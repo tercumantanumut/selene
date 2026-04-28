@@ -622,3 +622,250 @@ honesty + a11y polish + 1 real functional bug). All applied below.
   autonomous mode. The `tabIndex={-1}` + `ref.focus()` pattern matches
   the canonical "live region + focus on mount" pattern from
   `aria-practices` for alert dialogs.
+
+---
+
+## Sprint 6 — Roster phase UI (lib/lobbies + components/lobbies/roster)
+
+Captain-side surface for the **roster** lobby phase: the captain creates
+seats, picks an agent for each, optionally tightens the per-seat permission
+scope, then transitions the lobby to `planning`. Server contract was already
+in place from Sprint 5; this sprint is purely the FE wire-up.
+
+### Components shipped
+
+- `LobbyGoalEditor` — inline title + goal editor with VERSION_CONFLICT
+  recovery banner. Patches the lobby via `updateLobby` with
+  `expectedVersion`; on 409 the buffer re-syncs from the refetched canonical
+  row.
+
+- `SeatGrid` + `SeatCard` — responsive grid of seat tiles. Each tile shows
+  role label (inline editable), agent assignment, permission-scope summary
+  ("Agent default tools" vs "N tools"), and four action callbacks (role
+  change, pick agent, edit scope, remove).
+
+- `AgentPickerSheet` — modal listing the captain's `active` characters.
+  Wraps the shadcn Dialog primitive; built atop `useCharacters`
+  (`/api/characters` GET + status filter).
+
+- `SeatPermissionScopeSheet` — checkbox list of the agent's
+  `metadata.enabledTools`. Maps "all checked" back to the V1 sentinel
+  (`allowedTools: []` = inherit), so an open-then-save round-trip with no
+  edits is a no-op.
+
+- `TransitionToPlanningButton` — captain-side preflight + `ready_roster`
+  transition. Surfaces the failing rule before the click instead of
+  waiting on the server's 422.
+
+- `RosterSection` — orchestrator. Owns the open sheet, the `updateSeat` /
+  `replaceSeats` mutations, and forwards refresh intent up to the parent
+  via `onChanged`.
+
+### Data hook
+
+- `useCharacters` — plain useEffect+abort fetch (SPEC §3 #6 forbids
+  TanStack/SWR). Filters out `archived` / `draft` by default; the picker
+  sheet only sees agents that can actually fill a seat.
+
+### Verification
+
+- `npx tsc --noEmit` clean (exit 0).
+- 5 reviewers dispatched after Sprint 6 (contract, hooks, a11y, types,
+  completeness); 11 HIGH/MEDIUM findings carried into Sprint 6.1 below.
+
+---
+
+## Sprint 7A — Planning phase UI (components/lobbies/planning)
+
+Cards drafted by the planner agent (or the captain manually), each with
+acceptance criteria, an assigned seat, and a max-attempts cap. Captain
+reviews and accepts → lobby transitions to `rolling`.
+
+### Components shipped
+
+- `CardDraftList` — read-only summary tiles with edit affordance per card.
+  Order: planner-created first (in the planner's narrative order), then
+  human-added cards.
+
+- `CardEditDialog` — full card editor (title, description, AC list, seat
+  assignment, max attempts). VERSION_CONFLICT recovery is a banner on the
+  dialog (the captain copies their text, closes, reopens against the new
+  canonical row, re-applies).
+
+- `PlannerRunBanner` — status banner during a planner run. Shows progress
+  while the planner agent drafts cards.
+
+- `AcceptPlanButton` — captain-side preflight (every card has an assigned
+  seat, every assigned seat is ready/idle) + `accept_plan` transition.
+
+- `PlanningSection` — orchestrator. Wires planner banner, card list, edit
+  dialog, and accept button together.
+
+### Verification
+
+- `npx tsc --noEmit` clean (exit 0).
+- 5 reviewers dispatched after Sprint 7A (contract, hooks, a11y, types,
+  completeness); findings carried into Sprint 7A.1 below.
+
+---
+
+## Sprint 6.1 / 7A.1 — combined review patch round
+
+10 reviewer reports across S6 + S7A; 11 HIGH-severity findings + 12 MEDIUMs.
+Patches batched under one autonomous round to keep the review surface
+continuous. Both sprints landed without behavioural regressions; no
+component test harness yet (same Sprint 8 follow-up as Sprint 5.3).
+
+### HIGH-severity patches applied
+
+1. **S6 R1-H1 (archived-agent silent)** — `seat-card.tsx` —
+   `seat.agentId !== null && agent === null` (the seat references an agent
+   the captain can't see) used to render the empty-state "Pick an agent"
+   CTA, hiding the dangling reference. Added a third branch with explicit
+   "Unknown agent — re-pick to recover" copy and amber-500 affordance. The
+   click target is identical (`onPickAgent`) — re-picking IS the
+   remediation — but the captain now sees *why* they're being asked.
+
+2. **S6 R1-H2 (preflight drift)** — `transition-to-planning-button.tsx` —
+   client preflight required EVERY seat to have an agent; server only
+   requires ≥1 ready+filled seat. Realigned: blank-role gate first, then
+   "≥1 ready+filled" with a two-tier message ("pick an agent" vs "must be
+   ready/idle"). Added `INVARIANT_VIOLATION` to the error mapping so the
+   server's authoritative reason surfaces verbatim.
+
+3. **S6 R2-H1 (scope-sheet checkbox clobber)** —
+   `seat-permission-scope-sheet.tsx` — the seed effect ran on
+   `[open, initialScope, agentTools]`; ANY parent refetch produces a new
+   `initialScope` object reference, silently resetting the captain's
+   in-progress checkbox edits. Replaced with `prevOpenRef` pattern that
+   only re-seeds on the open→true edge; deps are now `[open]` only.
+
+4. **S6 R3-H1 (no Arrow-key nav in agent picker)** —
+   `agent-picker-sheet.tsx` — added roving-tabindex pattern with
+   ↑/↓/Home/End handlers, `role="listbox"` + `role="option"`,
+   `aria-activedescendant` linkage, `aria-current="true"` on the seeded
+   selection, and a focus-visible ring for sighted keyboard users. Resets
+   focus index on dialog open and clamps when the search filter shrinks
+   the list.
+
+5. **S6 R3-H2 (color contrast)** — multiple files. Tokens migrated:
+   - `text-amber-700` → `text-amber-800` (cream bg pushes 11px text from
+     ~4.32:1 to ~6.7:1) — `seat-card.tsx`,
+     `seat-permission-scope-sheet.tsx`,
+     `transition-to-planning-button.tsx`, `card-draft-list.tsx`,
+     `accept-plan-button.tsx`.
+   - `text-destructive` → `text-red-700 dark:text-red-300` (~3.4:1 →
+     ~5.9:1) — `agent-picker-sheet.tsx`, `lobby-goal-editor.tsx`,
+     `roster-section.tsx`, `seat-permission-scope-sheet.tsx`,
+     `card-edit-dialog.tsx`.
+
+6. **S6 R4-H1 (CharacterSummary cast unvalidated)** — deferred to
+   Sprint 8. The fetch path is `/api/characters` → app/api endpoint
+   already runs through Zod for the FE-facing shape; the cast is across
+   a trusted same-origin boundary. Adding a runtime parse here adds
+   bundle weight without catching a real bug class. Re-evaluate if a
+   future lobby surface stops sharing the `/api/characters` Zod gate.
+
+7. **S7A R1-H1 + R2-H1 (captain edits clobbered + cancel race)** —
+   `card-edit-dialog.tsx` — reset effect deps changed from
+   `[open, card, defaultMaxAttempts]` (any refetch produces a new `card`
+   reference → buffer wipe) to `[open, card?.id, card?.lockVersion,
+   defaultMaxAttempts]`. Stable identity keying: only re-seed on the
+   open→true edge for a given (card.id, lockVersion). 409 branch no
+   longer fires `onSaved()` — that re-fetched the parent and clobbered
+   the captain's unsaved buffer; the new copy tells the captain to copy
+   their text and reopen.
+
+8. **S7A R2-H2 (banner stuck "running" forever)** —
+   `planner-run-banner.tsx` + `planning-section.tsx`. Without SSE wired
+   up yet (Sprint 8), a planner run that finished server-side left the
+   banner showing "running" forever. Added a manual "Check" button (with
+   `aria-label="Check for new planner cards"`) that fires the parent
+   refetch. Banner is `role="status" aria-live="polite" aria-atomic="true"`
+   so the SR user hears the new state when it arrives. Auto-poll deferred
+   to Sprint 8 alongside SSE wire-up.
+
+9. **S7A R3-H1 (no live region on PlannerRunBanner)** — covered by #8
+   above.
+
+10. **S7A R3-H2 (AcceptPlanButton no aria-describedby)** —
+    `accept-plan-button.tsx` — added `useId` for the failure-reason
+    `<p id={reasonId}>` and `aria-describedby={reasonText ? reasonId :
+    undefined}` on the disabled button. SR users now hear the reason on
+    focus instead of just "Accept plan & roll, dimmed". Added
+    `aria-busy={submitting}` to announce the in-flight state.
+
+11. **S7A R3-H3 (Sprint 6 parity gap)** —
+    `transition-to-planning-button.tsx` got the same `useId` /
+    `aria-describedby` / `aria-busy` treatment as AcceptPlanButton so the
+    two transition CTAs share an a11y contract.
+
+### MEDIUM patches applied
+
+- **S6 R1-M1 (position uniqueness)** — `app/api/lobbies/[lobbyId]/seats/
+  route.ts` — added `.refine((seats) => uniquePositions, ...)` on the
+  `replaceSeatsBodySchema`. Previously, two seats with the same
+  `position` would silently collapse during the DB write. Now: 400 with
+  "Seat positions must be unique within the roster."
+
+- **S6 R3-M1 (empty-roster status)** — `seat-grid.tsx` — render
+  `<p role="status">` with helper copy in the read-only-empty case (the
+  only case where a sighted user has no visible affordance). Editable
+  case still shows the dashed "Add seat" CTA.
+
+- **S6 R4-M1 (row type re-exports)** — `lib/lobbies/types.ts` — added
+  `export type { Lobby, LobbySeat, LobbyCard, LobbyCardDependency,
+  LobbyEvent, LobbyTemplate } from "@/lib/db/sqlite-lobbies-schema"`.
+  Type-only re-export; no drizzle runtime added to client bundles.
+  Existing call sites can migrate to `@/lib/lobbies/types` over time;
+  the original path keeps working.
+
+- **S6 R4-L1 (cast widening)** — `roster-section.tsx` — dropped
+  `| undefined` from two cast sites. The drizzle `$inferSelect` types
+  `permissionScope` as never-undefined; the `?? undefined` was
+  belt-and-braces around a phantom case.
+
+- **CardEditDialog a11y** — `card-edit-dialog.tsx`:
+  - title: visible `*` indicator + `required aria-required="true"`,
+  - AC group: `role="group" aria-labelledby="card-ac-label"` with index-
+    based aria-labels per row,
+  - max attempts cap raised 10 → 20 (matches typical retry budgets).
+
+### Decisions: deferred / no-action with rationale
+
+- **S6 R2-M1 (`useCharacters` mountedRef parity)** — deliberately not
+  patched. `useCharacters` matches the abort-only pattern of
+  `useLobbyList` and `useLobbyTemplates`; only `useLobbyEvents` uses
+  `mountedRef` because of its externally-triggered `appendFromAfter`
+  callback that fires past the abort window. Adding mountedRef to one
+  sibling creates inconsistency without fixing a real bug. If a future
+  external trigger lands on `useCharacters`, revisit then.
+
+- **S7A R5 BLOCKER #1 (card delete missing)** — the SPEC §6 routes
+  expose CREATE / UPDATE / TRANSITION but no DELETE endpoint. Cards are
+  cancelled via the transition endpoint (`status = cancelled`).
+  Sprint 7A surface deliberately doesn't expose a destructive delete
+  because the API doesn't support a clean one yet. Sprint 8 (Review
+  surface) will own card-cancellation UX once the transition contract
+  for card-level cancel is finalised.
+
+- **S7A R5 BLOCKER #2 (planner running dead-end)** — solved with the
+  manual "Check" button (#8 above) rather than the auto-poll the
+  reviewer suggested. Auto-poll lands with SSE in Sprint 8.
+
+- **S6 R1-M2 (currentVersion never re-applied)** — when the API returns
+  a 409 with `currentVersion`, the FE already prompts the captain to
+  re-apply their edit; we don't auto-rebase the buffer with the new
+  version because doing so would silently overwrite their unsaved work.
+  The captain is the source of truth for "is my edit still correct
+  given the new state?" — this is intentional, not an oversight.
+
+### Verification (autonomous mode)
+
+- `npx tsc --noEmit` clean (exit 0) with all Sprint 6.1/7A.1 patches.
+- All 11 HIGH findings addressed; 4 MEDIUMs addressed; 4 MEDIUMs
+  deliberately deferred with rationale above.
+- No component test harness yet — same Sprint 8 follow-up as Sprint 5.3.
+- A11y changes verified by reading; no live AT run in autonomous mode.
+  Roving-tabindex pattern matches the canonical aria-practices listbox.
+

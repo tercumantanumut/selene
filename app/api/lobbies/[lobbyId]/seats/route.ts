@@ -32,20 +32,35 @@ const seatStatusSchema = z.enum(["empty", "ready", "busy", "idle"]);
 // created without a permission scope. Same rationale as every other lobby
 // route — Sprint 5.3 reviewer flagged this as the missed PUT/PATCH/transition
 // follow-up to Sprint 5.2's POST-only `.strict()` rollout.
+//
+// Sprint 6.1 (S6 R1 MEDIUM): refine on `seats` to reject duplicate `position`
+// values up-front. The DB layer (queries.ts `replaceSeats`) walks the input
+// to compute next-position assignments and would otherwise silently overwrite
+// the duplicate slot. The captain saw the seats they typed but the persisted
+// roster collapsed two seats into one. Surfacing as 400 here makes the
+// mistake actionable instead of silent.
 const replaceSeatsBodySchema = z
   .object({
     expectedLobbyVersion: expectedVersionField,
-    seats: z.array(
-      z
-        .object({
-          role: z.string().min(1).max(80),
-          position: z.number().int().nonnegative(),
-          agentId: z.string().min(1).nullable().optional(),
-          permissionScope: permissionScopeV1Schema.optional(),
-          status: seatStatusSchema.optional(),
-        })
-        .strict(),
-    ),
+    seats: z
+      .array(
+        z
+          .object({
+            role: z.string().min(1).max(80),
+            position: z.number().int().nonnegative(),
+            agentId: z.string().min(1).nullable().optional(),
+            permissionScope: permissionScopeV1Schema.optional(),
+            status: seatStatusSchema.optional(),
+          })
+          .strict(),
+      )
+      .refine(
+        (seats) => {
+          const positions = seats.map((s) => s.position);
+          return new Set(positions).size === positions.length;
+        },
+        { message: "Seat positions must be unique within the roster." },
+      ),
   })
   .strict();
 

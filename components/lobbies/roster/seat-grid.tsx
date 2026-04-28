@@ -52,6 +52,24 @@ export function SeatGrid({
   // trivial and removes one assumption.
   const ordered = [...seats].sort((a, b) => a.position - b.position);
 
+  // Sprint 6.1 (S6 R3 MEDIUM): announce the empty-roster state. Without a
+  // role="status", screen-reader users hear silence when the grid is empty
+  // and `isEditable=false` — they can't tell whether the section is loading,
+  // restricted, or genuinely empty. The visible-but-muted copy mirrors the
+  // tone of the rest of the surface; sighted captains in the editable case
+  // already see the dashed "Add seat" CTA, so we only render the helper
+  // copy in the read-only-empty case.
+  if (ordered.length === 0 && !isEditable) {
+    return (
+      <p
+        role="status"
+        className="font-mono text-xs text-terminal-muted py-6 text-center"
+      >
+        No seats configured for this lobby yet.
+      </p>
+    );
+  }
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       {ordered.map((seat) => {
@@ -78,7 +96,7 @@ export function SeatGrid({
           className="h-auto min-h-[140px] border-dashed font-mono text-xs flex flex-col items-center justify-center gap-1.5 text-terminal-muted hover:text-terminal-dark"
           aria-label="Add a new seat"
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="h-4 w-4" aria-hidden="true" />
           Add seat
         </Button>
       )}

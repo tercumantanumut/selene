@@ -137,7 +137,7 @@ export function LobbyGoalEditor({
               className="font-mono text-xs h-7"
               aria-label="Edit lobby title and goal"
             >
-              <Edit3 className="h-3 w-3 mr-1" />
+              <Edit3 className="h-3 w-3 mr-1" aria-hidden="true" />
               Edit
             </Button>
           )}
@@ -186,11 +186,14 @@ export function LobbyGoalEditor({
       </div>
 
       {error && (
+        // Sprint 6.1 (S6 R3 HIGH): destructive token (#ef4444) on the cream
+        // editor background measures ~3.4:1 — fails AA for 11px text. Use
+        // red-700 (#b91c1c) → ~5.9:1.
         <p
           role="alert"
           className={cn(
             "font-mono text-[11px]",
-            "text-destructive",
+            "text-red-700 dark:text-red-300",
           )}
         >
           {error}
@@ -217,7 +220,10 @@ export function LobbyGoalEditor({
         >
           {saving ? (
             <>
-              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              <Loader2
+                className="h-3 w-3 mr-1 animate-spin"
+                aria-hidden="true"
+              />
               Saving…
             </>
           ) : (

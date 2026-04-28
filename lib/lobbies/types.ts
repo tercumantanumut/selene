@@ -199,3 +199,28 @@ export type MutationResult<T> =
     };
 
 export type MutationFailure = Extract<MutationResult<unknown>, { ok: false }>;
+
+// ---------------------------------------------------------------------------
+// Sprint 6.1 (S6 R4 + S7A R4 MEDIUM, S5.3 R5 carryover): row-shape re-exports.
+//
+// Drizzle's `$inferSelect` lives in `lib/db/sqlite-lobbies-schema.ts`. Client
+// callers (components/lobbies/**, hooks) currently reach into that path
+// directly, which (a) couples the client to the DB schema module and (b) pulls
+// drizzle types into bundles that don't need the runtime. Re-exporting the
+// row shapes from here gives client code a single import surface for "what
+// does the API return?" without crossing the schema boundary.
+//
+// This is a passive re-export — call sites can migrate to
+// `@/lib/lobbies/types` over time; the original `@/lib/db/sqlite-lobbies-schema`
+// path keeps working until then. No runtime dependency on drizzle is added —
+// these are `type`-only re-exports.
+// ---------------------------------------------------------------------------
+
+export type {
+  Lobby,
+  LobbySeat,
+  LobbyCard,
+  LobbyCardDependency,
+  LobbyEvent,
+  LobbyTemplate,
+} from "@/lib/db/sqlite-lobbies-schema";
