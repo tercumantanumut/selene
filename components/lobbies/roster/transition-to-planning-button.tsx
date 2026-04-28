@@ -43,7 +43,7 @@ export type TransitionToPlanningButtonProps = {
 
 type PreflightFailure = { reason: string } | null;
 
-function preflight(seats: LobbySeat[]): PreflightFailure {
+export function preflight(seats: LobbySeat[]): PreflightFailure {
   if (seats.length === 0) {
     return { reason: "Add at least one seat before moving to planning." };
   }
@@ -58,7 +58,7 @@ function preflight(seats: LobbySeat[]): PreflightFailure {
     };
   }
   const ready = seats.filter(
-    (s) => s.agentId !== null && (s.status === "ready" || s.status === "idle"),
+    (s) => s.agentId !== null && s.status === "ready",
   );
   if (ready.length === 0) {
     const filled = seats.filter((s) => s.agentId !== null).length;
@@ -67,11 +67,11 @@ function preflight(seats: LobbySeat[]): PreflightFailure {
         reason: "Pick an agent for at least one seat before moving on.",
       };
     }
-    // Filled seat exists but its status hasn't flipped to ready/idle —
+    // Filled seat exists but its status hasn't flipped to ready —
     // catches the rare case where `updateSeat` was called with an explicit
     // non-ready status (services.ts preserves it).
     return {
-      reason: "At least one filled seat must be in 'ready' or 'idle' status.",
+      reason: "At least one filled seat must be in 'ready' status.",
     };
   }
   return null;

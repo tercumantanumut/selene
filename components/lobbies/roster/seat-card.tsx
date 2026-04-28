@@ -14,7 +14,7 @@
  * matches the FE Architect's "permission summary" prop shape.
  */
 
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Bot,
@@ -91,6 +91,26 @@ export function SeatCard({
 }: SeatCardProps) {
   const [editingRole, setEditingRole] = useState(false);
   const [roleBuffer, setRoleBuffer] = useState(seat.role);
+  const previousSeatRef = useRef({
+    id: seat.id,
+    lockVersion: seat.lockVersion,
+  });
+
+  useLayoutEffect(() => {
+    const previousSeat = previousSeatRef.current;
+    const seatChanged =
+      previousSeat.id !== seat.id ||
+      previousSeat.lockVersion !== seat.lockVersion;
+
+    if (!editingRole || seatChanged) {
+      setRoleBuffer(seat.role);
+    }
+
+    previousSeatRef.current = {
+      id: seat.id,
+      lockVersion: seat.lockVersion,
+    };
+  }, [editingRole, seat.id, seat.lockVersion, seat.role]);
 
   const scopeDescription = describePermissionScope(seat.permissionScope);
   const isFilled = seat.agentId !== null && agent !== null;

@@ -112,6 +112,7 @@ export function RosterSection({ lobby, seats, onChanged }: RosterSectionProps) {
     } catch (err) {
       const message = describeMutationError(err, "Failed to update seat");
       setError(message);
+      if (isVersionConflict(err)) onChanged();
     } finally {
       setBusy(false);
     }
@@ -130,6 +131,7 @@ export function RosterSection({ lobby, seats, onChanged }: RosterSectionProps) {
       setScopeSeatId(null);
     } catch (err) {
       setScopeError(describeMutationError(err, "Failed to save scope"));
+      if (isVersionConflict(err)) onChanged();
     } finally {
       setScopeSaving(false);
     }
@@ -158,6 +160,7 @@ export function RosterSection({ lobby, seats, onChanged }: RosterSectionProps) {
       onChanged();
     } catch (err) {
       setError(describeMutationError(err, "Failed to update seats"));
+      if (isVersionConflict(err)) onChanged();
     } finally {
       setBusy(false);
     }
@@ -309,7 +312,7 @@ function seatToReplaceItem(seat: LobbySeat): {
 function describeMutationError(err: unknown, fallback: string): string {
   if (err instanceof LobbyApiError) {
     if (err.reason === "VERSION_CONFLICT") {
-      return "Lobby state changed since you last loaded — refreshing. Re-apply your edit.";
+      return "Lobby state changed since you last loaded — refreshed latest state. Re-apply your edit.";
     }
     if (err.reason === "FORBIDDEN") {
       return "You don't have permission to modify this lobby.";
@@ -321,4 +324,8 @@ function describeMutationError(err: unknown, fallback: string): string {
   }
   if (err instanceof Error) return err.message;
   return fallback;
+}
+
+function isVersionConflict(err: unknown): boolean {
+  return err instanceof LobbyApiError && err.reason === "VERSION_CONFLICT";
 }

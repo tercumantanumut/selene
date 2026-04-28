@@ -65,27 +65,14 @@ export function SeatPermissionScopeSheet({
     [agent?.metadata?.enabledTools],
   );
 
-  // Build the initial allowed-tool set.
-  //
-  // The DB stores scope as `LobbyPermissionScopeV1` (always defined; default
-  // is `{ allowedTools: [] }`). Per scope-injection.ts, an empty
-  // `allowedTools` array is the "no tightening" sentinel — the seat inherits
-  // the agent's full enabled-tools surface.
-  //
-  // So the captain's mental model maps to:
-  //   - explicit non-empty list → that exact subset is allowed,
-  //   - empty list (sentinel) → all of the agent's tools are allowed.
-  //
-  // We pre-tick everything in the sentinel case so the captain "tightens by
-  // unchecking" — far clearer than starting from zero.
+  // Build the initial allowed-tool set. Empty `allowedTools` is the
+  // server-side inherit-all sentinel, while explicit scopes are interpreted as
+  // `allowedTools - deniedTools` so the "None" payload can round-trip.
   function buildInitial(
     scope: LobbyPermissionScopeV1 | undefined,
     tools: string[],
   ): Set<string> {
-    if (scope && scope.allowedTools.length > 0) {
-      return new Set(scope.allowedTools);
-    }
-    return new Set(tools);
+    return deriveScopeSelection(scope, tools);
   }
 
   const [allowed, setAllowed] = useState<Set<string>>(() =>
@@ -127,22 +114,15 @@ export function SeatPermissionScopeSheet({
     setAllowed(checked ? new Set(agentTools) : new Set());
   }
 
-  const allChecked = agentTools.length > 0 && allowed.size === agentTools.length;
+  const allChecked =
+    agentTools.length > 0 && agentTools.every((tool) => allowed.has(tool));
   const noneChecked = allowed.size === 0;
   // Sprint 6.1 (S6 R3 MEDIUM): stable id for the tool-list group label so
   // the inner <ul> can announce its group context.
   const groupLabelId = useId();
 
   function handleSave() {
-    // Map "all checked" back to the sentinel (empty list = inherit). Keeps
-    // round-trips stable: a captain who opens the sheet, doesn't change
-    // anything, and clicks Save sees no diff in the seat's stored scope.
-    const allowedTools = allChecked ? [] : Array.from(allowed);
-    onSave({
-      version: 1,
-      mode: "tool_list",
-      allowedTools,
-    });
+    onSave(buildScopeFromSelection(allowed, agentTools));
   }
 
   return (
@@ -176,7 +156,9 @@ export function SeatPermissionScopeSheet({
           <div className="flex items-start gap-2 rounded-md border border-terminal-border/60 bg-terminal-cream/40 p-3">
             <ShieldCheck className="h-4 w-4 text-terminal-muted mt-0.5 shrink-0" />
             <p className="font-mono text-xs text-terminal-muted">
-              <span className="font-semibold">{agent.displayName ?? agent.name}</span>{" "}
+              <span className="font-semibold">
+                {agent.displayName ?? agent.name}
+              </span>{" "}
               has no enabled tools — there's nothing to scope.
             </p>
           </div>
@@ -305,4 +287,48 @@ export function SeatPermissionScopeSheet({
       </DialogContent>
     </Dialog>
   );
+}
+
+export function deriveScopeSelection(
+  scope: LobbyPermissionScopeV1 | undefined,
+  tools: string[],
+): Set<string> {
+  if (!scope || scope.allowedTools.length === 0) {
+    return new Set(tools);
+  }
+  const available = new Set(tools);
+  const denied = new Set(scope.deniedTools ?? []);
+  return new Set(
+    scope.allowedTools.filter(
+      (tool) => available.has(tool) && !denied.has(tool),
+    ),
+  );
+}
+
+export function buildScopeFromSelection(
+  allowed: Set<string>,
+  tools: string[],
+): LobbyPermissionScopeV1 {
+  const availableTools = tools.filter((tool) => allowed.has(tool));
+  const allChecked =
+    tools.length > 0 && availableTools.length === tools.length;
+
+  if (allChecked) {
+    return { version: 1, mode: "tool_list", allowedTools: [] };
+  }
+
+  if (availableTools.length === 0) {
+    return {
+      version: 1,
+      mode: "tool_list",
+      allowedTools: [...tools],
+      deniedTools: [...tools],
+    };
+  }
+
+  return {
+    version: 1,
+    mode: "tool_list",
+    allowedTools: availableTools,
+  };
 }
