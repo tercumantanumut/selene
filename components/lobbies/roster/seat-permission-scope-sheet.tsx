@@ -1,0 +1,277 @@
+"use client";
+
+/**
+ * SeatPermissionScopeSheet — modal for tightening a seat's tool surface.
+ *
+ * SPEC §3 #11 nails the V1 contract: permission scope is **tool-list only**.
+ * This sheet shows the agent's `metadata.enabledTools` as a checklist; the
+ * captain unchecks tools they don't want this seat to have. Plugins, MCP
+ * servers, and folder scoping are all V1.1+ — out of scope here.
+ *
+ * Output shape (`LobbyPermissionScopeV1`):
+ *   { version: 1, mode: "tool_list", allowedTools: string[] }
+ *
+ * Default starting point when no scope exists: all of the agent's enabled
+ * tools allowed (preserves current behavior — the seat inherits the agent's
+ * full surface). Toggling builds the explicit allowlist.
+ *
+ * The scope is enforced server-side at `buildToolsForRequest` (tool resolver
+ * intersection) — see `lib/lobbies/scope-injection.ts`.
+ */
+
+import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, Loader2, ShieldCheck, Wrench } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+
+import type { CharacterSummary } from "@/lib/lobbies/client/character-hooks";
+import type { LobbyPermissionScopeV1 } from "@/lib/lobbies/types";
+
+export type SeatPermissionScopeSheetProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  seatRole: string;
+  agent: CharacterSummary | null;
+  /** Existing scope on the seat (undefined → seat inherits agent default). */
+  initialScope: LobbyPermissionScopeV1 | undefined;
+  saving?: boolean;
+  error?: string | null;
+  onSave: (scope: LobbyPermissionScopeV1) => void;
+};
+
+export function SeatPermissionScopeSheet({
+  open,
+  onOpenChange,
+  seatRole,
+  agent,
+  initialScope,
+  saving = false,
+  error = null,
+  onSave,
+}: SeatPermissionScopeSheetProps) {
+  const agentTools = useMemo(
+    () => agent?.metadata?.enabledTools ?? [],
+    [agent?.metadata?.enabledTools],
+  );
+
+  // Build the initial allowed-tool set.
+  //
+  // The DB stores scope as `LobbyPermissionScopeV1` (always defined; default
+  // is `{ allowedTools: [] }`). Per scope-injection.ts, an empty
+  // `allowedTools` array is the "no tightening" sentinel — the seat inherits
+  // the agent's full enabled-tools surface.
+  //
+  // So the captain's mental model maps to:
+  //   - explicit non-empty list → that exact subset is allowed,
+  //   - empty list (sentinel) → all of the agent's tools are allowed.
+  //
+  // We pre-tick everything in the sentinel case so the captain "tightens by
+  // unchecking" — far clearer than starting from zero.
+  function buildInitial(
+    scope: LobbyPermissionScopeV1 | undefined,
+    tools: string[],
+  ): Set<string> {
+    if (scope && scope.allowedTools.length > 0) {
+      return new Set(scope.allowedTools);
+    }
+    return new Set(tools);
+  }
+
+  const [allowed, setAllowed] = useState<Set<string>>(() =>
+    buildInitial(initialScope, agentTools),
+  );
+
+  // Re-seed when the dialog reopens for a different seat / agent. Without
+  // this, switching seats while the sheet is mounted carries the previous
+  // seat's checkbox state forward — exactly the kind of stale state that
+  // causes accidental tightening.
+  useEffect(() => {
+    if (open) {
+      setAllowed(buildInitial(initialScope, agentTools));
+    }
+  }, [open, initialScope, agentTools]);
+
+  function toggle(tool: string) {
+    setAllowed((prev) => {
+      const next = new Set(prev);
+      if (next.has(tool)) next.delete(tool);
+      else next.add(tool);
+      return next;
+    });
+  }
+
+  function setAll(checked: boolean) {
+    setAllowed(checked ? new Set(agentTools) : new Set());
+  }
+
+  const allChecked = agentTools.length > 0 && allowed.size === agentTools.length;
+  const noneChecked = allowed.size === 0;
+
+  function handleSave() {
+    // Map "all checked" back to the sentinel (empty list = inherit). Keeps
+    // round-trips stable: a captain who opens the sheet, doesn't change
+    // anything, and clicks Save sees no diff in the seat's stored scope.
+    const allowedTools = allChecked ? [] : Array.from(allowed);
+    onSave({
+      version: 1,
+      mode: "tool_list",
+      allowedTools,
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="font-mono text-base flex items-center gap-2">
+            <Wrench className="h-4 w-4" />
+            Scope tools for{" "}
+            <span className="text-terminal-green">{seatRole}</span>
+          </DialogTitle>
+          <DialogDescription className="font-mono text-xs">
+            Uncheck tools you don't want this seat to use. The seat can never
+            access tools the agent doesn't already have enabled.
+          </DialogDescription>
+        </DialogHeader>
+
+        {!agent ? (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+            <AlertCircle className="h-4 w-4 text-amber-700 dark:text-amber-300 mt-0.5 shrink-0" />
+            <p className="font-mono text-xs text-amber-900 dark:text-amber-100">
+              Pick an agent for this seat first — scope is anchored to the
+              agent's tool surface.
+            </p>
+          </div>
+        ) : agentTools.length === 0 ? (
+          <div className="flex items-start gap-2 rounded-md border border-terminal-border/60 bg-terminal-cream/40 p-3">
+            <ShieldCheck className="h-4 w-4 text-terminal-muted mt-0.5 shrink-0" />
+            <p className="font-mono text-xs text-terminal-muted">
+              <span className="font-semibold">{agent.displayName ?? agent.name}</span>{" "}
+              has no enabled tools — there's nothing to scope.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between text-[11px] font-mono text-terminal-muted">
+              <span>
+                {allowed.size} of {agentTools.length} allowed
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setAll(true)}
+                  disabled={allChecked || saving}
+                  className="h-6 px-2 font-mono text-[11px]"
+                >
+                  All
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setAll(false)}
+                  disabled={noneChecked || saving}
+                  className="h-6 px-2 font-mono text-[11px]"
+                >
+                  None
+                </Button>
+              </div>
+            </div>
+
+            <ScrollArea className="flex-1 -mx-6 px-6">
+              <ul className="space-y-1 py-1">
+                {agentTools.map((tool) => {
+                  const checked = allowed.has(tool);
+                  const id = `scope-tool-${tool}`;
+                  return (
+                    <li key={tool}>
+                      <label
+                        htmlFor={id}
+                        className={cn(
+                          "flex items-center gap-3 rounded-md border px-3 py-2 cursor-pointer transition-colors",
+                          checked
+                            ? "border-terminal-border/60 bg-terminal-cream/40"
+                            : "border-dashed border-terminal-border/40 bg-transparent",
+                        )}
+                      >
+                        <Checkbox
+                          id={id}
+                          checked={checked}
+                          onCheckedChange={() => toggle(tool)}
+                          disabled={saving}
+                        />
+                        <span className="font-mono text-xs text-terminal-dark">
+                          {tool}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            </ScrollArea>
+
+            {noneChecked && (
+              <p
+                role="status"
+                className="font-mono text-[11px] text-amber-700 dark:text-amber-300"
+              >
+                No tools allowed — this seat will run with zero tool access.
+              </p>
+            )}
+          </>
+        )}
+
+        {error && (
+          <p
+            role="alert"
+            className="font-mono text-[11px] text-destructive"
+          >
+            {error}
+          </p>
+        )}
+
+        <DialogFooter className="gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onOpenChange(false)}
+            disabled={saving}
+            className="font-mono text-xs"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={handleSave}
+            disabled={saving || !agent || agentTools.length === 0}
+            className="font-mono text-xs"
+          >
+            {saving ? (
+              <>
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                Saving…
+              </>
+            ) : (
+              "Save scope"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

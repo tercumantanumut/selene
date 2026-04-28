@@ -72,6 +72,7 @@ import {
 } from "@/lib/stores/solo-story-ui-store";
 import type { LobbyStatus } from "@/lib/lobbies/types";
 import { LobbyStatusBadge } from "@/components/lobbies/status-badge";
+import { RosterSection } from "@/components/lobbies/roster/roster-section";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -228,10 +229,13 @@ export default function LobbyDetailClient() {
               />
 
               {/* ── Sections (scroll-anchored) ── */}
-              <RosterSectionPlaceholder
-                seatCount={data.seats.length}
-                lobbyStatus={data.lobby.status}
-              />
+              <PhaseSection id="roster" title="Roster" icon={Users}>
+                <RosterSection
+                  lobby={data.lobby}
+                  seats={data.seats}
+                  onChanged={() => void refetch()}
+                />
+              </PhaseSection>
               <PlanningSectionPlaceholder cardCount={data.cards.length} />
               <RollingSectionPlaceholder
                 cardCount={data.cards.length}
@@ -402,30 +406,7 @@ function PhaseSection({
   );
 }
 
-// ─── Placeholder sections (Sprint 6-9 fill these in) ──────────────────────
-
-function RosterSectionPlaceholder({
-  seatCount,
-  lobbyStatus,
-}: {
-  seatCount: number;
-  lobbyStatus: LobbyStatus;
-}) {
-  return (
-    <PhaseSection id="roster" title="Roster" icon={Users}>
-      <div className="space-y-2">
-        <p className="font-mono text-sm text-terminal-muted">
-          {seatCount === 0
-            ? "No seats yet. Sprint 6 will land the seat grid + agent picker + permission scope sheet."
-            : `${seatCount} seat${seatCount === 1 ? "" : "s"} configured.`}
-        </p>
-        <p className="font-mono text-[11px] text-terminal-muted">
-          Status: {lobbyStatus}
-        </p>
-      </div>
-    </PhaseSection>
-  );
-}
+// ─── Placeholder sections (Sprint 7-9 fill the rest in) ──────────────────
 
 function PlanningSectionPlaceholder({ cardCount }: { cardCount: number }) {
   return (
