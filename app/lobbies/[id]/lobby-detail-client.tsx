@@ -44,7 +44,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useLayoutEffect, useMemo } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 
 /**
  * Sprint 5.3: isomorphic `useLayoutEffect` shim. `useLayoutEffect` warns
@@ -59,6 +59,7 @@ const useIsomorphicLayoutEffect =
 import {
   AlertCircle,
   ArrowLeft,
+  BookOpenCheck,
   ChevronDown,
   ChevronRight,
   Loader2,
@@ -96,6 +97,7 @@ import { PlanningSection } from "@/components/lobbies/planning/planning-section"
 import { RollingSection } from "@/components/lobbies/rolling/rolling-section";
 import { ReviewSection } from "@/components/lobbies/review/review-section";
 import { SynthesisSection } from "@/components/lobbies/synthesis/synthesis-section";
+import { SaveAsTemplateDialog } from "@/components/lobbies/save-as-template-dialog";
 
 // ─── Phase-rail config ─────────────────────────────────────────────────────
 
@@ -146,6 +148,13 @@ export default function LobbyDetailClient() {
   const lobbyId = params?.id ?? null;
 
   const { data, loading, error, refetch } = useLobbyDetail(lobbyId);
+
+  // Sprint 10: "Save as template" dialog state. Opens from the lobby
+  // header; the dialog itself handles the POST + success toast and
+  // dismisses on success. The state lives here (not on the dialog) so we
+  // can disable the trigger while a save is in flight if we ever surface
+  // that — V1 doesn't, but the seam is intentional.
+  const [saveAsTemplateOpen, setSaveAsTemplateOpen] = useState(false);
 
   // Sprint 8: page-scoped SSE consumer for live card runs. Mounts at the
   // page level so a single EventSource feeds both the rolling kanban tiles
@@ -265,6 +274,25 @@ export default function LobbyDetailClient() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  {/*
+                    "Save as template" — Sprint 10. Available at any phase
+                    so a captain who designs a roster can save the
+                    template even before rolling. We do NOT gate this on
+                    `seats.length > 0`; the dialog itself surfaces the
+                    "no seats yet" hint inline so the captain learns by
+                    opening rather than by a disabled button without an
+                    obvious reason.
+                  */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSaveAsTemplateOpen(true)}
+                    className="font-mono"
+                    aria-label="Save this lobby's roster as a reusable template"
+                  >
+                    <BookOpenCheck className="mr-1.5 h-3.5 w-3.5" />
+                    Save as template
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -276,6 +304,20 @@ export default function LobbyDetailClient() {
                   </Button>
                 </div>
               </div>
+
+              {/*
+                Save-as-template dialog. Mounted inside the data-loaded
+                branch so we know `data.lobby` and `data.seats` are
+                populated. The dialog is keyed off lobby.id so reopening
+                after a navigation re-seeds the name input correctly.
+              */}
+              <SaveAsTemplateDialog
+                key={data.lobby.id}
+                open={saveAsTemplateOpen}
+                onOpenChange={setSaveAsTemplateOpen}
+                lobby={data.lobby}
+                seats={data.seats}
+              />
 
               {/* ── Phase rail ── */}
               <PhaseRail

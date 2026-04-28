@@ -12,7 +12,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   AlertCircle,
@@ -182,36 +190,35 @@ export default function NewLobbyClient() {
                   </p>
                 ) : !templatesData ||
                   templatesData.templates.length === 0 ? (
+                  // Defensive empty-state. With Sprint 10's seed, this only
+                  // renders if the boot-time `seedLobbyStarterTemplatesWith`
+                  // failed (or was disabled) — the captain can still create
+                  // a lobby with no template and configure the roster
+                  // manually inside the lobby.
                   <p className="font-mono text-xs text-terminal-muted">
-                    No templates available yet. Templates ship in a later
-                    sprint — for now, leave this blank and configure the
-                    roster manually.
+                    No starter templates were available. You can still create
+                    the lobby and add seats manually inside it.
                   </p>
                 ) : (
-                  <div
-                    role="radiogroup"
-                    aria-label="Starter template"
-                    className="grid gap-2 sm:grid-cols-2"
-                  >
-                    <TemplateOption
-                      selected={templateId === null}
-                      onSelect={() => setTemplateId(null)}
-                      label="No template"
-                      description="Start with an empty roster."
-                    />
-                    {templatesData.templates.map((t) => (
-                      <TemplateOption
-                        key={t.id}
-                        selected={templateId === t.id}
-                        onSelect={() => setTemplateId(t.id)}
-                        label={t.name}
-                        description={
+                  <TemplateRadioGroup
+                    selectedId={templateId}
+                    options={[
+                      {
+                        id: null,
+                        label: "No template",
+                        description:
+                          "Start with an empty roster and the orchestrator default prompts.",
+                      },
+                      ...templatesData.templates.map((t) => ({
+                        id: t.id,
+                        label: t.name,
+                        description:
                           t.description ??
-                          `${t.defaultSeats.length} default seat${t.defaultSeats.length === 1 ? "" : "s"}`
-                        }
-                      />
-                    ))}
-                  </div>
+                          `${t.defaultSeats.length} default seat${t.defaultSeats.length === 1 ? "" : "s"}`,
+                      })),
+                    ]}
+                    onSelect={setTemplateId}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -271,61 +278,167 @@ export default function NewLobbyClient() {
 
 // ─── Sub-components ────────────────────────────────────────────────────────
 
-/**
- * Real radio in disguise: implements the WAI-ARIA radio pattern (single
- * focusable element per group, Space/Enter selects, Arrow keys move
- * selection) using a `<button role="radio">`. Native `<input type="radio">`
- * isn't usable here because we need rich content (label + description) and
- * custom styling per option.
- *
- * Keyboard support:
- *   - Space / Enter: select this option.
- *   - Arrow Up/Down/Left/Right: handled by the parent radiogroup container
- *     in a future revision; for now Tab moves between options (acceptable
- *     for a 2-option group like "No template" + 1 starter).
- */
-function TemplateOption({
-  selected,
-  onSelect,
-  label,
-  description,
-}: {
-  selected: boolean;
-  onSelect: () => void;
+type TemplateRadioOption = {
+  /** `null` represents the "No template" choice. */
+  id: string | null;
   label: string;
   description: string;
+};
+
+/**
+ * WAI-ARIA radiogroup with full keyboard support.
+ *
+ * Sprint 10 brings the count from "No template + maybe one starter" up to
+ * "No template + 3 seeded starters" (and any user-saved private templates).
+ * Past two options, the previous tab-only navigation is no longer
+ * acceptable — screen readers and keyboard-only captains expect Arrow keys
+ * to move selection inside a radiogroup.
+ *
+ * Pattern (https://www.w3.org/WAI/ARIA/apg/patterns/radio/):
+ *   - Exactly one option is in the tab order at a time (`tabIndex={0}`); the
+ *     others are `tabIndex={-1}`. The selected option is the tabbable one.
+ *     If nothing is selected (an unusual state, but possible if the captain
+ *     deliberately clears the selection), the FIRST option becomes tabbable
+ *     so the group is still reachable from the form's Tab order.
+ *   - Space / Enter selects the focused option.
+ *   - Arrow Down / Right moves to the next option (wraps at the end).
+ *   - Arrow Up / Left moves to the previous option (wraps at the start).
+ *   - Home / End jump to first / last option.
+ *
+ * Wrapping is the spec's recommended behavior for radio groups (it diverges
+ * from listbox / menu, where reaching the end is a hard stop).
+ */
+function TemplateRadioGroup({
+  options,
+  selectedId,
+  onSelect,
+}: {
+  options: TemplateRadioOption[];
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
 }) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      // Only the selected option is part of the tab order — standard
-      // radiogroup behavior. Arrow keys would move selection, but that
-      // wiring lives at the group level (added in a later sprint when more
-      // than two options exist).
-      tabIndex={selected ? 0 : -1}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === " " || e.key === "Enter") {
+  const buttonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  // Stable key → index map. We use it to compute the "currently focused
+  // index" without relying on `document.activeElement`, which is brittle
+  // under React's batching.
+  const optionKey = useCallback(
+    (opt: TemplateRadioOption) => opt.id ?? "__none__",
+    [],
+  );
+  const indexById = useMemo(() => {
+    const map = new Map<string, number>();
+    options.forEach((opt, i) => map.set(optionKey(opt), i));
+    return map;
+  }, [options, optionKey]);
+
+  const selectedIndex =
+    indexById.get(selectedId ?? "__none__") ?? -1;
+
+  /** Index that owns `tabIndex={0}`. Selected wins; otherwise first option. */
+  const tabbableIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+  const focusOption = useCallback((idx: number) => {
+    const btn = buttonRefs.current[idx];
+    btn?.focus();
+  }, []);
+
+  const onKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (options.length === 0) return;
+
+      // We need to know the focused option to decide where to move. The
+      // group's currentTarget is the radiogroup; document.activeElement is
+      // the button inside it. Map back to an index via the ref array.
+      const active = document.activeElement;
+      const currentIndex = buttonRefs.current.findIndex(
+        (b) => b === active,
+      );
+      // Fallback to the selected/tabbable index if focus is somewhere else
+      // (shouldn't happen normally, but keeps Arrow keys responsive).
+      const startIndex = currentIndex >= 0 ? currentIndex : tabbableIndex;
+
+      switch (e.key) {
+        case "ArrowDown":
+        case "ArrowRight": {
           e.preventDefault();
-          onSelect();
+          const next = (startIndex + 1) % options.length;
+          onSelect(options[next].id);
+          focusOption(next);
+          break;
         }
-      }}
-      className={cn(
-        "rounded-lg border px-3 py-2 text-left transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-green focus-visible:ring-offset-1",
-        selected
-          ? "border-terminal-green/60 bg-terminal-green/10"
-          : "border-terminal-border/40 bg-terminal-cream/40 hover:bg-terminal-cream/70",
-      )}
+        case "ArrowUp":
+        case "ArrowLeft": {
+          e.preventDefault();
+          const prev = (startIndex - 1 + options.length) % options.length;
+          onSelect(options[prev].id);
+          focusOption(prev);
+          break;
+        }
+        case "Home": {
+          e.preventDefault();
+          onSelect(options[0].id);
+          focusOption(0);
+          break;
+        }
+        case "End": {
+          e.preventDefault();
+          const last = options.length - 1;
+          onSelect(options[last].id);
+          focusOption(last);
+          break;
+        }
+      }
+    },
+    [options, onSelect, focusOption, tabbableIndex],
+  );
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Starter template"
+      className="grid gap-2 sm:grid-cols-2"
+      onKeyDown={onKeyDown}
     >
-      <p className="font-mono text-sm font-medium text-terminal-dark truncate">
-        {label}
-      </p>
-      <p className="mt-0.5 font-mono text-[11px] text-terminal-muted line-clamp-2">
-        {description}
-      </p>
-    </button>
+      {options.map((opt, i) => {
+        const selected = (opt.id ?? "__none__") === (selectedId ?? "__none__");
+        return (
+          <button
+            key={optionKey(opt)}
+            ref={(el) => {
+              buttonRefs.current[i] = el;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            tabIndex={i === tabbableIndex ? 0 : -1}
+            onClick={() => onSelect(opt.id)}
+            onKeyDown={(e) => {
+              // Space / Enter activate the focused option per the radio
+              // pattern. We stop propagation so the parent radiogroup's
+              // arrow-key handler doesn't also fire on the same event.
+              if (e.key === " " || e.key === "Enter") {
+                e.preventDefault();
+                onSelect(opt.id);
+              }
+            }}
+            className={cn(
+              "rounded-lg border px-3 py-2 text-left transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-terminal-green focus-visible:ring-offset-1",
+              selected
+                ? "border-terminal-green/60 bg-terminal-green/10"
+                : "border-terminal-border/40 bg-terminal-cream/40 hover:bg-terminal-cream/70",
+            )}
+          >
+            <p className="font-mono text-sm font-medium text-terminal-dark truncate">
+              {opt.label}
+            </p>
+            <p className="mt-0.5 font-mono text-[11px] text-terminal-muted line-clamp-2">
+              {opt.description}
+            </p>
+          </button>
+        );
+      })}
+    </div>
   );
 }
