@@ -45,13 +45,20 @@ function getErrorMessage(err: unknown, fallback: string): string {
 // useLobbyList
 // ---------------------------------------------------------------------------
 
+export type LobbyListResource = AsyncResource<ListLobbiesResponse> & {
+  loadingMore: boolean;
+  loadMore: () => Promise<void>;
+};
+
 export function useLobbyList(
   params: { status?: ListLobbiesParams["status"]; limit?: number } = {},
-): AsyncResource<ListLobbiesResponse> {
+): LobbyListResource {
   const [data, setData] = useState<ListLobbiesResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
 
   // Capture primitive args so identity-stable callers don't trigger refetches.
   const status = params.status;
@@ -59,10 +66,12 @@ export function useLobbyList(
 
   const run = useCallback(async () => {
     abortRef.current?.abort();
+    loadMoreAbortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
     setLoading(true);
+    setLoadingMore(false);
     setError(null);
     try {
       const result = await listLobbies({
@@ -79,12 +88,52 @@ export function useLobbyList(
     }
   }, [status, limit]);
 
+  const loadMore = useCallback(async () => {
+    const cursor = data?.nextCursor;
+    if (!cursor || loading || loadingMore) return;
+
+    loadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
+
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const result = await listLobbies({
+        status,
+        limit,
+        cursor,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setData((prev) => {
+        const seen = new Set<string>();
+        const lobbies = [...(prev?.lobbies ?? []), ...result.lobbies].filter(
+          (lobby) => {
+            if (seen.has(lobby.id)) return false;
+            seen.add(lobby.id);
+            return true;
+          },
+        );
+        return { lobbies, nextCursor: result.nextCursor };
+      });
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      setError(getErrorMessage(err, "Failed to load more lobbies"));
+    } finally {
+      if (!controller.signal.aborted) setLoadingMore(false);
+    }
+  }, [data?.nextCursor, loading, loadingMore, status, limit]);
+
   useEffect(() => {
     void run();
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      loadMoreAbortRef.current?.abort();
+    };
   }, [run]);
 
-  return { data, loading, error, refetch: run };
+  return { data, loading, loadingMore, error, refetch: run, loadMore };
 }
 
 // ---------------------------------------------------------------------------

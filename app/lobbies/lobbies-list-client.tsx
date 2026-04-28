@@ -198,7 +198,8 @@ export default function LobbiesListClient() {
     [activeFilter],
   );
 
-  const { data, loading, error, refetch } = useLobbyList(params);
+  const { data, loading, loadingMore, error, refetch, loadMore } =
+    useLobbyList(params);
 
   const lobbies = data?.lobbies ?? [];
 
@@ -373,10 +374,28 @@ export default function LobbiesListClient() {
                   <LobbyRow key={lobby.id} lobby={lobby} now={now} />
                 ))}
                 {data?.nextCursor ? (
-                  <p className="font-mono text-xs text-terminal-muted text-center py-2">
-                    Showing the {lobbies.length} most recent. Older lobbies
-                    will load on demand once pagination is wired up.
-                  </p>
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    <p className="font-mono text-xs text-terminal-muted text-center">
+                      Showing {lobbies.length} lobbies. Older lobbies are
+                      available on the next page.
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void loadMore()}
+                      disabled={loadingMore}
+                      className="font-mono"
+                    >
+                      {loadingMore ? (
+                        <Loader2
+                          className="mr-2 h-3.5 w-3.5 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      Load older lobbies
+                    </Button>
+                  </div>
                 ) : null}
               </CardContent>
             </Card>

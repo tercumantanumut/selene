@@ -150,6 +150,8 @@ export type LobbyRunStreamHandle = {
 };
 
 export type UseLobbyRunStreamOptions = {
+  /** Latest persisted lobby.synthesisRunId, used to recover role routing on reconnect. */
+  synthesisRunId?: string | null;
   /**
    * Fired once per `task:completed` for a worker run (carrying `cardId`).
    * The parent should call `useLobbyDetail.refetch()` here so card status /
@@ -174,13 +176,28 @@ export type UseLobbyRunStreamOptions = {
 // ─── Internal: SSE wire shape ─────────────────────────────────────────────
 
 type SseEnvelope = {
-  type: "connected" | "heartbeat" | "task:started" | "task:completed" | "task:progress";
+  type:
+    | "connected"
+    | "heartbeat"
+    | "task:started"
+    | "task:completed"
+    | "task:progress";
   data?: TaskEvent;
   timestamp?: string;
 };
 
+const LOBBY_LEVEL_ROLES = new Set<SoloStoryLobbyLevelRole>([
+  "planner",
+  "synthesizer",
+]);
+
 // Task statuses we treat as "finished" for `phase` mapping.
-const FINISHED_STATUSES = new Set(["succeeded", "failed", "cancelled", "stale"]);
+const FINISHED_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "stale",
+]);
 
 // Reconnect baseline — much shorter than the shell's 30s ceiling because we
 // expect the lobby page to be focused and the captain wants "fresh".
@@ -249,17 +266,122 @@ function extractRole(
 }
 
 function fragmentFromProgress(event: TaskProgressEvent): RunStreamFragment {
-  const seq = `${event.runId}:${event.timestamp}`;
+  const timestamp = event.timestamp ?? new Date().toISOString();
+  const seq = `${event.runId}:${timestamp}`;
   return {
     id: seq,
-    timestamp: event.timestamp ?? new Date().toISOString(),
+    timestamp,
     text: event.progressText,
     percent:
-      typeof event.progressPercent === "number" ? event.progressPercent : undefined,
+      typeof event.progressPercent === "number"
+        ? event.progressPercent
+        : undefined,
     contentCount: Array.isArray(event.progressContent)
       ? event.progressContent.length
       : undefined,
   };
+}
+
+function getEventRunId(event: TaskEvent): string {
+  return event.eventType === "task:progress" ? event.runId : event.task.runId;
+}
+
+function isStaleForExistingRun(
+  existing: RunStreamState | undefined,
+  event: TaskEvent,
+): boolean {
+  return !!existing && existing.runId !== getEventRunId(event);
+}
+
+function isLobbyLevelRole(
+  role: SoloStoryRunRole | undefined,
+): role is SoloStoryLobbyLevelRole {
+  return !!role && LOBBY_LEVEL_ROLES.has(role as SoloStoryLobbyLevelRole);
+}
+
+export function inferLobbyLevelRoleForEvent(args: {
+  event: TaskEvent;
+  existingByRole: ReadonlyMap<SoloStoryLobbyLevelRole, RunStreamState>;
+  synthesisRunId?: string | null;
+}): SoloStoryLobbyLevelRole | undefined {
+  const { event, existingByRole, synthesisRunId } = args;
+  const runId = getEventRunId(event);
+  const eventCardId =
+    event.eventType === "task:progress" ? event.cardId : event.task.cardId;
+
+  const taskForRole =
+    event.eventType === "task:progress" ? undefined : event.task;
+  const metadataRole = extractRole(taskForRole, !!eventCardId);
+  if (isLobbyLevelRole(metadataRole)) return metadataRole;
+
+  for (const [role, state] of existingByRole) {
+    if (state.runId === runId) return role;
+  }
+
+  if (event.eventType !== "task:started" && runId === synthesisRunId) {
+    return "synthesizer";
+  }
+
+  return undefined;
+}
+
+export function applyTaskEventToRunStreamState(args: {
+  byCardId: ReadonlyMap<string, RunStreamState>;
+  byRole: ReadonlyMap<SoloStoryLobbyLevelRole, RunStreamState>;
+  event: TaskEvent;
+  expectedLobbyId: string;
+  synthesisRunId?: string | null;
+}): {
+  byCardId: ReadonlyMap<string, RunStreamState>;
+  byRole: ReadonlyMap<SoloStoryLobbyLevelRole, RunStreamState>;
+} {
+  const { event, expectedLobbyId, synthesisRunId } = args;
+  const eventLobbyId =
+    event.eventType === "task:progress" ? event.lobbyId : event.task.lobbyId;
+  if (eventLobbyId !== expectedLobbyId) return args;
+
+  const eventCardId =
+    event.eventType === "task:progress" ? event.cardId : event.task.cardId;
+  let nextCardId = args.byCardId;
+  let nextRole = args.byRole;
+
+  if (eventCardId) {
+    updateCardSlot({
+      setByCardId: (updater) => {
+        nextCardId =
+          typeof updater === "function" ? updater(nextCardId) : updater;
+      },
+      event,
+      eventCardId,
+      expectedLobbyId,
+      inferredRole:
+        event.eventType === "task:progress"
+          ? "worker"
+          : extractRole(event.task, true),
+      onCompletedRef: { current: undefined },
+      setCompletedCount: () => undefined,
+    });
+    return { byCardId: nextCardId, byRole: nextRole };
+  }
+
+  const role = inferLobbyLevelRoleForEvent({
+    event,
+    existingByRole: nextRole,
+    synthesisRunId,
+  });
+  if (!role) return args;
+
+  updateRoleSlot({
+    setByRole: (updater) => {
+      nextRole = typeof updater === "function" ? updater(nextRole) : updater;
+    },
+    event,
+    role,
+    expectedLobbyId,
+    onRoleCompletedRef: { current: undefined },
+    setCompletedCount: () => undefined,
+  });
+  return { byCardId: nextCardId, byRole: nextRole };
 }
 
 /**
@@ -359,6 +481,7 @@ function updateCardSlot(args: {
       }
 
       case "task:completed": {
+        if (isStaleForExistingRun(existing, event)) return next;
         const task = event.task;
         const phase = mapTaskStatusToPhase(task.status);
         const isFinished = FINISHED_STATUSES.has(task.status);
@@ -482,6 +605,7 @@ function updateRoleSlot(args: {
       }
 
       case "task:completed": {
+        if (isStaleForExistingRun(existing, event)) return next;
         const task = event.task;
         const phase = mapTaskStatusToPhase(task.status);
         const isFinished = FINISHED_STATUSES.has(task.status);
@@ -584,9 +708,8 @@ export function useLobbyRunStream(
   // schedules without bloating the `handleEvent` useCallback's dep array
   // (which must stay empty so the EventSource doesn't reconnect on every
   // map mutation).
-  const byRoleRef = useRef<ReadonlyMap<SoloStoryLobbyLevelRole, RunStreamState>>(
-    byRole,
-  );
+  const byRoleRef =
+    useRef<ReadonlyMap<SoloStoryLobbyLevelRole, RunStreamState>>(byRole);
   useEffect(() => {
     byRoleRef.current = byRole;
   }, [byRole]);
@@ -609,6 +732,11 @@ export function useLobbyRunStream(
     lobbyIdRef.current = lobbyId;
   }, [lobbyId]);
 
+  const synthesisRunIdRef = useRef(options.synthesisRunId ?? null);
+  useEffect(() => {
+    synthesisRunIdRef.current = options.synthesisRunId ?? null;
+  }, [options.synthesisRunId]);
+
   // Reset the Maps when the lobbyId changes (or the page unmounts the hook).
   useEffect(() => {
     setByCardId(new Map());
@@ -627,15 +755,11 @@ export function useLobbyRunStream(
     // way. Started/completed carry the full task record (with metadata);
     // progress events carry only the routing fields.
     const eventLobbyId =
-      event.eventType === "task:progress"
-        ? event.lobbyId
-        : event.task.lobbyId;
+      event.eventType === "task:progress" ? event.lobbyId : event.task.lobbyId;
     if (eventLobbyId !== expectedLobbyId) return;
 
     const eventCardId =
-      event.eventType === "task:progress"
-        ? event.cardId
-        : event.task.cardId;
+      event.eventType === "task:progress" ? event.cardId : event.task.cardId;
 
     // Role inference: prefer the metadata stamped at run-start over our
     // cardId-based fallback. Progress events don't carry full task
@@ -676,11 +800,22 @@ export function useLobbyRunStream(
       }
     }
 
+    if (!inferredRole) {
+      const runId = getEventRunId(event);
+      if (
+        event.eventType !== "task:started" &&
+        runId === synthesisRunIdRef.current
+      ) {
+        inferredRole = "synthesizer";
+      }
+    }
+
     // Still no role? The event predates any `task:started` we've seen
     // (e.g. SSE reconnected mid-run after the started replay window
-    // expired). We can't safely bucket it — drop it. The parent's
-    // refetch on `onRoleRunCompleted` and the captain's manual Refresh
-    // remain the recovery paths for this edge case.
+    // expired) and does not match the known synthesis run id fallback. We
+    // can't safely bucket it — drop it. The parent's refetch on
+    // `onRoleRunCompleted` and the captain's manual Refresh remain the
+    // recovery paths for this edge case.
     if (!inferredRole || inferredRole === "worker") return;
 
     updateRoleSlot({
