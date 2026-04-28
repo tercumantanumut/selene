@@ -7,6 +7,14 @@
  *
  * The pill exposes its semantic state via `aria-label` (e.g.,
  * "Lobby status: Rolling") so screen readers don't have to infer from color.
+ *
+ * Color contrast (Sprint 5.1 review): the previous version used the
+ * `text-terminal-amber`/`text-terminal-green` colours as foreground on a
+ * `/15` tinted background — that fell well below WCAG AA (≈ 1.9–3.7:1) for
+ * `font-mono text-xs` (small text, 4.5:1 required). The current version uses
+ * `text-terminal-dark` (or `text-white` for the dark/red badges) so the label
+ * always meets AA, and lets the tinted background + border carry the colour
+ * identity instead.
  */
 
 import { Badge } from "@/components/ui/badge";
@@ -16,27 +24,27 @@ import type { LobbyStatus } from "@/lib/lobbies/types";
 const STATUS_CONFIG: Record<LobbyStatus, { label: string; className: string }> = {
   roster: {
     label: "Roster",
-    className: "bg-terminal-amber/15 text-terminal-amber border-terminal-amber/40",
+    className: "bg-terminal-amber/20 text-terminal-dark border-terminal-amber/50",
   },
   planning: {
     label: "Planning",
-    className: "bg-blue-500/15 text-blue-600 border-blue-500/30",
+    className: "bg-blue-500/15 text-terminal-dark border-blue-500/40 dark:text-blue-200",
   },
   rolling: {
     label: "Rolling",
-    className: "bg-terminal-green/15 text-terminal-green border-terminal-green/40",
+    className: "bg-terminal-green/20 text-terminal-dark border-terminal-green/50",
   },
   review: {
     label: "Review",
-    className: "bg-purple-500/15 text-purple-600 border-purple-500/30",
+    className: "bg-purple-500/15 text-terminal-dark border-purple-500/40 dark:text-purple-200",
   },
   completed: {
     label: "Completed",
-    className: "bg-terminal-muted/15 text-terminal-muted border-terminal-muted/40",
+    className: "bg-terminal-muted/20 text-terminal-dark border-terminal-muted/50",
   },
   aborted: {
     label: "Aborted",
-    className: "bg-red-500/15 text-red-600 border-red-500/30",
+    className: "bg-red-500/15 text-red-700 border-red-500/40 dark:text-red-200",
   },
 };
 

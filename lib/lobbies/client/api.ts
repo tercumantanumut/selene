@@ -123,6 +123,17 @@ async function unwrap<T>(
       status: result.status,
     });
   }
+  // External abort: surface the standard DOMException so call sites can use
+  // the canonical `err.name === "AbortError"` check (matches what `fetch`
+  // itself throws on abort, and what useEffect cleanup expects). We use a
+  // plain `Error` with `name = "AbortError"` because `DOMException` isn't
+  // available in every server runtime — Node 20+ has it but our SSR test
+  // shims don't.
+  if (result.error === "Aborted") {
+    const abortErr = new Error("Aborted");
+    abortErr.name = "AbortError";
+    throw abortErr;
+  }
   if (result.timedOut) {
     throw new LobbyApiError({
       message: result.error ?? "Request timed out",
@@ -139,6 +150,15 @@ async function unwrap<T>(
     status: result.status,
     currentVersion: envelope?.currentVersion,
   });
+}
+
+/**
+ * Convenience predicate: did this rejection come from an `AbortSignal`?
+ * Matches the same surface that `fetch` produces when its signal aborts, so
+ * callers can write a single check across both code paths.
+ */
+export function isAbortError(err: unknown): err is Error {
+  return err instanceof Error && err.name === "AbortError";
 }
 
 /** Server failure envelope shape (mirrors `mapMutationResult`). */

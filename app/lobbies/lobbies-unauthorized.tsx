@@ -12,6 +12,21 @@
 import { Shell } from "@/components/layout/shell";
 import { AlertCircle } from "lucide-react";
 
+/**
+ * `requireAuth` (in `lib/auth/local-auth.ts`) currently signals "unauthenticated"
+ * by throwing `new Error("Unauthorized" | "Invalid session")` rather than via a
+ * typed error class. The catch on every lobby server page must therefore match
+ * those two message strings *exactly* — and rethrow anything else, so a real
+ * error (e.g. DB unavailable, table missing) does not get silently masked as
+ * "your session expired" (Sprint 5.1 review, MEDIUM finding).
+ */
+export function isUnauthorizedError(err: unknown): err is Error {
+  return (
+    err instanceof Error &&
+    (err.message === "Unauthorized" || err.message === "Invalid session")
+  );
+}
+
 export function LobbiesUnauthorized({
   message = "Your Selene session is missing or expired.",
 }: {
@@ -35,7 +50,7 @@ export function LobbiesUnauthorized({
           <p className="mt-1 font-mono text-xs text-terminal-muted">
             {message}
           </p>
-          <p className="mt-3 font-mono text-[11px] text-terminal-muted/80">
+          <p className="mt-3 font-mono text-[11px] text-terminal-muted">
             Restart Selene to refresh your local session.
           </p>
         </div>

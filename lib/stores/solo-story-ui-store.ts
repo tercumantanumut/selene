@@ -55,6 +55,15 @@ interface SoloStoryUiState {
    */
   activeLobbyId: string | null;
 
+  /**
+   * The lobbyId we have already seeded `expandedSections` / `activeSection`
+   * defaults for. `seedDefaultsForStatus` is a no-op when this matches the
+   * incoming lobbyId — that's how user-driven section toggles between mount
+   * and data-load survive the late status reseed (HIGH finding, Sprint 5.1
+   * review). Cleared on lobby change.
+   */
+  seededForLobbyId: string | null;
+
   /** Section the captain has scrolled to / focused. */
   activeSection: LobbyPhaseSection;
 
@@ -103,15 +112,27 @@ interface SoloStoryUiState {
   clearOptimisticMoves: () => void;
 
   /**
-   * Reset everything when the captain leaves the lobby page. The optional
-   * `lobbyStatus` lets the store seed `expandedSections` from the lobby's
-   * current status — collapsed for not-yet-reached phases — so the page
-   * doesn't open all five sections by default on a freshly-loaded lobby.
+   * Hard reset triggered when the captain navigates between lobbies (or
+   * leaves the lobby page entirely). Wipes per-lobby UI state — selected
+   * card, fullscreen run, expanded transcripts, optimistic moves — and
+   * sets `expandedSections` to a neutral all-collapsed baseline. Does NOT
+   * seed status-aware expansion: that's `seedDefaultsForStatus`'s job
+   * (called separately, once per lobbyId, after the initial detail fetch
+   * resolves). Splitting these two concerns is what stops the late reseed
+   * from clobbering user toggles + optimistic moves issued during the
+   * initial loading window (HIGH finding, Sprint 5.1 review).
    */
-  resetForLobbyChange: (
-    nextLobbyId: string | null,
-    lobbyStatus?: LobbyStatus,
-  ) => void;
+  resetForLobbyChange: (nextLobbyId: string | null) => void;
+
+  /**
+   * Idempotent default-section seed, called once per lobbyId after the
+   * detail fetch resolves so the captain lands on a sensible section for
+   * the lobby's current status. No-op when `seededForLobbyId === lobbyId`,
+   * so subsequent calls (e.g. after an SSE-driven status flip, or React
+   * 18 strict-mode double invoke) cannot blow away user toggles. The
+   * destructive reset is `resetForLobbyChange`.
+   */
+  seedDefaultsForStatus: (lobbyId: string, status: LobbyStatus) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,13 +140,18 @@ interface SoloStoryUiState {
 // ---------------------------------------------------------------------------
 
 /**
- * Fallback for cases where we don't yet know the lobby status (e.g., the page
- * mounts before the first fetch resolves). Roster + planning expanded by
- * default — those are the first sections the captain interacts with.
+ * Neutral, all-collapsed baseline used while the page is *waiting* for the
+ * detail fetch to resolve (so the captain's first paint after `loading=false`
+ * never flashes the wrong sections expanded). Once `seedDefaultsForStatus`
+ * fires with a real status, the right sections expand.
+ *
+ * Was previously `roster: true, planning: true, ...` — that caused a visible
+ * flicker for non-roster lobbies between the loading skeleton and the
+ * status-aware reseed (HIGH finding, Sprint 5.1 review).
  */
-const DEFAULT_EXPANDED: Record<LobbyPhaseSection, boolean> = {
-  roster: true,
-  planning: true,
+const ALL_COLLAPSED: Record<LobbyPhaseSection, boolean> = {
+  roster: false,
+  planning: false,
   rolling: false,
   review: false,
   synthesis: false,
@@ -141,7 +167,7 @@ const DEFAULT_EXPANDED: Record<LobbyPhaseSection, boolean> = {
  * SPEC §3 #11 (progressive reveal): never collapse the active phase.
  */
 function defaultExpandedForStatus(
-  status: LobbyStatus | undefined,
+  status: LobbyStatus,
 ): Record<LobbyPhaseSection, boolean> {
   switch (status) {
     case "roster":
@@ -156,8 +182,6 @@ function defaultExpandedForStatus(
       return { roster: false, planning: false, rolling: false, review: true, synthesis: true };
     case "aborted":
       return { roster: false, planning: false, rolling: true, review: true, synthesis: false };
-    default:
-      return { ...DEFAULT_EXPANDED };
   }
 }
 
@@ -167,8 +191,9 @@ function defaultExpandedForStatus(
 
 export const useSoloStoryUiStore = create<SoloStoryUiState>((set) => ({
   activeLobbyId: null,
+  seededForLobbyId: null,
   activeSection: "roster",
-  expandedSections: { ...DEFAULT_EXPANDED },
+  expandedSections: { ...ALL_COLLAPSED },
 
   selectedCardId: null,
   fullscreenRunCardId: null,
@@ -260,17 +285,31 @@ export const useSoloStoryUiStore = create<SoloStoryUiState>((set) => ({
   clearOptimisticMoves: () =>
     set({ optimisticMoves: new Map<string, OptimisticCardMove>() }),
 
-  resetForLobbyChange: (nextLobbyId, lobbyStatus) =>
+  resetForLobbyChange: (nextLobbyId) =>
     set({
       activeLobbyId: nextLobbyId,
-      activeSection: pickInitialSection(lobbyStatus),
-      expandedSections: defaultExpandedForStatus(lobbyStatus),
+      seededForLobbyId: null,
+      activeSection: "roster",
+      expandedSections: { ...ALL_COLLAPSED },
       selectedCardId: null,
       fullscreenRunCardId: null,
       expandedCardTranscripts: new Set<string>(),
       optimisticMoves: new Map<string, OptimisticCardMove>(),
       // counter intentionally NOT reset — keeps rollbacks unambiguous if a
       // late server reply arrives after navigation.
+    }),
+
+  seedDefaultsForStatus: (lobbyId, status) =>
+    set((state) => {
+      // No-op if we've already seeded for this lobbyId. Anything the
+      // captain has toggled in the meantime survives. Also covers React
+      // 18 strict-mode double invoke and SSE-driven status flips.
+      if (state.seededForLobbyId === lobbyId) return state;
+      return {
+        seededForLobbyId: lobbyId,
+        activeSection: pickInitialSection(status),
+        expandedSections: defaultExpandedForStatus(status),
+      };
     }),
 }));
 

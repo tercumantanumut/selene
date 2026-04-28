@@ -41,7 +41,15 @@ import { requireAuth } from "@/lib/auth/local-auth";
 import { getOrCreateLocalUser } from "@/lib/db/queries";
 import { loadSettings } from "@/lib/settings/settings-manager";
 
-import type { MutationResult, MutationFailureReason } from "@/lib/lobbies/queries";
+// Import the mutation envelope from the canonical types module — `queries.ts`
+// re-exports them for convenience but pulling them directly from `types.ts`
+// avoids dragging the drizzle bundle into the route layer's type graph and
+// keeps the dependency direction one-way (route → types, never route →
+// queries → types).
+import type {
+  MutationResult,
+  MutationFailureReason,
+} from "@/lib/lobbies/types";
 
 // ---------------------------------------------------------------------------
 // Auth

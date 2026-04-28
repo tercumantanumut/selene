@@ -17,13 +17,26 @@ import { headers } from "next/headers";
 import { requireAuth } from "@/lib/auth/local-auth";
 
 import LobbyDetailClient from "./lobby-detail-client";
-import { LobbiesUnauthorized } from "../lobbies-unauthorized";
+import {
+  LobbiesUnauthorized,
+  isUnauthorizedError,
+} from "../lobbies-unauthorized";
+
+// Static fallback title — the client effect overrides this with the real
+// lobby title once the detail fetch resolves (no server-side fetch here so
+// we can't `generateMetadata` cleanly without a redundant DB hit).
+export const metadata = {
+  title: "Lobby — Selene",
+};
 
 export default async function LobbyDetailPage() {
   try {
     const reqHeaders = await headers();
     await requireAuth({ headers: reqHeaders } as unknown as Request);
-  } catch {
+  } catch (err) {
+    // See `app/lobbies/page.tsx` — narrow on auth message strings, rethrow
+    // everything else so DB outages don't masquerade as "session expired".
+    if (!isUnauthorizedError(err)) throw err;
     return <LobbiesUnauthorized />;
   }
   return <LobbyDetailClient />;

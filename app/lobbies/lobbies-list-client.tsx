@@ -107,10 +107,10 @@ function LobbyRow({ lobby, now }: { lobby: Lobby; now: Date }) {
           </p>
           <LobbyStatusBadge status={lobby.status} />
         </div>
-        <p className="mt-0.5 font-mono text-xs text-terminal-muted/90 line-clamp-2">
+        <p className="mt-0.5 font-mono text-xs text-terminal-muted line-clamp-2">
           {lobby.goal}
         </p>
-        <p className="mt-1 font-mono text-[11px] text-terminal-muted/70">
+        <p className="mt-1 font-mono text-[11px] text-terminal-muted">
           {formatRelative(lobby.updatedAt, now)}
         </p>
       </div>
@@ -142,7 +142,17 @@ function EmptyState() {
 
 function ListSkeleton() {
   return (
-    <div className="space-y-2">
+    // `aria-busy` belongs on the wrapper that *is* the loading state — when
+    // the real Card mounts, `loading` is already false, so attaching
+    // aria-busy to the Card is a dead attribute. Wrapping the skeleton
+    // here gives screen readers a clean "loading lobbies" announcement.
+    <div
+      role="status"
+      aria-busy="true"
+      aria-live="polite"
+      aria-label="Loading lobbies"
+      className="space-y-2"
+    >
       {Array.from({ length: 4 }).map((_, i) => (
         <div
           key={i}
@@ -267,9 +277,16 @@ export default function LobbiesListClient() {
             </div>
           ) : null}
 
-          {/* ── Filter tabs ── */}
+          {/* ── Filter pills ──
+            *
+            * NOTE on ARIA: this is a *button-group with toggles*, not a tab
+            * list. ARIA 1.2 forbids `aria-pressed` on `role="tab"`, and a
+            * `tab` would also need a controlled `tabpanel`/`aria-controls`.
+            * Clicking a pill just refilters one in-place list, so the
+            * correct semantic is `role="group"` + `aria-pressed` on each
+            * `<button>`. */}
           <div
-            role="tablist"
+            role="group"
             aria-label="Filter lobbies by status"
             className="flex flex-wrap items-center gap-1 rounded-lg border border-terminal-border/40 bg-terminal-cream/30 p-1"
           >
@@ -279,8 +296,6 @@ export default function LobbiesListClient() {
                 <button
                   key={tab.key}
                   type="button"
-                  role="tab"
-                  aria-selected={isActive}
                   aria-pressed={isActive}
                   onClick={() => setActiveFilter(tab.key)}
                   className={cn(
@@ -312,7 +327,7 @@ export default function LobbiesListClient() {
                 <p className="font-mono text-sm text-red-600">
                   Failed to load lobbies
                 </p>
-                <p className="font-mono text-xs text-terminal-muted/80 mt-0.5">
+                <p className="font-mono text-xs text-terminal-muted mt-0.5">
                   {error}
                 </p>
               </div>
@@ -332,10 +347,7 @@ export default function LobbiesListClient() {
           ) : lobbies.length === 0 && !error ? (
             <EmptyState />
           ) : (
-            <Card
-              className="bg-terminal-cream/30 border-terminal-border/50"
-              aria-busy={loading}
-            >
+            <Card className="bg-terminal-cream/30 border-terminal-border/50">
               <CardHeader className="pb-2">
                 <CardTitle className="font-mono text-sm font-semibold text-terminal-dark flex items-center gap-2">
                   <Search
@@ -361,7 +373,7 @@ export default function LobbiesListClient() {
                   <LobbyRow key={lobby.id} lobby={lobby} now={now} />
                 ))}
                 {data?.nextCursor ? (
-                  <p className="font-mono text-xs text-terminal-muted/70 text-center py-2">
+                  <p className="font-mono text-xs text-terminal-muted text-center py-2">
                     Showing the {lobbies.length} most recent. Older lobbies
                     will load on demand once pagination is wired up.
                   </p>

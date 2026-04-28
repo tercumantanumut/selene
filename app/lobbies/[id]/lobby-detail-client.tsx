@@ -23,7 +23,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect, useLayoutEffect, useMemo } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -110,24 +110,39 @@ export default function LobbyDetailClient() {
   const { data, loading, error, refetch } = useLobbyDetail(lobbyId);
 
   // Wire the active lobby into the UI store so cross-component selectors
-  // know which lobby is mounted. Reset everything else on lobby change. We
-  // re-run the reset once the first detail fetch resolves so the store seeds
-  // status-aware defaults (e.g., open the rolling section when the lobby is
-  // already in the rolling phase).
+  // know which lobby is mounted. The destructive reset clears per-lobby UI
+  // state — selected card, optimistic moves, etc. — and resets sections to
+  // an all-collapsed baseline so the captain's first paint after
+  // `loading=false` never flashes the wrong sections expanded.
   const resetForLobbyChange = useSoloStoryUiStore(
     (s) => s.resetForLobbyChange,
+  );
+  const seedDefaultsForStatus = useSoloStoryUiStore(
+    (s) => s.seedDefaultsForStatus,
   );
   useEffect(() => {
     resetForLobbyChange(lobbyId);
     return () => resetForLobbyChange(null);
   }, [lobbyId, resetForLobbyChange]);
-  // Re-seed defaults once the lobby's status is known.
+
+  // Once the lobby's status is known, seed the default expanded sections /
+  // active section *idempotently*. `seedDefaultsForStatus` is a no-op after
+  // the first call per lobbyId, so:
+  //   1. user toggles between mount and data-load survive (the seed only
+  //      fires once the data lands, then never again),
+  //   2. SSE-driven status flips don't blow away expansion,
+  //   3. React 18 strict-mode double-invoke is safe.
+  // `useLayoutEffect` so the store update runs before paint — render 1
+  // (with stale store value) is committed but not yet painted; the layout
+  // effect updates the store; React schedules a re-render before paint
+  // with the right expanded sections. Eliminates the visible flicker for
+  // non-roster lobbies (HIGH finding, Sprint 5.1 review).
   const initialStatus = data?.lobby.status;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (lobbyId && initialStatus) {
-      resetForLobbyChange(lobbyId, initialStatus);
+      seedDefaultsForStatus(lobbyId, initialStatus);
     }
-  }, [lobbyId, initialStatus, resetForLobbyChange]);
+  }, [lobbyId, initialStatus, seedDefaultsForStatus]);
 
   useEffect(() => {
     if (data?.lobby) {
@@ -172,7 +187,7 @@ export default function LobbyDetailClient() {
                     </h1>
                     <LobbyStatusBadge status={data.lobby.status} />
                   </div>
-                  <p className="mt-1 font-mono text-sm text-terminal-muted/90">
+                  <p className="mt-1 font-mono text-sm text-terminal-muted">
                     {data.lobby.goal}
                   </p>
                 </div>
@@ -281,8 +296,8 @@ function PhaseRail({
               isActive
                 ? "bg-terminal-cream text-terminal-dark shadow-sm"
                 : isReached
-                  ? "text-terminal-dark/80 hover:bg-terminal-cream/60"
-                  : "text-terminal-muted/60 hover:text-terminal-muted",
+                  ? "text-terminal-dark hover:bg-terminal-cream/60"
+                  : "text-terminal-muted hover:text-terminal-dark",
             )}
           >
             <Icon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -387,7 +402,7 @@ function RosterSectionPlaceholder({
             ? "No seats yet. Sprint 6 will land the seat grid + agent picker + permission scope sheet."
             : `${seatCount} seat${seatCount === 1 ? "" : "s"} configured.`}
         </p>
-        <p className="font-mono text-[11px] text-terminal-muted/60">
+        <p className="font-mono text-[11px] text-terminal-muted">
           Status: {lobbyStatus}
         </p>
       </div>
@@ -485,7 +500,7 @@ function ErrorBanner({
       />
       <div className="flex-1">
         <p className="font-mono text-sm text-red-600">Failed to load lobby</p>
-        <p className="font-mono text-xs text-terminal-muted/80 mt-0.5">
+        <p className="font-mono text-xs text-terminal-muted mt-0.5">
           {error}
         </p>
       </div>

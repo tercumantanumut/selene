@@ -230,7 +230,7 @@ export default function NewLobbyClient() {
                   <p className="font-mono text-sm text-red-600">
                     Couldn&apos;t create lobby
                   </p>
-                  <p className="font-mono text-xs text-terminal-muted/80 mt-0.5">
+                  <p className="font-mono text-xs text-terminal-muted mt-0.5">
                     {submitError}
                   </p>
                 </div>

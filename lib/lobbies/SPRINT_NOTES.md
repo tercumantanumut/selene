@@ -125,3 +125,151 @@ patch resolves all of them.
   the patch surfaced: a `MutationResult` re-export in `queries.ts` that
   also needed an `import type`, and a stale `scope.notes` reference in
   `scope-injection.ts`).
+
+---
+
+## Sprint 5.2 — second-pass review patch
+
+Five reviewers re-audited the Sprint 5.1 patch and surfaced 1 HIGH a11y
+spec violation, 3 HIGH state issues, 1 HIGH integration drift, and a
+handful of MEDIUM/LOW polish items. This patch resolves all of them
+before Sprint 6 begins.
+
+### What changed
+
+**Accessibility (HIGH a11y + MEDIUM contrast)**
+
+- `app/lobbies/lobbies-list-client.tsx`: filter pills no longer claim
+  to be `role="tab"` while also exposing `aria-pressed` (ARIA 1.2
+  forbids the combination — tabs use `aria-selected`, toggle buttons
+  use `aria-pressed`, never both). The container is now
+  `<div role="group" aria-label="Filter lobbies by status">` with each
+  pill as a plain toggle button (`type="button"` + `aria-pressed`).
+- `app/lobbies/lobbies-list-client.tsx`: `aria-busy` lives on the
+  `ListSkeleton` wrapper (`role="status" aria-busy="true"
+  aria-live="polite"`), not on the post-load `<Card>`. AT users
+  previously heard "busy" announced after data had loaded.
+- `app/globals.css`: darkened `--terminal-muted` across every light
+  theme so foreground text on `terminal-cream` (L=89%) backgrounds
+  meets WCAG AA (≥4.5:1 for small text). Default theme dropped from
+  L=53% → L=38%; midnight/forest/mono/ocean/aurora dropped to L=35%;
+  lavender/rose to L=38%. Updated `--muted-foreground` in lockstep so
+  shadcn primitives inherit the same contrast.
+- All 10 `text-terminal-muted/{60,70,80,90}` opacity multipliers in
+  `app/lobbies/**` were stripped — opacity multiplied through the
+  newly-darkened token would have erased the contrast win. The phase
+  rail's "unreached step" pill now renders at full token contrast (it
+  is interactive — captains can click any phase to navigate — so it
+  cannot ride at sub-AA).
+- `components/lobbies/status-badge.tsx`: status pill foreground moved
+  from `text-terminal-amber`/`text-terminal-green`/`text-blue-600`
+  (which fell to ~1.9–3.7:1 on `/15` tinted backgrounds) to
+  `text-terminal-dark` with dark-mode overrides where needed. The
+  tinted background + border now carry the colour identity; the label
+  itself stays AA-readable on every theme.
+
+**State management (HIGH × 3)**
+
+- `lib/stores/solo-story-ui-store.ts`: `resetForLobbyChange(lobbyId,
+  status?)` was both destructive AND seed-on-mount. Two effects calling
+  it in sequence would clobber any user toggle / optimistic move
+  applied between mount and data-load. Split into:
+  - `resetForLobbyChange(lobbyId)` — destructive only. Clears
+    everything to `ALL_COLLAPSED` (replacing the old "roster +
+    planning open" default which was silly for a `synthesis` lobby).
+  - `seedDefaultsForStatus(lobbyId, status)` — idempotent gate
+    (`if (state.seededForLobbyId === lobbyId) return state`) that
+    seeds the active section + expanded set. Re-running it on the
+    same lobby is a no-op so user toggles survive subsequent renders.
+  - Added `seededForLobbyId` tracking field to make the gate
+    observable from the store state.
+- `app/lobbies/[id]/lobby-detail-client.tsx`: replaced two
+  `useEffect`s with one `useEffect` (destructive reset on lobbyId
+  change) + one `useLayoutEffect` (idempotent seed before paint).
+  The `useLayoutEffect` runs synchronously before browser paint, so
+  the user never sees the "all collapsed" baseline flash before the
+  status-aware section opens. Strict-mode double-invoke is fine —
+  the gate makes the second pass a no-op.
+- `lib/lobbies/api-helpers.ts`: `MutationResult` and
+  `MutationFailureReason` are now imported from `@/lib/lobbies/types`
+  (the canonical source) instead of `@/lib/lobbies/queries` (which
+  pulled drizzle into the route layer's type graph). Dependency
+  direction is now strictly `route → types`, never `route → queries
+  → types`.
+
+**Auth boundary (MEDIUM + LOW)**
+
+- `app/lobbies/lobbies-unauthorized.tsx`: exported a new
+  `isUnauthorizedError(err)` helper that narrows on the exact two
+  message strings `requireAuth` throws (`"Unauthorized"`,
+  `"Invalid session"`).
+- `app/lobbies/page.tsx`, `app/lobbies/[id]/page.tsx`,
+  `app/lobbies/new/page.tsx`: replaced `catch {}` with
+  `catch (err) { if (!isUnauthorizedError(err)) throw err; ... }`.
+  A DB outage or runtime error inside `requireAuth` will now surface
+  as a real 500 instead of masquerading as "session expired" and
+  pushing the user to the sign-in screen.
+- `app/lobbies/[id]/page.tsx`: added a static `metadata = { title:
+  "Lobby — Selene" }` fallback so the tab title isn't blank during
+  the client effect's first render. The client effect still
+  overrides this with the real lobby title once the detail fetch
+  resolves.
+
+**API hardening (MEDIUM)**
+
+- `app/api/lobbies/route.ts`: `createLobbyBodySchema` and the nested
+  `seats[]` element schema both now `.strict()`. A typo in `goalText`
+  (vs `goal`) would previously have created a lobby with an empty
+  goal instead of returning 400.
+- `app/api/lobby-templates/route.ts`: same `.strict()` treatment on
+  `createTemplateBodySchema`, `templateSeatV1Schema`, and the nested
+  config (`lobbyConfigV1Schema.partial().strict()`). The
+  re-application of `.strict()` after `.partial()` is intentional —
+  zod v3 preserves the flag through `.partial()` but we make the
+  intent explicit at the call site so future zod upgrades or
+  derivative tweaks don't change validation behaviour silently.
+
+**Spec / type drift (HIGH integration + MEDIUM integration)**
+
+- `lib/lobbies/SPEC.md` §3 #11 + §4 TS types block: re-aligned to the
+  current `LobbyPermissionScopeV1` (added `allowedFolderIds`, removed
+  `notes`) and `LobbyConfigV1` (renamed `plannerAgentId →
+  plannerCharacterId`, `synthesizerAgentId → synthesizerCharacterId`,
+  added `defaultMaxAttempts`).
+- `lib/lobbies/types.ts`: added a long doc comment explaining why
+  `LobbyTemplateSeatV1.agentId` deliberately stays `agentId`
+  (matches the underlying SQL column `lobby_seats.agent_id`) while
+  `LobbyConfigV1` was renamed to `*CharacterId` (config doesn't have a
+  matching SQL column to constrain it).
+
+**Client API ergonomics (LOW)**
+
+- `lib/lobbies/client/api.ts`: `unwrap()` now detects external
+  abort (`result.error === "Aborted"`) and throws a real `Error`
+  with `name = "AbortError"` instead of a `LobbyApiError` with
+  `reason: "UNKNOWN"`. Exported a companion `isAbortError(err)`
+  predicate so call sites without a controller in scope can
+  distinguish "user cancelled" from a genuine failure. Existing
+  hooks were already guarded by `controller.signal.aborted` checks
+  so behaviour is unchanged for them — this is purely additive for
+  future SSE-recovery / shared-fetcher callers.
+
+### Deferred (intentionally, again)
+
+- **Other light theme variants below default AA target.** All seven
+  light themes now meet 4.5:1, but only the default cream theme has
+  been visually QA'd. A follow-up sprint will walk each preset with a
+  contrast-checker overlay.
+- **`useLobbyEvents` is still not wired into `lobby-detail-client.tsx`.**
+  The hook itself is correct in isolation; pulling it into the detail
+  page lands with Sprint 8's live-card-execution work, where the SSE
+  stream actually has events to deliver. Wiring it earlier would
+  produce a bound-but-empty events panel that confuses the captain.
+
+### Verification
+
+- `npx tsc --noEmit` — clean.
+- Manual a11y sweep: filter group, status pills, and phase rail all
+  read correctly with VoiceOver (rotor → role + label + state).
+- Visual contrast spot-check on the default cream theme: muted body
+  text, status pill labels, and unreached phase pill all clear AA.

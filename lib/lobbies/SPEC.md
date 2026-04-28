@@ -51,7 +51,7 @@ These are non-negotiable. Implementer agents MUST honor every item.
 8. **Reuse `agent_runs`.** Every card execution, planner run, and synthesizer run is an `agent_runs` row. Snapshot the seat permission scope into `agent_runs.metadata.soloStory.permissionScope` at run start so mid-execution scope changes don't affect in-flight runs.
 9. **Per-lobby monotonic event sequence.** All `lobby_events` rows get a `sequence` allocated transactionally by incrementing `lobbies.event_sequence`. Timestamp ordering is unsafe under parallel completion.
 10. **Optimistic concurrency.** Every mutation route accepts `expectedVersion`. Mismatch → `409 Conflict`. Lobbies, seats, cards each have a `lock_version` column.
-11. **Permission scope V1 is tool-list only.** `permission_scope` JSON shape: `{ version: 1, mode: "tool_list", allowedTools: string[], deniedTools?: string[], notes?: string }`. Folder/MCP scope is deferred.
+11. **Permission scope V1 is tool-list only.** `permission_scope` JSON shape: `{ version: 1, mode: "tool_list", allowedTools: string[], deniedTools?: string[], allowedFolderIds?: string[] }`. The `allowedFolderIds` field is a forward-looking placeholder for V1.1 folder scoping (see §10) — V1 ignores it. The scope schema is `.strict()` (zod) so unknown fields fail validation rather than silently dropping. (Sprint 5.1 reconciliation: replaced the V0 `notes?: string` field, which had no consumer.)
 12. **Snapshot the seat scope at card start, not at every tool call.** Mid-run scope changes do not affect in-flight cards.
 13. **Block structural edits to running cards.** Captain must cancel + edit + retry. Returns `409 Conflict` for edit attempts on `running` cards.
 14. **No process-level mutation of the global tool registry.** Filter via `agentEnabledTools` set (the existing pattern); never unregister tools.
@@ -187,23 +187,37 @@ export type LobbyPermissionScopeV1 = {
   mode: "tool_list";
   allowedTools: string[];
   deniedTools?: string[];
-  notes?: string;
+  // Forward-looking placeholder for V1.1 folder scoping (see §10). V1
+  // ignores it. (Sprint 5.1: replaced the unused V0 `notes?: string`.)
+  allowedFolderIds?: string[];
 };
 
 export type LobbyConfigV1 = {
   version: 1;
-  maxParallelCards?: number;
-  plannerAgentId?: string;
-  synthesizerAgentId?: string;
+  maxParallel?: number;            // was `maxParallelCards` in V0
+  defaultMaxAttempts?: number;
+  plannerCharacterId?: string;     // was `plannerAgentId` in V0
+  synthesizerCharacterId?: string; // was `synthesizerAgentId` in V0
   plannerPromptOverride?: string;
   synthesisPromptOverride?: string;
 };
 
+// NOTE on `agentId` vs `characterId`: Selene's underlying table is
+// `characters`, and V0 used `plannerAgentId` / `synthesizerAgentId` on
+// `LobbyConfigV1`. Sprint 5.1 renamed those config fields to `*CharacterId`
+// to match the underlying table. The `lobby_seats.agent_id` *column*
+// (and the `LobbyTemplateSeatV1.agentId` field below) are intentionally
+// kept as `agent_id` / `agentId` in V1 because (a) the SQL column name is
+// load-bearing for migrations + raw queries and (b) seats reference
+// characters by FK — the field IS a character id, the name is a legacy
+// nod to the column. A future migration may rename the column to
+// `character_id`; until then, the half-migrated terminology is the
+// agreed compromise. (Tracked in Sprint 5.1 review.)
 export type LobbyTemplateSeatV1 = {
   role: string;
   required: boolean;
   position: number;
-  agentId?: string;
+  agentId?: string; // FK → characters.id; field name matches lobby_seats.agent_id
   permissionScope: LobbyPermissionScopeV1;
 };
 

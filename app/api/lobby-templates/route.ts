@@ -48,22 +48,34 @@ export async function GET(req: Request) {
 // POST — create a private template.
 // ---------------------------------------------------------------------------
 
-const templateSeatV1Schema = z.object({
-  role: z.string().min(1).max(80),
-  required: z.boolean(),
-  position: z.number().int().nonnegative(),
-  agentId: z.string().min(1).optional(),
-  permissionScope: permissionScopeV1Schema,
-});
+// `.strict()` on every nested object — same rationale as
+// `createLobbyBodySchema` in app/api/lobbies/route.ts. A typo in `agnetId`
+// would otherwise be silently dropped and the template would persist with
+// `agentId: undefined` on the affected seat instead of returning 400.
+const templateSeatV1Schema = z
+  .object({
+    role: z.string().min(1).max(80),
+    required: z.boolean(),
+    position: z.number().int().nonnegative(),
+    agentId: z.string().min(1).optional(),
+    permissionScope: permissionScopeV1Schema,
+  })
+  .strict();
 
-const createTemplateBodySchema = z.object({
-  name: z.string().min(1).max(120),
-  description: z.string().max(2000).nullable().optional(),
-  defaultSeats: z.array(templateSeatV1Schema),
-  planningPrompt: z.string().min(1),
-  synthesisPrompt: z.string().min(1),
-  config: lobbyConfigV1Schema.partial().optional(),
-});
+// `lobbyConfigV1Schema.partial()` preserves the `.strict()` flag in zod v3,
+// but we wrap it again here to make the intent explicit at the call site —
+// future zod upgrades or partial-derivative tweaks would otherwise change
+// validation behavior silently.
+const createTemplateBodySchema = z
+  .object({
+    name: z.string().min(1).max(120),
+    description: z.string().max(2000).nullable().optional(),
+    defaultSeats: z.array(templateSeatV1Schema),
+    planningPrompt: z.string().min(1),
+    synthesisPrompt: z.string().min(1),
+    config: lobbyConfigV1Schema.partial().strict().optional(),
+  })
+  .strict();
 
 export async function POST(req: Request) {
   const ctx = await withLobbyAuth(req);

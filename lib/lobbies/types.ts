@@ -60,10 +60,29 @@ export type LobbyConfigV1 = {
   synthesisPromptOverride?: string;
 };
 
+/**
+ * Note on `agentId` vs `characterId` (Sprint 5.1 review reconciliation):
+ *
+ * `LobbyConfigV1` was renamed `plannerAgentId → plannerCharacterId` and
+ * `synthesizerAgentId → synthesizerCharacterId` to match Selene's actual
+ * `characters` table. The seat surface, however, deliberately keeps
+ * `agentId` here because:
+ *
+ *   1. The underlying SQL column is `lobby_seats.agent_id` (`characters.id` FK).
+ *      Renaming the field without renaming the column would diverge the TS
+ *      shape from the DB schema — worse than the half-migrated terminology.
+ *   2. Migration cost: the column is referenced in queries, services, scope
+ *      injection, and a future seat-history table; a rename ripples.
+ *
+ * The field IS a character id — the name is a legacy nod to the column.
+ * A future migration may rename `lobby_seats.agent_id` to `character_id` and
+ * flip this field with it. Until then, this is the agreed compromise.
+ */
 export type LobbyTemplateSeatV1 = {
   role: string;
   required: boolean;
   position: number;
+  /** FK → `characters.id`; field name matches `lobby_seats.agent_id`. */
   agentId?: string;
   permissionScope: LobbyPermissionScopeV1;
 };

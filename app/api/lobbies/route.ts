@@ -96,27 +96,36 @@ export async function GET(req: NextRequest) {
 // POST /api/lobbies
 // ---------------------------------------------------------------------------
 
-const createLobbyBodySchema = z.object({
-  title: z.string().min(1).max(200),
-  goal: z.string().min(1),
-  templateId: z.string().min(1).optional(),
-  config: lobbyConfigV1Schema.optional(),
-  /**
-   * Optional initial seats. When `templateId` is also given, these override
-   * the template's `defaultSeats`. When neither is given, the lobby starts
-   * with zero seats and the captain adds them in the roster phase.
-   */
-  seats: z
-    .array(
-      z.object({
-        role: z.string().min(1),
-        position: z.number().int().nonnegative(),
-        agentId: z.string().min(1).optional(),
-        permissionScope: permissionScopeV1Schema.optional(),
-      }),
-    )
-    .optional(),
-});
+// `.strict()` everywhere a client-supplied object lands here: zod's default
+// is to silently strip unknown keys, which means a typo in `goalText` (vs
+// `goal`) would create the lobby with an empty goal instead of returning a
+// 400. Sprint 5.1 reviewer flagged this as MEDIUM API. Apply `.strict()` to
+// the root body AND every nested object so the shape stays exact.
+const createLobbyBodySchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    goal: z.string().min(1),
+    templateId: z.string().min(1).optional(),
+    config: lobbyConfigV1Schema.optional(),
+    /**
+     * Optional initial seats. When `templateId` is also given, these override
+     * the template's `defaultSeats`. When neither is given, the lobby starts
+     * with zero seats and the captain adds them in the roster phase.
+     */
+    seats: z
+      .array(
+        z
+          .object({
+            role: z.string().min(1),
+            position: z.number().int().nonnegative(),
+            agentId: z.string().min(1).optional(),
+            permissionScope: permissionScopeV1Schema.optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+  })
+  .strict();
 
 export async function POST(req: Request) {
   const ctx = await withLobbyAuth(req);

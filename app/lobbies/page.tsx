@@ -17,7 +17,7 @@ import { headers } from "next/headers";
 import { requireAuth } from "@/lib/auth/local-auth";
 
 import LobbiesListClient from "./lobbies-list-client";
-import { LobbiesUnauthorized } from "./lobbies-unauthorized";
+import { LobbiesUnauthorized, isUnauthorizedError } from "./lobbies-unauthorized";
 
 export const metadata = {
   title: "Lobbies — Selene",
@@ -27,9 +27,13 @@ export default async function LobbiesPage() {
   try {
     const reqHeaders = await headers();
     await requireAuth({ headers: reqHeaders } as unknown as Request);
-  } catch {
-    // requireAuth throws for "Unauthorized" / "Invalid session" — both render
-    // the same "please restart Selene" banner since there's no /login route.
+  } catch (err) {
+    // Narrow to ONLY the two auth strings `requireAuth` throws. A bare
+    // `catch {}` would swallow real failures (DB unavailable, table missing)
+    // as "session expired" and tell the captain to restart — masking the
+    // real outage. Anything that isn't a known auth error rethrows so
+    // Next.js renders the global error boundary (Sprint 5.1 review).
+    if (!isUnauthorizedError(err)) throw err;
     return <LobbiesUnauthorized />;
   }
   return <LobbiesListClient />;
