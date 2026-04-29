@@ -34,6 +34,7 @@ const aiMocks = vi.hoisted(() => ({
 }));
 
 const workspaceMetadataMocks = vi.hoisted(() => ({
+  resolveWorkspaceInfoFromSession: vi.fn(async (session: { metadata?: { workspaceInfo?: unknown } }) => session.metadata?.workspaceInfo ?? null),
   updateWorkspaceLifecycleMetadata: vi.fn(),
   writeWorkspaceInfo: vi.fn(),
 }));

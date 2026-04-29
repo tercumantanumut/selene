@@ -246,10 +246,29 @@ export async function resolveRuntimeSkill(input: {
   matches?: Array<{ canonicalId: string; source: RuntimeSkillSource; name: string; displayName: string }>;
 }> {
   const { userId, characterId, skillId, skillName, source } = input;
+  const requestedSkillName = typeof skillName === "string" ? skillName.trim() : "";
+  const normalizedRequestedSkillName = requestedSkillName ? normalizeLookup(requestedSkillName) : "";
+
+  const matchesRequestedName = (skill: RuntimeSkill) =>
+    normalizeLookup(skill.displayName) === normalizedRequestedSkillName ||
+    normalizeLookup(skill.name) === normalizedRequestedSkillName;
+
+  const buildAmbiguousNameResult = (matches: RuntimeSkill[]) => ({
+    error: `skillName "${requestedSkillName}" is ambiguous. Use skillId. Candidates: ${matches.map((item) => item.canonicalId).join(", ")}`,
+    matches: matches.map((item) => ({
+      canonicalId: item.canonicalId,
+      source: item.source,
+      name: item.name,
+      displayName: item.displayName,
+    })),
+  });
 
   if (skillId) {
     const dbCanonicalId = parseDbCanonicalId(skillId);
     if (dbCanonicalId) {
+      if (source === "plugin") {
+        return { error: `skillId "${skillId}" identifies a DB skill, but source "plugin" was requested.` };
+      }
       const dbSkill = await getSkillById(dbCanonicalId, userId);
       if (!dbSkill) {
         return { error: `Skill not found: ${skillId}` };
@@ -257,11 +276,20 @@ export async function resolveRuntimeSkill(input: {
       if (characterId && dbSkill.characterId !== characterId) {
         return { error: "DB skill does not belong to the active agent." };
       }
-      return { skill: mapDbSkill(dbSkill) };
+      const resolved = mapDbSkill(dbSkill);
+      if (normalizedRequestedSkillName && !matchesRequestedName(resolved)) {
+        return {
+          error: `skillId "${skillId}" resolved to "${resolved.displayName}", but skillName "${requestedSkillName}" does not match.`,
+        };
+      }
+      return { skill: resolved };
     }
 
     const pluginCanonicalId = parsePluginCanonicalId(skillId);
     if (pluginCanonicalId) {
+      if (source === "db") {
+        return { error: `skillId "${skillId}" identifies a plugin skill, but source "db" was requested.` };
+      }
       const allSkills = await listRuntimeSkills({
         userId,
         characterId,
@@ -276,6 +304,11 @@ export async function resolveRuntimeSkill(input: {
       if (!match) {
         return { error: `Plugin skill not found: ${skillId}` };
       }
+      if (normalizedRequestedSkillName && !matchesRequestedName(match)) {
+        return {
+          error: `skillId "${skillId}" resolved to "${match.displayName}", but skillName "${requestedSkillName}" does not match.`,
+        };
+      }
       return { skill: match };
     }
 
@@ -284,12 +317,23 @@ export async function resolveRuntimeSkill(input: {
       if (characterId && legacyDb.characterId !== characterId) {
         return { error: "DB skill does not belong to the active agent." };
       }
-      return { skill: mapDbSkill(legacyDb) };
+      const resolved = mapDbSkill(legacyDb);
+      if (normalizedRequestedSkillName && !matchesRequestedName(resolved)) {
+        return {
+          error: `skillId "${skillId}" resolved to "${resolved.displayName}", but skillName "${requestedSkillName}" does not match.`,
+        };
+      }
+      return { skill: resolved };
     }
 
     const allSkills = await listRuntimeSkills({ userId, characterId, source });
     const canonicalMatch = allSkills.find((item) => item.canonicalId === skillId);
     if (canonicalMatch) {
+      if (normalizedRequestedSkillName && !matchesRequestedName(canonicalMatch)) {
+        return {
+          error: `skillId "${skillId}" resolved to "${canonicalMatch.displayName}", but skillName "${requestedSkillName}" does not match.`,
+        };
+      }
       return { skill: canonicalMatch };
     }
   }
@@ -297,49 +341,35 @@ export async function resolveRuntimeSkill(input: {
   if (!skillName) {
     return { error: "Provide skillId or skillName." };
   }
+  if (!normalizedRequestedSkillName) {
+    return { error: "skillName must not be empty." };
+  }
 
   const allSkills = await listRuntimeSkills({ userId, characterId, source });
-  const normalized = normalizeLookup(skillName);
 
   const exactMatches = allSkills.filter(
     (item) =>
-      normalizeLookup(item.displayName) === normalized ||
-      normalizeLookup(item.name) === normalized,
+      normalizeLookup(item.displayName) === normalizedRequestedSkillName ||
+      normalizeLookup(item.name) === normalizedRequestedSkillName,
   );
   if (exactMatches.length === 1) {
     return { skill: exactMatches[0] };
   }
   if (exactMatches.length > 1) {
-    return {
-      error: `Multiple skills matched "${skillName}". Use skillId.`,
-      matches: exactMatches.map((item) => ({
-        canonicalId: item.canonicalId,
-        source: item.source,
-        name: item.name,
-        displayName: item.displayName,
-      })),
-    };
+    return buildAmbiguousNameResult(exactMatches);
   }
 
   const partialMatches = allSkills.filter((item) => {
     const name = normalizeLookup(item.name);
     const display = normalizeLookup(item.displayName);
-    return name.includes(normalized) || display.includes(normalized);
+    return name.includes(normalizedRequestedSkillName) || display.includes(normalizedRequestedSkillName);
   });
   if (partialMatches.length === 1) {
     return { skill: partialMatches[0] };
   }
   if (partialMatches.length > 1) {
-    return {
-      error: `Multiple skills matched "${skillName}". Use skillId.`,
-      matches: partialMatches.map((item) => ({
-        canonicalId: item.canonicalId,
-        source: item.source,
-        name: item.name,
-        displayName: item.displayName,
-      })),
-    };
+    return buildAmbiguousNameResult(partialMatches);
   }
 
-  return { error: `Skill not found: ${skillName}` };
+  return { error: `No skill found with name "${requestedSkillName}".` };
 }

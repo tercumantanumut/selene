@@ -39,6 +39,10 @@ import {
   type DependencyInstallResult,
 } from "./dependencies";
 import {
+  createTsconfigPathsPlugin,
+  type TsconfigPathsConfig,
+} from "./tsconfig-paths";
+import {
   type DesignWorkspaceAutoInstallSummary,
   type DesignWorkspaceCompilationIssue,
   type DesignWorkspaceCompileReport,
@@ -530,6 +534,7 @@ export function rewriteAssetAliases(
 interface BuildTailwindPreviewOptions {
   autoInstallMissingDependencies?: boolean;
   source?: string;
+  tsconfigPaths?: TsconfigPathsConfig;
   /**
    * Per-call `@asset/<alias>` map for the W2.3 rewrite step. See
    * `rewriteAssetAliases` above. Applied before dependency validation,
@@ -1307,6 +1312,7 @@ async function compileReactComponent(
   componentCode: string,
   dependencyCheck: DependencyValidationResult,
   renderMany?: readonly RenderManyCell[],
+  tsconfigPaths?: TsconfigPathsConfig,
   designImport?: {
     userId: string;
     sessionId: string;
@@ -1325,6 +1331,9 @@ async function compileReactComponent(
       createExternalUrlPlugin(),
       createComponentPlugin(componentCode),
     ];
+    if (tsconfigPaths) {
+      plugins.push(createTsconfigPathsPlugin(tsconfigPaths));
+    }
     if (designImport) {
       plugins.push(
         createDesignImportPlugin(
@@ -1942,6 +1951,7 @@ export async function buildTailwindPreviewWithMetadata(
       rewrittenCode,
       dependencyCheck,
       options.renderMany,
+      options.tsconfigPaths,
       designImport,
     );
     const tailwindCss = await buildPreviewTailwindCss(rewrittenCode);

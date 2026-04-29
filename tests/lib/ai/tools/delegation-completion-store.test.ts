@@ -84,7 +84,7 @@ describe("delegation completion store", () => {
       sessionId: "deleg-session-old",
       initiatorSessionId: SESSION_ID,
       characterId: "agent-init",
-      completedAt: now - (61 * 60 * 1000),
+      completedAt: now - (8 * 24 * 60 * 60 * 1000),
     });
     addDelegationCompletion({
       delegationId: "del-fresh",

@@ -14,14 +14,19 @@ import {
 // ---------------------------------------------------------------------------
 
 // Use vi.hoisted so the mock factory can reference the variable after hoisting.
-const { mockQuery } = vi.hoisted(() => ({
+const { mockQuery, mockLoadClaudeAgentSdkRuntime } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
+  mockLoadClaudeAgentSdkRuntime: vi.fn(async () => ({ query: mockQuery })),
 }));
 
 // Mock the Agent SDK so tests don't spawn real CLI processes.
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: mockQuery,
   createSdkMcpServer: vi.fn(() => ({})),
+}));
+
+vi.mock("@/lib/ai/providers/claude-agent-sdk-runtime", () => ({
+  loadClaudeAgentSdkRuntime: mockLoadClaudeAgentSdkRuntime,
 }));
 
 // Mock auth so auth-error tests don't need a real SDK process.
@@ -233,6 +238,7 @@ describe("normalizeAnthropicToolUseInputs", () => {
 describe("queryWithSdkOptions — text extraction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadClaudeAgentSdkRuntime.mockResolvedValue({ query: mockQuery });
   });
 
   it("extracts text from stream_event content_block_delta messages", async () => {
@@ -436,6 +442,7 @@ describe("buildPlanApprovalResult", () => {
 describe("queryWithSdkOptions — authentication errors", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadClaudeAgentSdkRuntime.mockResolvedValue({ query: mockQuery });
   });
 
   it("throws an auth error with URL when SDK returns authentication_failed", async () => {
@@ -474,6 +481,7 @@ describe("queryWithSdkOptions — authentication errors", () => {
 describe("queryWithSdkOptions — SDK options forwarding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadClaudeAgentSdkRuntime.mockResolvedValue({ query: mockQuery });
     setMockStream([
       { type: "result", subtype: "success", is_error: false, result: "ok", errors: [] },
     ]);
@@ -635,6 +643,7 @@ describe("queryWithSdkOptions — SDK options forwarding", () => {
 describe("queryWithSdkOptions — async agent lifecycle (sdk-tools AgentOutput)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadClaudeAgentSdkRuntime.mockResolvedValue({ query: mockQuery });
   });
 
   it("returns collected stream text when async_launched status is present", async () => {
@@ -663,6 +672,7 @@ describe("queryWithSdkOptions — async agent lifecycle (sdk-tools AgentOutput)"
 describe("createClaudeCodeProvider — nested subagent filtering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadClaudeAgentSdkRuntime.mockResolvedValue({ query: mockQuery });
   });
 
   it("omits nested subagent SSE traffic but preserves the root task result", async () => {
@@ -774,6 +784,7 @@ describe("createClaudeCodeProvider — nested subagent filtering", () => {
 describe("queryWithSdkOptions — live prompt queue injection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadClaudeAgentSdkRuntime.mockResolvedValue({ query: mockQuery });
   });
 
   it("injects queued live prompts into the SDK session via streamInput", async () => {

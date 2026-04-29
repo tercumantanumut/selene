@@ -96,10 +96,7 @@ describe("getSdkExecutableConfig", () => {
         expect(env.PATH).toContain("/opt/homebrew/bin");
         // Original process.env.PATH should not be mutated
         expect(process.env.PATH).toBe("/usr/bin:/bin");
-        // getNodeBinary is called as a fallback check when no bundled node dir
-        // exists, but since its dir (/usr/local/bin) is already in shellPath,
-        // the PATH value is not modified
-        expect(loginMocks.getNodeBinary).toHaveBeenCalled();
+        expect(loginMocks.getNodeBinary).not.toHaveBeenCalled();
       } finally {
         Object.defineProperty(process, "platform", { value: originalPlatform });
       }

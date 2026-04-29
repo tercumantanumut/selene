@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
 
@@ -30,11 +31,12 @@ function resolvePackagedClaudeAgentSdkEntry(): string | null {
 
 export async function loadClaudeAgentSdkRuntime(): Promise<ClaudeAgentSdkRuntimeModule> {
   cachedRuntime ??= (async () => {
-    const dynamicImport = new Function("specifier", "return import(specifier)") as (
-      specifier: string
-    ) => Promise<ClaudeAgentSdkRuntimeModule>;
+    const packagedEntry = resolvePackagedClaudeAgentSdkEntry();
+    if (packagedEntry) {
+      return import(pathToFileURL(packagedEntry).href) as Promise<ClaudeAgentSdkRuntimeModule>;
+    }
 
-    return dynamicImport(resolvePackagedClaudeAgentSdkEntry() ?? "@anthropic-ai/claude-agent-sdk");
+    return import("@anthropic-ai/claude-agent-sdk");
   })();
 
   return cachedRuntime;

@@ -25,6 +25,7 @@ const syncServiceMocks = vi.hoisted(() => ({
 }));
 
 const workspaceMetadataMocks = vi.hoisted(() => ({
+  resolveWorkspaceInfoFromSession: vi.fn(async (session: { metadata?: { workspaceInfo?: unknown } }) => session.metadata?.workspaceInfo ?? null),
   writeWorkspaceInfo: vi.fn(),
   updateWorkspaceLifecycleMetadata: vi.fn(),
 }));

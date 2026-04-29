@@ -185,7 +185,7 @@ describe("GET /api/sessions/[id]/messages", () => {
               args: { action: "start", delegationId: "del-stale", agentId: "agent-1" },
               state: "input-available",
               active: true,
-              timestamp: new Date(Date.now() - (61 * 60 * 1000)).toISOString(),
+              timestamp: new Date(Date.now() - (8 * 24 * 60 * 60 * 1000)).toISOString(),
             },
           ],
         },

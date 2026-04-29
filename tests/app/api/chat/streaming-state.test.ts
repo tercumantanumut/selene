@@ -385,7 +385,7 @@ describe("shouldKeepDelegatedToolCallPending", () => {
   });
 
   it("does not keep projected delegated calls pending once the active hint is stale", () => {
-    const staleTimestamp = new Date(Date.now() - (61 * 60 * 1000)).toISOString();
+    const staleTimestamp = new Date(Date.now() - (8 * 24 * 60 * 60 * 1000)).toISOString();
 
     expect(
       shouldKeepDelegatedToolCallPending({
