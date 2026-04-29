@@ -286,7 +286,8 @@ export function createEditFileTool(options: EditFileToolOptions) {
 
         const parts = [`Edited ${basename(validPath)}`];
         if (result.linesChanged > 0) {
-          parts.push(`(${result.linesChanged} lines changed)`);
+          const plural = result.linesChanged === 1 ? "line" : "lines";
+          parts.push(`(${result.linesChanged} ${plural} changed)`);
         }
         if (diagnostics?.hasErrors) {
           parts.push(`— ${diagnostics.errorCount} error(s) detected`);

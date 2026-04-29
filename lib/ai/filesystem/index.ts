@@ -30,6 +30,7 @@ export {
 export {
   generateLineNumberDiff,
   generateBeforeAfterDiff,
+  calculateChangedLineCount,
 } from "./diff-utils";
 
 export {

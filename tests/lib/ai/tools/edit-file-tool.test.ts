@@ -220,6 +220,30 @@ describe("edit-file-tool", () => {
       expect(fsMocks.writeFile).toHaveBeenCalled();
       expect(fsMocks.rename).toHaveBeenCalled();
     });
+
+    it("reports one changed line for a larger replacement block with one changed line", async () => {
+      recordFileRead(SESSION_ID, FILE);
+      fsMocks.readFile.mockResolvedValue("line1\nline2\nline3\nline4\nline5\nline6\nline7");
+      fsMocks.writeFile.mockResolvedValue(undefined);
+      fsMocks.rename.mockResolvedValue(undefined);
+
+      const tool = createTool();
+      const result = await tool.execute(
+        {
+          filePath: FILE,
+          oldString: "line1\nline2\nline3\nline4\nline5\nline6",
+          newString: "line1\nline2\nLINE3\nline4\nline5\nline6",
+        },
+        { toolCallId: "tc-1", messages: [], abortSignal: new AbortController().signal }
+      );
+
+      expect(result.status).toBe("success");
+      expect(result.message).toContain("(1 line changed)");
+      expect(result.linesChanged).toBe(1);
+      expect(result.diff).toContain("@@ -3,1 +3,1 @@");
+      expect(result.diff).toContain("3 | - line3");
+      expect(result.diff).toContain("3 | + LINE3");
+    });
   });
 
   describe("create mode", () => {

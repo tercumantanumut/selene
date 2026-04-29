@@ -44,6 +44,55 @@ doNewThingElse();`;
     expect(result.newContent).toContain(`    doNewThingElse();`);
   });
 
+  it("counts only materially changed lines within a larger exact replacement block", () => {
+    const content = `line1
+line2
+line3
+line4
+line5
+line6
+line7`;
+    const oldString = `line1
+line2
+line3
+line4
+line5
+line6`;
+    const newString = `line1
+line2
+LINE3
+line4
+line5
+line6`;
+
+    const result = applyFileEdits(content, [{ oldString, newString }]);
+
+    expect(result.success).toBe(true);
+    expect(result.linesChanged).toBe(1);
+  });
+
+  it("counts only materially changed lines within a larger fuzzy replacement block", () => {
+    const content = `if (true) {
+  line1
+  line2
+  line3
+  line4
+}`;
+    const oldString = `    line1
+    line2
+    line3
+    line4`;
+    const newString = `    line1
+    line2
+    LINE3
+    line4`;
+
+    const result = applyFileEdits(content, [{ oldString, newString }]);
+
+    expect(result.success).toBe(true);
+    expect(result.linesChanged).toBe(1);
+  });
+
   it("fails if oldString not found", () => {
     const content = `console.log("hello");`;
     const oldString = `console.log("world");`;
