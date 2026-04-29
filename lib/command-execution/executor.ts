@@ -179,7 +179,7 @@ export async function startBackgroundProcess(
     processId: string;
     error?: string;
 }> {
-    const { command, args, stdin, cwd, characterId, confirmRemoval, windowsVerbatimArguments } = options;
+    const { command, args, stdin, cwd, characterId, confirmRemoval, windowsVerbatimArguments, onBackgroundProcessSettled } = options;
     const timeout = options.timeout ?? BACKGROUND_TIMEOUT;
     const maxOutputSize = options.maxOutputSize ?? MAX_BACKGROUND_OUTPUT;
     const shouldRetryThroughShellOnMessage = (message: string): boolean => {
@@ -238,6 +238,7 @@ export async function startBackgroundProcess(
             args,
             cwd,
             startedAt: Date.now(),
+            settledAt: null,
             running: true,
             stdout: "",
             stderr: "",
@@ -267,15 +268,23 @@ export async function startBackgroundProcess(
             }
         });
 
+        let backgroundProcessSettledNotified = false;
+        const settleBackgroundProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId">> = {}) => {
+            if (info.timeoutId) { clearTimeout(info.timeoutId); info.timeoutId = null; }
+            if (!info.settledAt) info.settledAt = Date.now();
+            info.running = false;
+            Object.assign(info, updates);
+            if (!backgroundProcessSettledNotified) {
+                backgroundProcessSettledNotified = true;
+                onBackgroundProcessSettled?.(info);
+            }
+        };
+
         // Handle completion
         child.on("close", (code, signal) => {
-            if (info.timeoutId) clearTimeout(info.timeoutId);
-            info.running = false;
-            info.exitCode = code;
-            info.signal = signal;
-
             // Save full log for background process too
             info.logId = saveTerminalLog(info.stdout, info.stderr);
+            settleBackgroundProcess({ exitCode: code, signal });
 
             commandLogger.logExecutionComplete(
                 command, code, Date.now() - info.startedAt,
@@ -302,22 +311,26 @@ export async function startBackgroundProcess(
                         maxOutputSize,
                         stdin,
                     );
-                    info.running = false;
-                    info.exitCode = fb.exitCode;
-                    info.signal = fb.signal;
-                    info.stdout = fb.stdout;
-                    info.stderr = fb.timedOut
+                    const stderr = fb.timedOut
                         ? fb.stderr + "\n[Background process timed out]"
                         : fb.stderr;
-                    info.logId = saveTerminalLog(info.stdout, info.stderr);
+                    const logId = saveTerminalLog(fb.stdout, stderr);
+                    settleBackgroundProcess({
+                        exitCode: fb.exitCode,
+                        signal: fb.signal,
+                        stdout: fb.stdout,
+                        stderr,
+                        logId,
+                    });
                     commandLogger.logExecutionComplete(
                         command, fb.exitCode, Date.now() - info.startedAt,
                         { stdout: info.stdout.length, stderr: info.stderr.length },
                         { characterId },
                     );
                 } catch (fbErr) {
-                    info.running = false;
-                    info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
+                    settleBackgroundProcess({
+                        stderr: info.stderr + `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`,
+                    });
                     commandLogger.logExecutionError(command, info.stderr, { characterId });
                 }
                 return;
@@ -325,7 +338,7 @@ export async function startBackgroundProcess(
 
             if (shouldRetryThroughShellOnMessage(error.message) && isShellRetryEligibleCommand(command)) {
                 const retryResult = await retryThroughShell();
-                info.running = false;
+                settleBackgroundProcess();
                 if (retryResult.processId) {
                     const retriedInfo = backgroundProcesses.get(retryResult.processId);
                     if (retriedInfo) {
@@ -339,17 +352,14 @@ export async function startBackgroundProcess(
                 return;
             }
 
-            if (info.timeoutId) clearTimeout(info.timeoutId);
-            info.running = false;
-            info.stderr += `\n[Spawn error] ${error.message}`;
+            settleBackgroundProcess({ stderr: info.stderr + `\n[Spawn error] ${error.message}` });
             commandLogger.logExecutionError(command, error.message, { characterId });
         });
 
         // Background timeout
         info.timeoutId = setTimeout(() => {
             if (info.running) {
-                info.running = false;
-                info.stderr += "\n[Background process timed out]";
+                settleBackgroundProcess({ stderr: info.stderr + "\n[Background process timed out]" });
                 try { child.kill("SIGTERM"); } catch { /* already dead */ }
                 setTimeout(() => {
                     try { child.kill("SIGKILL"); } catch { /* already dead */ }
@@ -372,6 +382,7 @@ export async function startBackgroundProcess(
                 args,
                 cwd,
                 startedAt: Date.now(),
+                settledAt: null,
                 running: true,
                 stdout: "",
                 stderr: "",
@@ -383,6 +394,17 @@ export async function startBackgroundProcess(
             backgroundProcesses.set(id, info);
             commandLogger.logExecutionStart(command, args, cwd, { characterId });
 
+            let fallbackProcessSettledNotified = false;
+            const settleFallbackProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId">> = {}) => {
+                if (!info.settledAt) info.settledAt = Date.now();
+                info.running = false;
+                Object.assign(info, updates);
+                if (!fallbackProcessSettledNotified) {
+                    fallbackProcessSettledNotified = true;
+                    onBackgroundProcessSettled?.(info);
+                }
+            };
+
             // Run asynchronously; the caller gets the processId immediately.
             spawnWithFileCapture(
                 finalCommand,
@@ -393,22 +415,26 @@ export async function startBackgroundProcess(
                 maxOutputSize,
                 stdin,
             ).then((fb) => {
-                info.running = false;
-                info.exitCode = fb.exitCode;
-                info.signal = fb.signal;
-                info.stdout = fb.stdout;
-                info.stderr = fb.timedOut
+                const stderr = fb.timedOut
                     ? fb.stderr + "\n[Background process timed out]"
                     : fb.stderr;
-                info.logId = saveTerminalLog(info.stdout, info.stderr);
+                const logId = saveTerminalLog(fb.stdout, stderr);
+                settleFallbackProcess({
+                    exitCode: fb.exitCode,
+                    signal: fb.signal,
+                    stdout: fb.stdout,
+                    stderr,
+                    logId,
+                });
                 commandLogger.logExecutionComplete(
                     command, fb.exitCode, Date.now() - info.startedAt,
                     { stdout: info.stdout.length, stderr: info.stderr.length },
                     { characterId },
                 );
             }).catch((fbErr) => {
-                info.running = false;
-                info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
+                settleFallbackProcess({
+                    stderr: info.stderr + `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`,
+                });
                 commandLogger.logExecutionError(command, info.stderr, { characterId });
             });
 
@@ -430,6 +456,20 @@ export function getBackgroundProcess(processId: string): BackgroundProcessInfo |
 }
 
 /**
+ * Record that a background process has been observed by a tool call.
+ */
+export function markBackgroundProcessObserved(processId: string): BackgroundProcessInfo | null {
+    const info = backgroundProcesses.get(processId) ?? null;
+    if (!info) return null;
+
+    info.lastObservedAt = Date.now();
+    if (info.running) {
+        info.observedWhileRunning = true;
+    }
+    return info;
+}
+
+/**
  * Kill a background process.
  */
 export function killBackgroundProcess(processId: string): boolean {
@@ -438,6 +478,7 @@ export function killBackgroundProcess(processId: string): boolean {
     if (!info.running) return true; // already done
 
     info.running = false;
+    info.settledAt = Date.now();
     if (info.timeoutId) clearTimeout(info.timeoutId);
     try {
         info.process.kill("SIGTERM");

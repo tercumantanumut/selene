@@ -1,13 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import path from "path";
 
-const syncFolderMocks = vi.hoisted(() => ({
-  getAccessibleSyncFolders: vi.fn(),
-}));
-
 const filesystemMocks = vi.hoisted(() => ({
-  getActiveWorktreePath: vi.fn(),
-  isOtherWorktreePath: vi.fn(),
+  resolveWorkspaceAwarePaths: vi.fn(),
 }));
 
 const commandExecutionMocks = vi.hoisted(() => ({
@@ -24,13 +19,8 @@ const fspMocks = vi.hoisted(() => ({
   readFile: vi.fn(),
 }));
 
-vi.mock("@/lib/vectordb/accessible-sync-folders", () => ({
-  getAccessibleSyncFolders: syncFolderMocks.getAccessibleSyncFolders,
-}));
-
 vi.mock("@/lib/ai/filesystem", () => ({
-  getActiveWorktreePath: filesystemMocks.getActiveWorktreePath,
-  isOtherWorktreePath: filesystemMocks.isOtherWorktreePath,
+  resolveWorkspaceAwarePaths: filesystemMocks.resolveWorkspaceAwarePaths,
 }));
 
 vi.mock("@/lib/command-execution", () => ({
@@ -86,11 +76,7 @@ describe("execute-command-tool normalization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    syncFolderMocks.getAccessibleSyncFolders.mockResolvedValue([
-      { folderPath: "C:\\workspace" },
-    ]);
-    filesystemMocks.getActiveWorktreePath.mockResolvedValue(null);
-    filesystemMocks.isOtherWorktreePath.mockReturnValue(false);
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue(["C:\\workspace"]);
 
     // Mock path validation to pass (returns valid result with resolved path)
     validatorMocks.validateExecutionDirectory.mockResolvedValue({
@@ -210,6 +196,39 @@ describe("execute-command-tool normalization", () => {
 
     const call = commandExecutionMocks.executeCommandWithValidation.mock.calls[0]?.[0];
     expect(call.args[1]).toContain("from math import sin;print(sin(0))");
+  });
+
+  it("uses workspace-aware paths for explicit subagent worktree execution", async () => {
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue([
+      "C:\\worktrees\\feature-x",
+      "C:\\repo",
+    ]);
+
+    const tool = createExecuteCommandTool({
+      sessionId: "subagent-sess-1",
+      characterId: "subagent-char-1",
+    });
+
+    await tool.execute(
+      {
+        command: "git",
+        args: ["status"],
+        cwd: "C:\\worktrees\\feature-x",
+      },
+      createToolContext()
+    );
+
+    expect(filesystemMocks.resolveWorkspaceAwarePaths).toHaveBeenCalledWith(
+      "subagent-char-1",
+      "subagent-sess-1"
+    );
+    expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "C:\\worktrees\\feature-x",
+        characterId: "subagent-char-1",
+      }),
+      ["C:\\worktrees\\feature-x", "C:\\repo"]
+    );
   });
 
   it("moves apply_patch payloads into stdin automatically", async () => {

@@ -1,11 +1,10 @@
 import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
-import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
-import { getActiveWorktreePath, isOtherWorktreePath } from "@/lib/ai/filesystem";
+import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
 import {
   executeCommandWithValidation,
   startBackgroundProcess,
   getBackgroundProcess,
-  killBackgroundProcess,
+  markBackgroundProcessObserved,
   listBackgroundProcesses,
   cleanupBackgroundProcesses,
 } from "@/lib/command-execution";
@@ -15,6 +14,11 @@ import {
 } from "@/lib/command-execution/cwd-state";
 import { validateExecutionDirectory, validateShellCommand } from "@/lib/command-execution/validator";
 import { registerBackgroundTask } from "@/app/api/chat/delegation-waiting";
+import {
+  handleBackgroundProcessSettled,
+  killTrackedBackgroundProcess,
+  registerBackgroundProcessTask,
+} from "@/lib/background-tasks/background-process-task";
 import type {
   ExecuteCommandProgressUpdate,
   ExecuteCommandToolOptions,
@@ -184,8 +188,7 @@ async function resolveExecutionContext(
 > {
   let syncedFolders: string[];
   try {
-    const folders = await getAccessibleSyncFolders(characterId);
-    syncedFolders = folders.map((folder) => folder.folderPath);
+    syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
 
     if (syncedFolders.length === 0) {
       return {
@@ -205,24 +208,13 @@ async function resolveExecutionContext(
     };
   }
 
-  const worktreePath = await getActiveWorktreePath(sessionId);
-  if (worktreePath && !syncedFolders.includes(worktreePath)) {
-    syncedFolders = [worktreePath, ...syncedFolders];
-  }
-
-  if (worktreePath) {
-    syncedFolders = syncedFolders.filter(
-      (folderPath) => !isOtherWorktreePath(folderPath, worktreePath)
-    );
-  }
-
   const persistedCwd = await getPersistedCommandCwd(sessionId);
-  const preferredExecutionDir = persistedCwd || worktreePath || syncedFolders[0];
+  const preferredExecutionDir = persistedCwd || syncedFolders[0];
   const preferredValidation = await validateExecutionDirectory(preferredExecutionDir, syncedFolders);
 
   const executionDir = preferredValidation.valid
     ? preferredValidation.resolvedPath ?? preferredExecutionDir
-    : worktreePath || syncedFolders[0];
+    : syncedFolders[0];
 
   return {
     syncedFolders,
@@ -270,7 +262,7 @@ const bashSchema = jsonSchema<BashInput>({
 });
 
 export function createBashTool(options: ExecuteCommandToolOptions) {
-  const { characterId, sessionId, onProgress } = options;
+  const { characterId, sessionId, userId, onProgress } = options;
 
   return tool({
     description: `Run shell commands with a single command string and a persistent working directory.
@@ -351,9 +343,9 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
       }
 
       if (input.processId && action === "kill") {
-        const killed = killBackgroundProcess(input.processId);
-        if (!killed) {
-          return { status: "error", error: `No background process found with ID '${input.processId}'.` };
+        const result = killTrackedBackgroundProcess(input.processId, userId);
+        if (!result.ok) {
+          return { status: "error", error: result.error ?? `No background process found with ID '${input.processId}'.` };
         }
         bashBackgroundCommands.delete(input.processId);
         return {
@@ -370,6 +362,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             error: `No background process found with ID '${input.processId}'. It may have been cleaned up.`,
           };
         }
+        markBackgroundProcessObserved(input.processId);
 
         const cleanedStdout = extractCwdMarker(info.stdout);
         const elapsed = Math.round((Date.now() - info.startedAt) / 1000);
@@ -492,6 +485,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             timeout,
             characterId,
             windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
+            onBackgroundProcessSettled: handleBackgroundProcessSettled,
           },
           syncedFolders
         );
@@ -504,6 +498,15 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         if (sessionId) {
           registerBackgroundTask(characterId, sessionId, backgroundResult.processId);
         }
+        registerBackgroundProcessTask({
+          processId: backgroundResult.processId,
+          userId,
+          characterId,
+          sessionId,
+          toolName: "bash",
+          command,
+          cwd: executionDir,
+        });
 
         return {
           status: "background_started",

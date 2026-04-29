@@ -9,13 +9,12 @@ import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
 import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 import fs from "fs/promises";
 import path from "path";
-import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
-import { getActiveWorktreePath, isOtherWorktreePath } from "@/lib/ai/filesystem";
+import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
 import {
     executeCommandWithValidation,
     startBackgroundProcess,
     getBackgroundProcess,
-    killBackgroundProcess,
+    markBackgroundProcessObserved,
     listBackgroundProcesses,
     cleanupBackgroundProcesses,
 } from "@/lib/command-execution";
@@ -23,6 +22,11 @@ import { readTerminalLog } from "@/lib/command-execution/log-manager";
 import { sliceLogText } from "@/lib/ai/log-slice";
 import { recordRetrieval } from "@/lib/ai/output-stub-telemetry";
 import { registerBackgroundTask } from "@/app/api/chat/delegation-waiting";
+import {
+    handleBackgroundProcessSettled,
+    killTrackedBackgroundProcess,
+    registerBackgroundProcessTask,
+} from "@/lib/background-tasks/background-process-task";
 import type {
     ExecuteCommandToolOptions,
     ExecuteCommandInput,
@@ -345,14 +349,6 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
             type: "string",
             description: "The log ID to read when command is 'readLog'.",
         },
-        head: {
-            type: "number",
-            description: "readLog only: return the first N lines of the log.",
-        },
-        tail: {
-            type: "number",
-            description: "readLog only: return the last N lines of the log.",
-        },
         range: {
             type: "array",
             items: { type: "number" },
@@ -361,11 +357,11 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
             description:
                 "readLog only: 1-indexed inclusive [startLine, endLine] range. Example: [400, 500].",
         },
-        grep: {
-            type: "string",
-            description:
-                "readLog only: regex pattern to search within the log. Returns matching lines with 2 lines of context each. Capped at 200 matches.",
-        },
+        // Legacy readLog fields remain accepted for saved calls and UI defaults,
+        // but range is the only documented retrieval mode.
+        head: { type: "number" },
+        tail: { type: "number" },
+        grep: { type: "string" },
         confirmRemoval: {
             type: "boolean",
             description:
@@ -381,7 +377,7 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
  * Create the executeCommand AI tool
  */
 export function createExecuteCommandTool(options: ExecuteCommandToolOptions) {
-    const { characterId, sessionId, onProgress } = options;
+    const { characterId, sessionId, userId, onProgress } = options;
 
     return tool({
         description: `Execute shell commands safely within synced directories. Supports foreground and background execution.
@@ -401,19 +397,14 @@ export function createExecuteCommandTool(options: ExecuteCommandToolOptions) {
 - Run tests: executeCommand({ command: "npm", args: ["test"] })
 - Check git status: executeCommand({ command: "git", args: ["status"] })
 - Install deps: executeCommand({ command: "npm", args: ["install"] })
-- Read a stored log (first 200 lines by default): executeCommand({ command: "readLog", logId: "..." })
-- Read specific slices (preferred — keeps context small):
-  · executeCommand({ command: "readLog", logId: "...", head: 100 })
-  · executeCommand({ command: "readLog", logId: "...", tail: 100 })
-  · executeCommand({ command: "readLog", logId: "...", range: [400, 500] })
-  · executeCommand({ command: "readLog", logId: "...", grep: "error" })
+- Read a stored log slice: executeCommand({ command: "readLog", logId: "...", range: [1, 200] })
 - Check background process: executeCommand({ processId: "bg-123" })
 - Kill background process: executeCommand({ command: "kill", processId: "bg-123" })
 - List background processes: executeCommand({ command: "list" })
 
 **readLog retrieval policy:**
 - Oversized tool outputs are replaced with a stub that contains an outline and a logId. Call readLog ONLY when the preview/outline is insufficient.
-- Prefer grep/range/head over fetching the whole log. Each readLog call is hard-capped to ~8K tokens — chunked reads are expected for large logs.
+- Use range: [startLine, endLine] for log retrieval. Each readLog call is hard-capped to ~8K tokens; request another range for the next chunk.
 
 **Background Mode:**
 Use background: true for commands that take a long time (npm install, npx create-*, builds).
@@ -503,7 +494,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     metaBits.push("budget-clamped");
                 }
                 const metaLabel = metaBits.length > 0 ? ` (${metaBits.join(", ")})` : "";
-                const modeLabel = slice.mode === "default" ? "default head" : slice.mode;
+                const modeLabel = slice.mode === "default" ? "default range preview" : slice.mode;
 
                 return {
                     status: "success",
@@ -526,6 +517,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                         error: `No background process found with ID '${processId}'. It may have been cleaned up.`,
                     };
                 }
+                markBackgroundProcessObserved(processId);
                 const elapsed = Math.round((Date.now() - info.startedAt) / 1000);
                 if (info.running) {
                     return {
@@ -552,9 +544,9 @@ The tool returns immediately with a processId. Poll with processId to check stat
 
             // Kill a background process
             if (processId && command === "kill") {
-                const killed = killBackgroundProcess(processId);
-                if (!killed) {
-                    return { status: "error", error: `No background process found with ID '${processId}'.` };
+                const result = killTrackedBackgroundProcess(processId, userId);
+                if (!result.ok) {
+                    return { status: "error", error: result.error ?? `No background process found with ID '${processId}'.` };
                 }
                 return { status: "success", message: `Background process '${processId}' terminated.` };
             }
@@ -583,11 +575,12 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            // Get synced folders for this agent
+            // Use the same workspace-aware authorization roots as file tools.
+            // This includes workflow-shared folders and the active worktree, while
+            // filtering other worktrees out of the execution sandbox.
             let syncedFolders: string[];
             try {
-                const folders = await getAccessibleSyncFolders(characterId);
-                syncedFolders = folders.map((f) => f.folderPath);
+                syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
 
                 if (syncedFolders.length === 0) {
                     return {
@@ -603,24 +596,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            // Determine working directory — prefer active worktree when available
-            const worktreePath = await getActiveWorktreePath(sessionId);
-            let executionDir = cwd;
-            if (!executionDir) {
-                executionDir = worktreePath || syncedFolders[0];
-            }
-
-            // Ensure worktree path is in allowed folders for cwd validation
-            if (worktreePath && !syncedFolders.includes(worktreePath)) {
-                syncedFolders = [worktreePath, ...syncedFolders];
-            }
-
-            // Exclude other worktree paths to prevent cross-workspace contamination
-            if (worktreePath) {
-                syncedFolders = syncedFolders.filter(
-                    (p) => !isOtherWorktreePath(p, worktreePath)
-                );
-            }
+            const executionDir = cwd || syncedFolders[0];
 
             try {
                 const resolvedCommand = await resolveClaudePluginRootPlaceholder(command);
@@ -643,6 +619,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                             timeout: Math.min(timeout || 600_000, maxBgTimeout),
                             characterId: characterId,
                             confirmRemoval,
+                            onBackgroundProcessSettled: handleBackgroundProcessSettled,
                         },
                         syncedFolders
                     );
@@ -655,6 +632,16 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     if (characterId && sessionId) {
                         registerBackgroundTask(characterId, sessionId, bgResult.processId);
                     }
+
+                    registerBackgroundProcessTask({
+                        processId: bgResult.processId,
+                        userId,
+                        characterId,
+                        sessionId,
+                        toolName: "executeCommand",
+                        command: [normalizedInput.command, ...preparedInput.args].filter(Boolean).join(" "),
+                        cwd: executionDir,
+                    });
 
                     console.log(`[executeCommand] Background process started: ${bgResult.processId}`);
                     return {

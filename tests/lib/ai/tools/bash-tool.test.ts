@@ -1,18 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const syncFolderMocks = vi.hoisted(() => ({
-  getAccessibleSyncFolders: vi.fn(),
-}));
-
 const filesystemMocks = vi.hoisted(() => ({
-  getActiveWorktreePath: vi.fn(),
-  isOtherWorktreePath: vi.fn(),
+  resolveWorkspaceAwarePaths: vi.fn(),
 }));
 
 const commandExecutionMocks = vi.hoisted(() => ({
   executeCommandWithValidation: vi.fn(),
   startBackgroundProcess: vi.fn(),
   getBackgroundProcess: vi.fn(),
+  markBackgroundProcessObserved: vi.fn(),
   killBackgroundProcess: vi.fn(),
   listBackgroundProcesses: vi.fn(),
   cleanupBackgroundProcesses: vi.fn(),
@@ -32,19 +28,15 @@ const delegationWaitingMocks = vi.hoisted(() => ({
   registerBackgroundTask: vi.fn(),
 }));
 
-vi.mock("@/lib/vectordb/accessible-sync-folders", () => ({
-  getAccessibleSyncFolders: syncFolderMocks.getAccessibleSyncFolders,
-}));
-
 vi.mock("@/lib/ai/filesystem", () => ({
-  getActiveWorktreePath: filesystemMocks.getActiveWorktreePath,
-  isOtherWorktreePath: filesystemMocks.isOtherWorktreePath,
+  resolveWorkspaceAwarePaths: filesystemMocks.resolveWorkspaceAwarePaths,
 }));
 
 vi.mock("@/lib/command-execution", () => ({
   executeCommandWithValidation: commandExecutionMocks.executeCommandWithValidation,
   startBackgroundProcess: commandExecutionMocks.startBackgroundProcess,
   getBackgroundProcess: commandExecutionMocks.getBackgroundProcess,
+  markBackgroundProcessObserved: commandExecutionMocks.markBackgroundProcessObserved,
   killBackgroundProcess: commandExecutionMocks.killBackgroundProcess,
   listBackgroundProcesses: commandExecutionMocks.listBackgroundProcesses,
   cleanupBackgroundProcesses: commandExecutionMocks.cleanupBackgroundProcesses,
@@ -80,11 +72,7 @@ describe("bash-tool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    syncFolderMocks.getAccessibleSyncFolders.mockResolvedValue([
-      { folderPath: "/workspace" },
-    ]);
-    filesystemMocks.getActiveWorktreePath.mockResolvedValue(null);
-    filesystemMocks.isOtherWorktreePath.mockReturnValue(false);
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue(["/workspace"]);
     cwdStateMocks.getPersistedCommandCwd.mockResolvedValue(null);
     cwdStateMocks.setPersistedCommandCwd.mockResolvedValue(undefined);
     validatorMocks.validateExecutionDirectory.mockResolvedValue({ valid: true, resolvedPath: "/workspace" });
@@ -205,6 +193,41 @@ describe("bash-tool", () => {
     expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: "/workspace/app" }),
       ["/workspace"]
+    );
+  });
+
+  it("uses workspace-aware paths when persisted cwd is inside a subagent worktree", async () => {
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue([
+      "/worktrees/feature-x",
+      "/repo",
+    ]);
+    cwdStateMocks.getPersistedCommandCwd.mockResolvedValue("/worktrees/feature-x/app");
+    validatorMocks.validateExecutionDirectory.mockResolvedValue({
+      valid: true,
+      resolvedPath: "/worktrees/feature-x/app",
+    });
+
+    const tool = createBashTool({
+      sessionId: "subagent-sess-1",
+      characterId: "subagent-char-1",
+    });
+
+    await tool.execute({ command: "pwd" }, createToolContext());
+
+    expect(filesystemMocks.resolveWorkspaceAwarePaths).toHaveBeenCalledWith(
+      "subagent-char-1",
+      "subagent-sess-1"
+    );
+    expect(validatorMocks.validateExecutionDirectory).toHaveBeenCalledWith(
+      "/worktrees/feature-x/app",
+      ["/worktrees/feature-x", "/repo"]
+    );
+    expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/worktrees/feature-x/app",
+        characterId: "subagent-char-1",
+      }),
+      ["/worktrees/feature-x", "/repo"]
     );
   });
 
@@ -448,6 +471,7 @@ describe("bash-tool", () => {
           cwd: "/workspace",
           args: ["-lc", expect.stringContaining("npm run dev")],
           stdin: undefined,
+          onBackgroundProcessSettled: expect.any(Function),
         }),
         ["/workspace"]
       );

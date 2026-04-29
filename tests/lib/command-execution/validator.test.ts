@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateCommand } from "@/lib/command-execution/validator";
+import { validateCommand, validateExecutionDirectory } from "@/lib/command-execution/validator";
 
 describe("Command Validator Tests", () => {
     it("Should allow commands with single quotes", () => {
@@ -68,5 +68,17 @@ describe("Command Validator Tests", () => {
 
     it("Should block .. in long flag", () => {
         expect(validateCommand("ls", ["--path=../secret"]).valid).toBe(false);
+    });
+
+    it("Should allow execution inside an allowed workspace worktree", async () => {
+        const result = await validateExecutionDirectory(
+            "/Users/me/apps/worktrees/feature-x/app",
+            ["/Users/me/apps/worktrees/feature-x", "/Users/me/apps/repo"]
+        );
+
+        expect(result).toEqual({
+            valid: true,
+            resolvedPath: "/Users/me/apps/worktrees/feature-x/app",
+        });
     });
 });

@@ -65,6 +65,8 @@ export interface ExecuteOptions {
   abortSignal?: AbortSignal;
   /** Live progress callback for streaming command output into the UI. */
   onProgress?: (update: ExecuteCommandProgressUpdate) => void;
+  /** Called whenever a background process settles. */
+  onBackgroundProcessSettled?: (info: BackgroundProcessInfo) => void;
 }
 
 /**
@@ -134,6 +136,8 @@ export interface ValidationResult {
 export interface ExecuteCommandToolOptions {
   /** Session ID for context */
   sessionId: string;
+  /** User ID for task visibility */
+  userId?: string;
   /** Character/agent ID for folder access */
   characterId?: string | null;
   /** Live command progress callback used while a foreground command is running. */
@@ -280,6 +284,8 @@ export interface BackgroundProcessInfo {
   cwd: string;
   /** When the process started */
   startedAt: number;
+  /** When the process finished or stopped */
+  settledAt?: number | null;
   /** Whether the process is still running */
   running: boolean;
   /** Accumulated stdout */
@@ -296,6 +302,10 @@ export interface BackgroundProcessInfo {
   timeoutId: NodeJS.Timeout | null;
   /** Log ID for persistent storage */
   logId?: string;
+  /** Whether the tool loop has already observed this process while it was running */
+  observedWhileRunning?: boolean;
+  /** Last time the process status was observed by a tool call */
+  lastObservedAt?: number;
 }
 
 /**
