@@ -1577,6 +1577,7 @@
       },
       "delegation": {
         "delegating": "Delegating to {agent}...",
+        "waiting": "Waiting for {agent}",
         "failed": "{agent} failed",
         "done": "{agent}",
         "task": "Task",
@@ -1584,7 +1585,9 @@
         "allResponses": "All Responses ({count})",
         "error": "Error",
         "unknownError": "Unknown error",
-        "subagentWorking": "Sub-agent working..."
+        "subagentWorking": "Sub-agent working...",
+        "waitingBadge": "Waiting",
+        "waitingOnDelegation": "Waiting for delegation to complete"
       }
     },
     "reasoning": {

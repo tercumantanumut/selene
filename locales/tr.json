@@ -1613,6 +1613,7 @@
       },
       "delegation": {
         "delegating": "{agent} ajanına devrediliyor...",
+        "waiting": "{agent} bekleniyor",
         "failed": "{agent} başarısız",
         "done": "{agent}",
         "task": "Görev",
@@ -1620,7 +1621,9 @@
         "allResponses": "Tüm Yanıtlar ({count})",
         "error": "Hata",
         "unknownError": "Bilinmeyen hata",
-        "subagentWorking": "Alt ajan çalışıyor..."
+        "subagentWorking": "Alt ajan çalışıyor...",
+        "waitingBadge": "Bekleniyor",
+        "waitingOnDelegation": "Delegasyonun tamamlanması bekleniyor"
       }
     },
     "reasoning": {

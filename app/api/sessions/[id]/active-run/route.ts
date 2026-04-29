@@ -5,6 +5,7 @@ import { getOrCreateLocalUser } from "@/lib/db/queries";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { isStale } from "@/lib/utils/timestamp";
 import { hasPendingInteractiveWait } from "@/lib/interactive-tool-bridge";
+import { getBackgroundTasksForSession } from "@/app/api/chat/delegation-waiting";
 
 function isBackgroundChatRun(metadata: unknown): boolean {
   if (!metadata || typeof metadata !== "object") return false;
@@ -56,6 +57,10 @@ export async function GET(req: Request, { params }: RouteParams) {
     )
       ? latestDeepResearchRun.metadata as Record<string, unknown>
       : {};
+    const activeBackgroundProcesses = getBackgroundTasksForSession(
+      dbUser.id,
+      sessionId,
+    );
 
     if (!activeForegroundChatRun) {
       return NextResponse.json({
@@ -69,6 +74,7 @@ export async function GET(req: Request, { params }: RouteParams) {
         latestDeepResearchRunId: latestDeepResearchRun?.id ?? null,
         latestDeepResearchStatus: latestDeepResearchRun?.status ?? null,
         latestDeepResearchState: latestDeepResearchMetadata.deepResearchState ?? null,
+        activeBackgroundProcesses,
       });
     }
 
@@ -83,6 +89,7 @@ export async function GET(req: Request, { params }: RouteParams) {
       latestDeepResearchRunId: latestDeepResearchRun?.id ?? null,
       latestDeepResearchStatus: latestDeepResearchRun?.status ?? null,
       latestDeepResearchState: latestDeepResearchMetadata.deepResearchState ?? null,
+      activeBackgroundProcesses,
     });
   } catch (error) {
     console.error("Check active run error:", error);
