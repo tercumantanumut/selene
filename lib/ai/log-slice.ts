@@ -1,7 +1,7 @@
 /**
  * Log Slice Helpers
  *
- * Shared implementation of head/tail/range/grep slicing used by both
+ * Shared implementation of range-first slicing used by both
  * executeCommand({command:"readLog"}) and retrieveFullContent.
  *
  * Each call is capped at PER_CALL_TOKEN_BUDGET so a single retrieval cannot
@@ -56,7 +56,7 @@ function clampBudget(text: string): { content: string; clamped: boolean } {
   return {
     content:
       content +
-      `\n\n... [SLICE CLAMPED to ~${PER_CALL_TOKEN_BUDGET.toLocaleString()} tokens; ~${omittedChars.toLocaleString()} chars dropped from the tail of this slice. Narrow your query with range/grep.] ...`,
+      `\n\n... [SLICE CLAMPED to ~${PER_CALL_TOKEN_BUDGET.toLocaleString()} tokens; ~${omittedChars.toLocaleString()} chars dropped from the tail of this slice. Request a narrower line range.] ...`,
     clamped: true,
   };
 }
@@ -168,20 +168,21 @@ function grep(lines: string[], pattern: string): LogSliceResult {
  * Apply a slicing operation to raw log text.
  *
  * Precedence:
- *   grep > range > head > tail > default(head DEFAULT_HEAD_LINES)
+ *   range > legacy head > legacy tail > legacy grep > default(first DEFAULT_HEAD_LINES)
  *
  * Each mode is hard-capped to PER_CALL_TOKEN_BUDGET.
  */
 export function sliceLogText(text: string, input: LogSliceInput): LogSliceResult {
   const lines = (text ?? "").split("\n");
 
-  if (input.grep && input.grep.trim().length > 0) {
-    return grep(lines, input.grep);
-  }
-
   if (Array.isArray(input.range) && input.range.length === 2) {
     const [s, e] = input.range;
-    if (Number.isFinite(s) && Number.isFinite(e)) {
+    if (
+      Number.isFinite(s) &&
+      Number.isFinite(e) &&
+      (s as number) > 0 &&
+      (e as number) > 0
+    ) {
       return sliceRange(lines, s as number, e as number);
     }
   }
@@ -194,9 +195,13 @@ export function sliceLogText(text: string, input: LogSliceInput): LogSliceResult
     return sliceTail(lines, input.tail);
   }
 
+  if (input.grep && input.grep.trim().length > 0) {
+    return grep(lines, input.grep);
+  }
+
   // Default: give the model a sensible head preview instead of the whole file.
   const result = sliceHead(lines, DEFAULT_HEAD_LINES);
   result.mode = "default";
-  result.meta.note = `No slice param given — showing first ${DEFAULT_HEAD_LINES} lines. Use head/tail/range/grep for targeted reads.`;
+  result.meta.note = `No valid range given — showing first ${DEFAULT_HEAD_LINES} lines. Use range: [startLine, endLine] for targeted reads.`;
   return result;
 }

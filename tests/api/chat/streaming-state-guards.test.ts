@@ -14,6 +14,10 @@ function normalizeJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function expectArgsEqual(actual: unknown, expected: unknown): void {
+  expect(normalizeJson(actual)).toBe(normalizeJson(expected));
+}
+
 function makeState(): StreamingMessageState {
   return {
     parts: [],
@@ -227,7 +231,7 @@ describe("recordStructuredToolCall", () => {
 
     expect(changed).toBe(true);
     const part = state.toolCallParts.get("tc-structured");
-    expect(normalizeJson(part?.args)).toBe(normalizeJson({ filePath: "/tmp/a.ts" }));
+    expectArgsEqual(part?.args, { filePath: "/tmp/a.ts" });
     expect(part?.argsText).toBe('{"filePath":"/tmp/a.ts"}');
     expect(part?.state).toBe("input-available");
   });
@@ -243,12 +247,12 @@ describe("recordStructuredToolCall", () => {
 
     expect(changed).toBe(true);
     const part = state.toolCallParts.get("tc-prefix");
-    expect(normalizeJson(part?.args)).toBe(normalizeJson({ filePath: "/tmp/a.ts" }));
+    expectArgsEqual(part?.args, { filePath: "/tmp/a.ts" });
     expect(part?.argsText).toBe('{"filePath":"/tmp/a.ts"');
     expect(part?.state).toBe("input-available");
   });
 
-  it("refuses incompatible structured input while streamed args are still incomplete", () => {
+  it("accepts structured input when streamed args are incomplete and not repairable", () => {
     const state = makeState();
     recordToolInputStart(state, "tc-incomplete", "readFile");
     recordToolInputDelta(state, "tc-incomplete", '{"startLine":');
@@ -258,11 +262,53 @@ describe("recordStructuredToolCall", () => {
       startLine: 10,
     });
 
-    expect(changed).toBe(false);
+    expect(changed).toBe(true);
     const part = state.toolCallParts.get("tc-incomplete");
-    expect(part?.args).toBeUndefined();
+    expectArgsEqual(part?.args, {
+      filePath: "/tmp/other.ts",
+      startLine: 10,
+    });
     expect(part?.argsText).toBe('{"startLine":');
-    expect(part?.state).toBe("input-streaming");
+    expect(part?.state).toBe("input-available");
+  });
+
+  it("recovers retrieveFullContent from incomplete streamed args by using structured args", () => {
+    const state = makeState();
+    recordToolInputStart(state, "tc-retrieve", "retrieveFullContent");
+    recordToolInputDelta(state, "tc-retrieve", '{"contentId":"trunc_QDAcWILS","head":');
+
+    const changed = recordStructuredToolCall(state, "tc-retrieve", "retrieveFullContent", {
+      contentId: "trunc_QDAcWILS",
+      head: 60,
+    });
+
+    expect(changed).toBe(true);
+    const part = state.toolCallParts.get("tc-retrieve");
+    expectArgsEqual(part?.args, {
+      contentId: "trunc_QDAcWILS",
+      head: 60,
+    });
+    expect(part?.argsText).toBe('{"contentId":"trunc_QDAcWILS","head":');
+    expect(part?.state).toBe("input-available");
+  });
+
+  it("keeps complete streamed args authoritative when structured input conflicts", () => {
+    const state = makeState();
+    recordToolInputStart(state, "tc-complete-conflict", "retrieveFullContent");
+    recordToolInputDelta(state, "tc-complete-conflict", '{"contentId":"trunc_QDAcWILS","head":60}');
+
+    const changed = recordStructuredToolCall(state, "tc-complete-conflict", "retrieveFullContent", {
+      contentId: "trunc_QDAcWILS",
+      range: [680, 870],
+    });
+
+    expect(changed).toBe(true);
+    const part = state.toolCallParts.get("tc-complete-conflict");
+    expectArgsEqual(part?.args, {
+      contentId: "trunc_QDAcWILS",
+      head: 60,
+    });
+    expect(part?.state).toBe("input-available");
   });
 });
 

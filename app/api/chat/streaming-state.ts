@@ -450,10 +450,12 @@ export function recordStructuredToolCall(
     }
 
     console.warn(
-      `[CHAT API] recordStructuredToolCall received incompatible structured input for ${toolName} (${toolCallId}) ` +
-        `before streamed argsText was parseable. Keeping streaming input authoritative.`
+      `[CHAT API] recordStructuredToolCall recovered ${toolName} (${toolCallId}) from incomplete streamed argsText. ` +
+        `Using provider structured input; streamed argsText remains for diagnostics.`
     );
-    return false;
+    part.state = "input-available";
+    part.args = input;
+    return true;
   }
 
   part.state = "input-available";

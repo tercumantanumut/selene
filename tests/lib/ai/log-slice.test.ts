@@ -62,6 +62,31 @@ describe("sliceLogText", () => {
     expect(slice.meta.toLine).toBe(20);
   });
 
+  it("ignores UI placeholder range values so head can win", () => {
+    const log = buildLog(20);
+    const slice = sliceLogText(log, {
+      head: 3,
+      tail: 0,
+      range: [0, 0],
+      grep: "",
+    });
+
+    expect(slice.mode).toBe("head");
+    expect(slice.content.split("\n")).toEqual(["line 1", "line 2", "line 3"]);
+  });
+
+  it("defaults when only UI placeholder slice values are present", () => {
+    const log = buildLog(300);
+    const slice = sliceLogText(log, {
+      tail: 0,
+      range: [0, 0],
+      grep: "",
+    });
+
+    expect(slice.mode).toBe("default");
+    expect(slice.content.split("\n")[0]).toBe("line 1");
+  });
+
   it("grep returns matches with 2 lines of context and 'match:' markers", () => {
     const lines: string[] = [];
     for (let i = 1; i <= 100; i++) {

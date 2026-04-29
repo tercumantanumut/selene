@@ -28,7 +28,7 @@ describe("buildOutputStub — retrievalToolLoaded flag", () => {
     expect(stub).not.toContain("searchTools({ query:");
   });
 
-  it("retrievalToolLoaded=false emits mandatory step-0 for logId", () => {
+  it("retrievalToolLoaded=false emits a short load hint for logId", () => {
     const stub = buildOutputStub({
       toolName: "bash",
       originalText: SAMPLE_TEXT,
@@ -38,18 +38,18 @@ describe("buildOutputStub — retrievalToolLoaded flag", () => {
     });
 
     expect(stub).toContain("[STUB:");
-    // Step-0 must be present
-    expect(stub).toContain("Step 0 (MANDATORY)");
-    expect(stub).toContain('searchTools({ query: "select:executeCommand" })');
-    expect(stub).toContain("Step 1 (AFTER loading)");
-    // Retrieval calls still present, after step-0
+    expect(stub).toContain('First load: searchTools({ query: "select:executeCommand" })');
+    expect(stub).toContain("Retrieve lines:");
     expect(stub).toContain("executeCommand({ command: \"readLog\"");
-    expect(stub).toContain("Retrieval calls (usable after step 0):");
-    // The warning about the tool not being loaded
-    expect(stub).toContain("executeCommand is NOT currently in your active tool set");
+    expect(stub).toContain("range: [1, 5]");
+    expect(stub).not.toContain("head:");
+    expect(stub).not.toContain("tail:");
+    expect(stub).not.toContain("grep:");
+    expect(stub).not.toContain("Step 0 (MANDATORY)");
+    expect(stub).not.toContain("NOT currently in your active tool set");
   });
 
-  it("retrievalToolLoaded=false emits mandatory step-0 for contentId", () => {
+  it("retrievalToolLoaded=false does not advertise unsafe contentId retrieval", () => {
     const stub = buildOutputStub({
       toolName: "readFile",
       originalText: SAMPLE_TEXT,
@@ -58,10 +58,10 @@ describe("buildOutputStub — retrievalToolLoaded flag", () => {
       retrievalToolLoaded: false,
     });
 
-    expect(stub).toContain("Step 0 (MANDATORY)");
-    expect(stub).toContain('searchTools({ query: "select:retrieveFullContent" })');
-    expect(stub).toContain("retrieveFullContent is NOT currently in your active tool set");
-    expect(stub).toContain("retrieveFullContent({ contentId:");
+    expect(stub).toContain("retrieveFullContent is not currently loaded");
+    expect(stub).toContain("re-run the original tool call with a smaller range/filter");
+    expect(stub).not.toContain('searchTools({ query: "select:retrieveFullContent" })');
+    expect(stub).not.toContain("retrieveFullContent({ contentId:");
   });
 
   it("retrievalToolLoaded=true (default) does NOT emit step-0 for contentId", () => {
@@ -90,7 +90,8 @@ describe("buildOutputStub — retrievalToolLoaded flag", () => {
     // Same as retrievalToolLoaded=true — no step-0
     expect(stub).not.toMatch(/Step 0.*MANDATORY/i);
     expect(stub).toContain("executeCommand({ command: \"readLog\"");
-    expect(stub).toContain("Only call readLog");
+    expect(stub).toContain("Retrieve lines:");
+    expect(stub).toContain("Change the two line numbers to read another slice.");
   });
 
   it("no retrievalId still works regardless of flag", () => {
