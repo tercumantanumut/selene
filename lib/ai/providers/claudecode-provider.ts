@@ -3,7 +3,6 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentDefinition,
   HookCallback,
@@ -15,6 +14,7 @@ import type {
   ThinkingConfig,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { LanguageModel } from "ai";
+import { loadClaudeAgentSdkRuntime } from "@/lib/ai/providers/claude-agent-sdk-runtime";
 import {
   classifyRecoverability,
   getBackoffDelayMs,
@@ -1217,6 +1217,7 @@ function createStreamingClaudeCodeResponse(options: {
         });
 
         const { executable: sdkExecutable, env: sdkEnv } = getSdkExecutableConfig();
+        const { query: claudeAgentQuery } = await loadClaudeAgentSdkRuntime();
 
         const query = claudeAgentQuery({
           prompt: options.prompt,
@@ -1845,6 +1846,7 @@ async function runClaudeAgentQuery(options: {
   });
 
   const { executable: sdkExecutable, env: sdkEnv } = getSdkExecutableConfig();
+  const { query: claudeAgentQuery } = await loadClaudeAgentSdkRuntime();
 
   const query = claudeAgentQuery({
     prompt: options.prompt,

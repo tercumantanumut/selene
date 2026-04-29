@@ -314,6 +314,7 @@ copyNodeDependencies([
 copyNodeDependencies([
     { name: 'gpt-tokenizer', src: 'gpt-tokenizer', dest: 'gpt-tokenizer' },
     { name: '@huggingface/hub', src: '@huggingface/hub', dest: '@huggingface/hub' },
+    { name: '@anthropic-ai/claude-agent-sdk', src: '@anthropic-ai/claude-agent-sdk', dest: '@anthropic-ai/claude-agent-sdk' },
 ]);
 
 // 7. Copy Puppeteer and bundled Chromium for local web scraping
@@ -363,6 +364,7 @@ if (systemNpmPath) {
 copyNodeDependencies([
     { name: '@huggingface/transformers', src: '@huggingface/transformers', dest: '@huggingface/transformers' },
     { name: 'onnxruntime-node', src: 'onnxruntime-node', dest: 'onnxruntime-node' },
+    { name: 'onnxruntime-common', src: 'onnxruntime-common', dest: 'onnxruntime-common' },
 ]);
 
 // 9b. Copy design preview compiler dependencies that Next standalone may trim.

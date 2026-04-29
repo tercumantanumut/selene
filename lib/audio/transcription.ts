@@ -8,14 +8,15 @@ import {
   type ParakeetModel,
 } from "@/lib/voice/parakeet-models";
 import { loadHuggingFaceHubRuntime } from "@/lib/huggingface/hub-runtime";
-import { getOrStartParakeetServer, shutdownParakeetServer } from "@/lib/voice/parakeet-server";
+import { getOrStartParakeetServer } from "@/lib/voice/parakeet-server";
+import { trackActiveExtractionProcess, untrackActiveExtractionProcess } from "@/lib/audio/process-cleanup";
 // Lazy-imported to avoid pulling better-sqlite3 into the Electron main bundle.
 // voice-utils imports lib/db/sqlite-client which requires a native module compiled
 // for the correct Node ABI — the Electron main process and Next.js dev server use
 // different ABIs, so this must stay dynamic.
 type VoiceUtils = typeof import("@/lib/voice/voice-utils");
 const getVoiceUtils = (): Promise<VoiceUtils> => import("@/lib/voice/voice-utils");
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   writeFileSync,
   readFileSync,
@@ -368,9 +369,6 @@ function ensureExecutable(filePath: string): void {
   }
 }
 
-// Track active extraction processes for cleanup on shutdown.
-const activeExtractionProcesses = new Set<ChildProcess>();
-
 function extractTarBz2Archive(archivePath: string, destinationDir: string): Promise<void> {
   const tarCmd = process.platform === "win32" ? "tar.exe" : "tar";
 
@@ -380,7 +378,7 @@ function extractTarBz2Archive(archivePath: string, destinationDir: string): Prom
       windowsHide: true,
     });
 
-    activeExtractionProcesses.add(child);
+    trackActiveExtractionProcess(child);
 
     let stderr = "";
     child.stderr.on("data", (chunk) => {
@@ -388,12 +386,12 @@ function extractTarBz2Archive(archivePath: string, destinationDir: string): Prom
     });
 
     child.on("error", (error) => {
-      activeExtractionProcesses.delete(child);
+      untrackActiveExtractionProcess(child);
       reject(error);
     });
 
     child.on("close", (code) => {
-      activeExtractionProcesses.delete(child);
+      untrackActiveExtractionProcess(child);
       if (code === 0) {
         resolve();
         return;
@@ -424,23 +422,6 @@ async function downloadToFile(url: string, destinationPath: string): Promise<voi
   const writable = createWriteStream(destinationPath);
 
   await pipeline(readable, writable);
-}
-
-/**
- * Kill all active extraction child processes and shut down the persistent
- * Parakeet server. Call from electron/main.ts on app quit.
- */
-export async function cleanupAllVoiceProcesses(): Promise<void> {
-  // Kill any in-flight tar extractions.
-  for (const child of activeExtractionProcesses) {
-    try {
-      child.kill();
-    } catch {}
-  }
-  activeExtractionProcesses.clear();
-
-  // Shut down the persistent Parakeet WebSocket server.
-  await shutdownParakeetServer();
 }
 
 function transcribeViaParakeetWebSocket(endpoint: string, payload: Buffer): Promise<string> {
