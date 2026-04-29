@@ -163,8 +163,7 @@ let sidecarLifecycleForwarder: SidecarLifecycleForwarder | null = null;
 async function getSidecarLifecycleForwarder(): Promise<SidecarLifecycleForwarder> {
   if (sidecarLifecycleForwarder) return sidecarLifecycleForwarder;
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { MCPClientManager } = await import("@/lib/mcp/client-manager");
+  const { MCPClientManager } = await import(/* @vite-ignore */ "@/lib/mcp/client-manager");
   const manager = MCPClientManager.getInstance();
 
   const subscribers = new Set<Electron.WebContents>();

@@ -15,12 +15,33 @@ const mocks = vi.hoisted(() => {
     sharedFolderRows.length = 0;
   };
 
+  const columnName = (column: any) => column?.name;
+
+  const evaluateCondition = (condition: any, row: any): boolean => {
+    if (!condition) return true;
+    switch (condition.kind) {
+      case "eq":
+        return row[columnName(condition.column)] === condition.value;
+      case "ne":
+        return row[columnName(condition.column)] !== condition.value;
+      case "isNull":
+        return row[columnName(condition.column)] == null;
+      case "inArray":
+        return condition.values.includes(row[columnName(condition.column)]);
+      case "and":
+        return condition.conditions.every((child: any) => evaluateCondition(child, row));
+      default:
+        throw new Error(`Unhandled condition kind in test mock: ${condition.kind}`);
+    }
+  };
+
   return {
     foldersByCharacter,
     workflowByAgentId,
     membersByWorkflowId,
     metadataByCharacter,
     sharedFolderRows,
+    evaluateCondition,
     reset,
   };
 });
@@ -82,8 +103,10 @@ vi.mock("@/lib/db/sqlite-client", () => ({
           }
 
           return {
-            where() {
-              return Promise.resolve(mocks.sharedFolderRows);
+            where(condition: any) {
+              return Promise.resolve(
+                mocks.sharedFolderRows.filter((row) => mocks.evaluateCondition(condition, row))
+              );
             },
           };
         },
@@ -121,6 +144,22 @@ describe("getAccessibleSyncFolders", () => {
 
     const result = await getAccessibleSyncFolders("agent-a");
     expect(result.map((folder) => folder.id)).toEqual(["own-1", "shared-1"]);
+  });
+
+  it("keeps a member's own workspace folder available but does not share other members' workspace folders", async () => {
+    mocks.foldersByCharacter.set("agent-a", [
+      { id: "own-worktree", characterId: "agent-a", folderPath: "C:/worktrees/feature-a", source: "workspace" },
+    ]);
+    mocks.workflowByAgentId.set("agent-a", { workflow: { id: "wf-1" } });
+    mocks.membersByWorkflowId.set("wf-1", [{ agentId: "agent-a" }, { agentId: "agent-b" }]);
+    mocks.metadataByCharacter.set("agent-a", {});
+    mocks.sharedFolderRows.push(
+      { id: "shared-worktree", characterId: "agent-b", folderPath: "C:/worktrees/feature-b", source: "workspace", inheritedFromWorkflowId: null },
+      { id: "shared-user", characterId: "agent-b", folderPath: "C:/repo", source: "user", inheritedFromWorkflowId: null }
+    );
+
+    const result = await getAccessibleSyncFolders("agent-a");
+    expect(result.map((folder) => folder.id)).toEqual(["own-worktree", "shared-user"]);
   });
 
   it("respects workflow sandbox policy disabling shared folders", async () => {

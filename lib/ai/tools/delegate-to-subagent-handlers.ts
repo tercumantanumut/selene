@@ -403,13 +403,7 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
   } else {
     try {
       const finalResponse = await extractFinalResponse(delegation.sessionId);
-      // Cap to 4000 chars to avoid context blowup with many concurrent agents
-      const MAX_INLINE_RESULT_CHARS = 4000;
-      if (finalResponse && finalResponse.length > MAX_INLINE_RESULT_CHARS) {
-        resultContent = finalResponse.slice(0, MAX_INLINE_RESULT_CHARS) + "\n... [result truncated — use observe to read full response]";
-      } else {
-        resultContent = finalResponse || "No response captured. Observe the session first, send continue preferably.";
-      }
+      resultContent = finalResponse || "No response captured. Observe the session first, send continue preferably.";
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Delegation] Failed to read final response for ${delegation.id}:`, error);
