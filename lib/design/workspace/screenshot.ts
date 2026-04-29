@@ -105,6 +105,31 @@ export function attachPreviewDiagnostics(page: PreviewDiagnosticPage): void {
   });
 }
 
+export async function pauseAnimations(page: {
+  evaluate: (...args: any[]) => Promise<any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  addStyleTag: (input: { content: string }) => Promise<unknown>;
+}): Promise<void> {
+  await page.evaluate(() => {
+    for (const animation of document.getAnimations()) {
+      try {
+        animation.currentTime = 0;
+        animation.pause();
+      } catch {
+        // Ignore animations the browser refuses to control.
+      }
+    }
+  });
+  await page.addStyleTag({
+    content: "*,*::before,*::after{animation-play-state:paused!important;transition:none!important;}",
+  });
+}
+
+export function extractRuntimeReferenceError(error: unknown): string | undefined {
+  const raw = error instanceof Error ? error.stack || error.message : String(error);
+  const match = raw.match(/(?:ReferenceError:\s*)?([^\n]+? is not defined)/);
+  return match?.[1]?.trim();
+}
+
 export interface ScreenshotViewport {
   width: number;
   height: number;
