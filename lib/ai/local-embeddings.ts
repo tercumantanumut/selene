@@ -8,6 +8,7 @@ import {
   detectAppleSiliconInfo,
   isM4OrLater,
 } from "@/lib/ai/transformer-device";
+import { loadTransformersRuntime } from "@/lib/ai/transformers-runtime";
 
 export const DEFAULT_LOCAL_EMBEDDING_MODEL = "Xenova/bge-large-en-v1.5";
 const DEFAULT_QUERY_PREFIX = "Represent this code for search:";
@@ -242,7 +243,7 @@ async function loadPipelineWithPatch(
   cacheDir: string,
   dtype: LocalEmbeddingDtype
 ): Promise<FeatureExtractionPipeline> {
-  const { pipeline } = await import("@huggingface/transformers");
+  const { pipeline } = await loadTransformersRuntime();
   const preferredDevice = resolvePreferredDevice();
 
   const tryLoad = async (device: TransformerDevice): Promise<FeatureExtractionPipeline> => {
@@ -344,7 +345,7 @@ async function getPipeline(options: LocalEmbeddingOptions): Promise<FeatureExtra
 
   cachedPipelineKey = cacheKey;
   cachedPipelinePromise = (async () => {
-    const { env } = await import("@huggingface/transformers");
+    const { env } = await loadTransformersRuntime();
     env.cacheDir = cacheDir;
     env.useBrowserCache = false;
     env.allowLocalModels = true;

@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 // @huggingface/hub is dynamically imported where needed to avoid bundling ~4MB into main.js
 import { debugLog, debugError } from "./debug-logger";
 import type { IpcHandlerContext } from "./ipc-context";
+import { loadHuggingFaceHubRuntime } from "@/lib/huggingface/hub-runtime";
 import {
   getParakeetModel,
   getSherpaOnnxArchiveName,
@@ -280,7 +281,7 @@ export function registerModelHandlers(ctx: IpcHandlerContext): void {
 
       debugLog(`[Model] Starting download: ${modelId} -> ${destDir}`);
 
-      const { listFiles, downloadFile } = await import("@huggingface/hub");
+      const { listFiles, downloadFile } = loadHuggingFaceHubRuntime();
       const files: { path: string; size: number }[] = [];
       for await (const file of listFiles({ repo: modelId, recursive: true })) {
         if (file.type === "file" && !file.path.startsWith(".git/")) {
@@ -317,7 +318,8 @@ export function registerModelHandlers(ctx: IpcHandlerContext): void {
         const blob = await downloadFile({
           repo: modelId,
           path: file.path,
-          fetch: (input, init) => fetch(input, { ...init, signal: abortController.signal }),
+          fetch: (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+            fetch(input, { ...init, signal: abortController.signal }),
         });
 
         if (blob) {
@@ -458,7 +460,7 @@ export function registerModelHandlers(ctx: IpcHandlerContext): void {
       }));
       try { fs.unlinkSync(path.join(destDir, DOWNLOAD_MANIFEST_FILE)); } catch { /* ignore */ }
 
-      const { listFiles: listHfFiles, downloadFile: downloadHfFile } = await import("@huggingface/hub");
+      const { listFiles: listHfFiles, downloadFile: downloadHfFile } = loadHuggingFaceHubRuntime();
 
       const files: { path: string; size: number }[] = [];
       for await (const file of listHfFiles({ repo: modelId, recursive: true })) {
@@ -545,7 +547,7 @@ export function registerModelHandlers(ctx: IpcHandlerContext): void {
         file: opts.filename,
       });
 
-      const { downloadFile } = await import("@huggingface/hub");
+      const { downloadFile } = loadHuggingFaceHubRuntime();
       const blob = await downloadFile({
         repo: opts.repo,
         path: opts.filename,
@@ -691,7 +693,7 @@ export function registerModelHandlers(ctx: IpcHandlerContext): void {
 
           sendProgress("downloading", 70 + Math.round((done / total) * 25), filename);
 
-          const { downloadFile } = await import("@huggingface/hub");
+          const { downloadFile } = loadHuggingFaceHubRuntime();
           const blob = await downloadFile({ repo: model.repo, path: filename });
           if (!blob) {
             throw new Error(`Failed to download ${filename} from ${model.repo}`);

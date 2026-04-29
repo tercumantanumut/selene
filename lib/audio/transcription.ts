@@ -7,6 +7,7 @@ import {
   SHERPA_ONNX_VERSION,
   type ParakeetModel,
 } from "@/lib/voice/parakeet-models";
+import { loadHuggingFaceHubRuntime } from "@/lib/huggingface/hub-runtime";
 import { getOrStartParakeetServer, shutdownParakeetServer } from "@/lib/voice/parakeet-server";
 // Lazy-imported to avoid pulling better-sqlite3 into the Electron main bundle.
 // voice-utils imports lib/db/sqlite-client which requires a native module compiled
@@ -261,7 +262,7 @@ async function ensureParakeetModel(model: ParakeetModel, baseDir: string): Promi
 
   mkdirSync(modelDir, { recursive: true });
 
-  const { downloadFile } = await import("@huggingface/hub");
+  const { downloadFile } = loadHuggingFaceHubRuntime();
   for (const filename of model.requiredFiles) {
     if (existsSync(join(modelDir, filename))) continue;
 

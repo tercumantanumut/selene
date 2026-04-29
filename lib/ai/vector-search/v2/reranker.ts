@@ -13,6 +13,7 @@ import {
   resolvePreferredDevice as resolvePreferredDeviceShared,
   isRecoverableGpuRuntimeError,
 } from "@/lib/ai/transformer-device";
+import { loadTransformersRuntime } from "@/lib/ai/transformers-runtime";
 
 let cachedPipeline: any = null;
 let cachedPipelinePromise: Promise<any> | null = null;
@@ -77,7 +78,7 @@ function resetPipelineState(): void {
  * Configure Transformers.js environment
  */
 async function configureEnv() {
-  const { env } = await import("@huggingface/transformers");
+  const { env } = await loadTransformersRuntime();
   const settings = loadSettings();
 
   const basePath = process.env.LOCAL_DATA_PATH || path.join(process.cwd(), ".local-data");
@@ -144,7 +145,7 @@ async function getPipeline(): Promise<any> {
   cachedPipelinePromise = (async () => {
     try {
       await configureEnv();
-      const { pipeline } = await import("@huggingface/transformers");
+      const { pipeline } = await loadTransformersRuntime();
       const preferredDevice = resolvePreferredDevice();
       const dtype = resolveRerankerDtype();
 
