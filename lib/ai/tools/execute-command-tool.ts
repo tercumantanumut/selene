@@ -69,6 +69,28 @@ function stripOuterQuotes(value: string): string {
     return trimmed;
 }
 
+function logRetrievalGuidance(logId?: string): string {
+    return logId
+        ? ` Use executeCommand({ command: "readLog", logId: "${logId}" }) for full output.`
+        : "";
+}
+
+function formatBackgroundListMetadata(processInfo: {
+    logId?: string;
+    exitCode?: number | null;
+    startedAt?: string;
+    settledAt?: string;
+    cwd?: string;
+}): string {
+    const metadata: string[] = [];
+    if (processInfo.logId) metadata.push(`logId=${processInfo.logId}`);
+    if (processInfo.exitCode !== undefined) metadata.push(`exitCode=${processInfo.exitCode}`);
+    if (processInfo.startedAt) metadata.push(`startedAt=${processInfo.startedAt}`);
+    if (processInfo.settledAt) metadata.push(`settledAt=${processInfo.settledAt}`);
+    if (processInfo.cwd) metadata.push(`cwd=${processInfo.cwd}`);
+    return metadata.length > 0 ? ` ${metadata.join(" ")}` : "";
+}
+
 function normalizeCommandName(command: string): string {
     return path.basename(command.trim()).toLowerCase().replace(/\.(?:cmd|bat|exe)$/i, "");
 }
@@ -526,7 +548,8 @@ The tool returns immediately with a processId. Poll with processId to check stat
                         stdout: info.stdout,
                         stderr: info.stderr,
                         startedAt: toIsoTimestamp(info.startedAt),
-                        message: `Process '${info.command} ${info.args.join(" ")}' still running (${elapsed}s elapsed).`,
+                        message: `Process '${info.command} ${info.args.join(" ")}' still running (${elapsed}s elapsed).${logRetrievalGuidance(info.logId)}`,
+                        logId: info.logId,
                     };
                 }
                 return {
@@ -537,7 +560,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     exitCode: info.exitCode,
                     executionTime: Date.now() - info.startedAt,
                     startedAt: toIsoTimestamp(info.startedAt),
-                    message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.`,
+                    message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.${logRetrievalGuidance(info.logId)}`,
                     logId: info.logId,
                 };
             }
@@ -561,7 +584,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 }
                 const lines = procs.map((p) => {
                     const elapsed = Math.round(p.elapsed / 1000);
-                    return `[${p.id}] ${p.running ? "RUNNING" : "DONE"} (${elapsed}s) ${p.command}`;
+                    return `[${p.id}] ${p.running ? "RUNNING" : "DONE"} (${elapsed}s) ${p.command}${formatBackgroundListMetadata(p)}`;
                 });
                 return { status: "success", stdout: lines.join("\n"), message: `${procs.length} background process(es).` };
             }
@@ -647,7 +670,8 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     return {
                         status: "background_started",
                         processId: bgResult.processId,
-                        message: `Background process started. Use processId '${bgResult.processId}' to check status.`,
+                        message: `Background process started. Use processId '${bgResult.processId}' to check status.${logRetrievalGuidance(bgResult.logId)}`,
+                        logId: bgResult.logId,
                     };
                 }
 

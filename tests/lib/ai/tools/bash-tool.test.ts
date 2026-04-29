@@ -4,6 +4,10 @@ const filesystemMocks = vi.hoisted(() => ({
   resolveWorkspaceAwarePaths: vi.fn(),
 }));
 
+const logManagerMocks = vi.hoisted(() => ({
+  saveTerminalLog: vi.fn(),
+}));
+
 const commandExecutionMocks = vi.hoisted(() => ({
   executeCommandWithValidation: vi.fn(),
   startBackgroundProcess: vi.fn(),
@@ -47,6 +51,10 @@ vi.mock("@/lib/command-execution/cwd-state", () => ({
   setPersistedCommandCwd: cwdStateMocks.setPersistedCommandCwd,
 }));
 
+vi.mock("@/lib/command-execution/log-manager", () => ({
+  saveTerminalLog: logManagerMocks.saveTerminalLog,
+}));
+
 vi.mock("@/lib/command-execution/validator", () => ({
   validateExecutionDirectory: validatorMocks.validateExecutionDirectory,
   validateShellCommand: validatorMocks.validateShellCommand,
@@ -77,6 +85,7 @@ describe("bash-tool", () => {
     cwdStateMocks.setPersistedCommandCwd.mockResolvedValue(undefined);
     validatorMocks.validateExecutionDirectory.mockResolvedValue({ valid: true, resolvedPath: "/workspace" });
     validatorMocks.validateShellCommand.mockReturnValue({ valid: true });
+    logManagerMocks.saveTerminalLog.mockReturnValue("bash-log-1");
 
     commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
       success: true,
@@ -107,6 +116,72 @@ describe("bash-tool", () => {
       "/workspace/app"
     );
   });
+
+
+
+  it("compacts large foreground output and persists it through readLog", async () => {
+    const largeOutput = "docker-layer\n".repeat(400);
+    commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
+      success: true,
+      stdout: largeOutput,
+      stderr: "",
+      exitCode: 0,
+      signal: null,
+      executionTime: 25,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+    });
+
+    const result = await tool.execute(
+      { command: "supabase start" },
+      createToolContext()
+    );
+
+    expect(logManagerMocks.saveTerminalLog).toHaveBeenCalledWith(largeOutput, "");
+    expect(result.logId).toBe("bash-log-1");
+    expect(result.isTruncated).toBe(true);
+    expect(result.stdout!.length).toBeLessThan(largeOutput.length);
+    expect(result.stdout).toContain("[TRUNCATED");
+    expect(result.message).toContain('executeCommand({ command: "readLog", logId: "bash-log-1" })');
+  });
+
+  it("returns concise output-limit failures with readLog guidance", async () => {
+    const largeOutput = "Downloading [====>] 1MB/100MB\n".repeat(400);
+    commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
+      success: false,
+      stdout: largeOutput,
+      stderr: "\n[Output size limit exceeded]",
+      exitCode: null,
+      signal: "SIGTERM",
+      error: "Process terminated due to timeout or output limit",
+      executionTime: 25,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      logId: "executor-log-1",
+      isTruncated: true,
+    });
+
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+    });
+
+    const result = await tool.execute(
+      { command: "supabase start" },
+      createToolContext()
+    );
+
+    expect(logManagerMocks.saveTerminalLog).not.toHaveBeenCalled();
+    expect(result.status).toBe("error");
+    expect(result.logId).toBe("executor-log-1");
+    expect(result.isTruncated).toBe(true);
+    expect(result.stdout!.length).toBeLessThan(largeOutput.length);
+    expect(result.message).toContain('executeCommand({ command: "readLog", logId: "executor-log-1" })');
+  });
+
 
   it("tags progress updates with the bash tool name", async () => {
     const onProgress = vi.fn();
@@ -174,6 +249,38 @@ describe("bash-tool", () => {
         ["/workspace"]
       );
     }
+  });
+
+  it("returns compact output with readLog guidance when foreground output is too large", async () => {
+    commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
+      success: false,
+      stdout: `${"docker-layer\n".repeat(300)}__SELENE_CWD__:/workspace`,
+      stderr: "[Output size limit exceeded]",
+      exitCode: null,
+      signal: null,
+      executionTime: 1000,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      error: "Process terminated due to timeout or output limit",
+      logId: "log-large",
+      isTruncated: true,
+    });
+
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+    });
+
+    const result = await tool.execute(
+      { command: "supabase start" },
+      createToolContext()
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.logId).toBe("log-large");
+    expect(result.isTruncated).toBe(true);
+    expect(result.stdout!.length).toBeLessThan(2500);
+    expect(result.stderr).toContain("[Output size limit exceeded]");
+    expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-large" })');
   });
 
   it("reuses persisted cwd when available", async () => {

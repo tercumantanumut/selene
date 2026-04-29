@@ -302,6 +302,8 @@ export interface BackgroundProcessInfo {
   timeoutId: NodeJS.Timeout | null;
   /** Log ID for persistent storage */
   logId?: string;
+  /** Last time a running background log snapshot was saved */
+  lastLogSnapshotAt?: number;
   /** Whether the tool loop has already observed this process while it was running */
   observedWhileRunning?: boolean;
   /** Last time the process status was observed by a tool call */

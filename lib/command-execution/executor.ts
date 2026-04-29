@@ -18,7 +18,7 @@
 import { spawn, ChildProcess } from "child_process";
 import { validateCommand, validateExecutionDirectory } from "./validator";
 import { commandLogger } from "./logger";
-import { saveTerminalLog } from "./log-manager";
+import { saveTerminalLog, updateTerminalLog } from "./log-manager";
 import { isEBADFError, spawnWithFileCapture } from "@/lib/spawn-utils";
 import { getResolvedShellEnvironment } from "@/lib/shell-env/resolver";
 import { shouldUseRTK } from "@/lib/rtk";
@@ -57,9 +57,34 @@ export { isEBADFError, spawnWithFileCapture } from "@/lib/spawn-utils";
 const backgroundProcesses = new Map<string, BackgroundProcessInfo>();
 const MAX_BACKGROUND_OUTPUT = 1048576; // 1MB per stream
 const ESCALATION_DELAY_MS = 5000;
+const BACKGROUND_LOG_SNAPSHOT_INTERVAL_MS = 5000;
 let bgIdCounter = 0;
 
 type TerminationReason = "timeout" | "output_limit" | "abort";
+
+function hasMeaningfulOutput(stdout?: string, stderr?: string): boolean {
+    return Boolean(stdout?.trim() || stderr?.trim());
+}
+
+function saveBackgroundLogSnapshot(info: BackgroundProcessInfo, force = false): string | undefined {
+    if (!hasMeaningfulOutput(info.stdout, info.stderr)) {
+        return info.logId;
+    }
+
+    const now = Date.now();
+    if (!force && info.logId && info.lastLogSnapshotAt && now - info.lastLogSnapshotAt < BACKGROUND_LOG_SNAPSHOT_INTERVAL_MS) {
+        return info.logId;
+    }
+
+    const logId = info.logId
+        ? updateTerminalLog(info.logId, info.stdout, info.stderr)
+        : saveTerminalLog(info.stdout, info.stderr);
+    if (logId) {
+        info.logId = logId;
+        info.lastLogSnapshotAt = now;
+    }
+    return info.logId;
+}
 
 function nextBgId(): string {
     return `bg-${Date.now()}-${++bgIdCounter}`;
@@ -164,6 +189,7 @@ function buildShellRetryOptions(options: ExecuteOptions, resolvedCommandLine?: s
     };
 }
 
+
 /**
  * Start a command in the background. Returns immediately with a process ID.
  * The process continues running; call `getBackgroundProcess` to poll for output.
@@ -178,6 +204,7 @@ export async function startBackgroundProcess(
 ): Promise<{
     processId: string;
     error?: string;
+    logId?: string;
 }> {
     const { command, args, stdin, cwd, characterId, confirmRemoval, windowsVerbatimArguments, onBackgroundProcessSettled } = options;
     const timeout = options.timeout ?? BACKGROUND_TIMEOUT;
@@ -283,7 +310,7 @@ export async function startBackgroundProcess(
         // Handle completion
         child.on("close", (code, signal) => {
             // Save full log for background process too
-            info.logId = saveTerminalLog(info.stdout, info.stderr);
+            saveBackgroundLogSnapshot(info, true);
             settleBackgroundProcess({ exitCode: code, signal });
 
             commandLogger.logExecutionComplete(
@@ -328,9 +355,9 @@ export async function startBackgroundProcess(
                         { characterId },
                     );
                 } catch (fbErr) {
-                    settleBackgroundProcess({
-                        stderr: info.stderr + `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`,
-                    });
+                    info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
+                    const logId = saveBackgroundLogSnapshot(info, true);
+                    settleBackgroundProcess({ stderr: info.stderr, logId });
                     commandLogger.logExecutionError(command, info.stderr, { characterId });
                 }
                 return;
@@ -352,14 +379,18 @@ export async function startBackgroundProcess(
                 return;
             }
 
-            settleBackgroundProcess({ stderr: info.stderr + `\n[Spawn error] ${error.message}` });
+            info.stderr += `\n[Spawn error] ${error.message}`;
+            const logId = saveBackgroundLogSnapshot(info, true);
+            settleBackgroundProcess({ stderr: info.stderr, logId });
             commandLogger.logExecutionError(command, error.message, { characterId });
         });
 
         // Background timeout
         info.timeoutId = setTimeout(() => {
             if (info.running) {
-                settleBackgroundProcess({ stderr: info.stderr + "\n[Background process timed out]" });
+                info.stderr += "\n[Background process timed out]";
+                const logId = saveBackgroundLogSnapshot(info, true);
+                settleBackgroundProcess({ stderr: info.stderr, logId });
                 try { child.kill("SIGTERM"); } catch { /* already dead */ }
                 setTimeout(() => {
                     try { child.kill("SIGKILL"); } catch { /* already dead */ }
@@ -432,18 +463,21 @@ export async function startBackgroundProcess(
                     { characterId },
                 );
             }).catch((fbErr) => {
-                settleFallbackProcess({
-                    stderr: info.stderr + `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`,
-                });
+                info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
+                const logId = saveBackgroundLogSnapshot(info, true);
+                settleFallbackProcess({ stderr: info.stderr, logId });
                 commandLogger.logExecutionError(command, info.stderr, { characterId });
             });
 
             return { processId: id };
         }
 
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const logId = errorMessage ? saveTerminalLog("", errorMessage) : undefined;
         return {
             processId: "",
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessage,
+            logId,
         };
     }
 }
@@ -452,7 +486,11 @@ export async function startBackgroundProcess(
  * Get background process status and output.
  */
 export function getBackgroundProcess(processId: string): BackgroundProcessInfo | null {
-    return backgroundProcesses.get(processId) ?? null;
+    const info = backgroundProcesses.get(processId) ?? null;
+    if (info?.running) {
+        saveBackgroundLogSnapshot(info);
+    }
+    return info;
 }
 
 /**
@@ -477,6 +515,7 @@ export function killBackgroundProcess(processId: string): boolean {
     if (!info) return false;
     if (!info.running) return true; // already done
 
+    saveBackgroundLogSnapshot(info, true);
     info.running = false;
     info.settledAt = Date.now();
     if (info.timeoutId) clearTimeout(info.timeoutId);
@@ -497,14 +536,29 @@ export function listBackgroundProcesses(): Array<{
     command: string;
     running: boolean;
     elapsed: number;
+    logId?: string;
+    exitCode?: number | null;
+    startedAt?: string;
+    settledAt?: string;
+    cwd?: string;
 }> {
     const now = Date.now();
-    return Array.from(backgroundProcesses.values()).map((p) => ({
-        id: p.id,
-        command: `${p.command} ${p.args.join(" ")}`,
-        running: p.running,
-        elapsed: now - p.startedAt,
-    }));
+    return Array.from(backgroundProcesses.values()).map((p) => {
+        if (p.running) {
+            saveBackgroundLogSnapshot(p);
+        }
+        return {
+            id: p.id,
+            command: `${p.command} ${p.args.join(" ")}`,
+            running: p.running,
+            elapsed: now - p.startedAt,
+            logId: p.logId,
+            exitCode: p.exitCode,
+            startedAt: new Date(p.startedAt).toISOString(),
+            settledAt: p.settledAt ? new Date(p.settledAt).toISOString() : undefined,
+            cwd: p.cwd,
+        };
+    });
 }
 
 /**
@@ -513,7 +567,8 @@ export function listBackgroundProcesses(): Array<{
 export function cleanupBackgroundProcesses(maxAge = 600_000): void {
     const now = Date.now();
     for (const [id, info] of Array.from(backgroundProcesses.entries())) {
-        if (!info.running && now - info.startedAt > maxAge) {
+        const ageFrom = info.settledAt ?? info.startedAt;
+        if (!info.running && now - ageFrom > maxAge) {
             backgroundProcesses.delete(id);
         }
     }
@@ -582,6 +637,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
             reason: cmdValidation.error,
         }, context);
 
+        const logId = cmdValidation.error ? saveTerminalLog("", cmdValidation.error) : undefined;
         return {
             success: false,
             stdout: "",
@@ -590,6 +646,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
             signal: null,
             error: cmdValidation.error,
             executionTime: Date.now() - startTime,
+            logId,
         };
     }
 
@@ -865,6 +922,8 @@ ${commandHint}`;
                 const { fallbackReason, retried } = checkRtkRetry({ stderr, error: errorMessage, wrappedByRTK: wrapped.usingRTK });
                 if (retried) return;
 
+                const logId = errorMessage || stderr ? saveTerminalLog(stdout, stderr || errorMessage) : undefined;
+
                 const failedResult: ExecuteResult = {
                     success: false,
                     stdout: stdout.trim(),
@@ -874,6 +933,7 @@ ${commandHint}`;
                     error: errorMessage,
                     executionTime,
                     startedAt,
+                    logId,
                     searchMetadata: fallbackReason
                         ? buildExecuteSearchMetadata({
                             originalCommand: command,
@@ -891,6 +951,7 @@ ${commandHint}`;
                     status: "error",
                     executionTime,
                     error: errorMessage,
+                    logId,
                     message: failedMessage,
                 });
 
@@ -932,6 +993,8 @@ ${commandHint}`;
             const { fallbackReason, retried } = checkRtkRetry({ error: errorMessage, wrappedByRTK: wrapped.usingRTK });
             if (retried) return;
 
+            const logId = errorMessage ? saveTerminalLog("", errorMessage) : undefined;
+
             const failedResult: ExecuteResult = {
                 success: false,
                 stdout: "",
@@ -941,6 +1004,7 @@ ${commandHint}`;
                 error: errorMessage,
                 executionTime,
                 startedAt,
+                logId,
                 searchMetadata: fallbackReason
                     ? buildExecuteSearchMetadata({
                         originalCommand: command,
@@ -956,6 +1020,7 @@ ${commandHint}`;
                 status: "error",
                 executionTime,
                 error: errorMessage,
+                logId,
                 message: failedMessage,
             });
 
@@ -984,6 +1049,8 @@ export async function executeCommandWithValidation(
             reason: cwdValidation.error,
         }, { characterId: options.characterId });
 
+        const logId = cwdValidation.error ? saveTerminalLog("", cwdValidation.error) : undefined;
+
         return {
             success: false,
             stdout: "",
@@ -992,6 +1059,7 @@ export async function executeCommandWithValidation(
             signal: null,
             error: cwdValidation.error,
             executionTime: Date.now() - startTime,
+            logId,
             searchMetadata: buildExecuteSearchMetadata({
                 originalCommand: options.command,
                 finalCommand: options.command,

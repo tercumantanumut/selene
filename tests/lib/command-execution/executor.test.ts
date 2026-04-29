@@ -334,6 +334,49 @@ describe("Background process management", () => {
         expect(getBackgroundProcess(processId)).toBeNull();
     });
 
+
+
+    it("should expose metadata and log snapshots in background listings", async () => {
+        const { processId } = await startBackgroundProcess({
+            command: "node",
+            args: ["-e", "console.log('metadata-log')"],
+            cwd: process.cwd(),
+            characterId: "test",
+        }, [process.cwd()]);
+
+        await waitFor(() => !getBackgroundProcess(processId)!.running);
+
+        const listed = listBackgroundProcesses().find((p) => p.id === processId);
+        expect(listed).toMatchObject({
+            id: processId,
+            running: false,
+            exitCode: 0,
+            cwd: process.cwd(),
+        });
+        expect(listed!.logId).toEqual(expect.any(String));
+        expect(listed!.startedAt).toEqual(expect.any(String));
+        expect(listed!.settledAt).toEqual(expect.any(String));
+    });
+
+    it("should keep finished long-running processes until aged from settledAt", async () => {
+        const { processId } = await startBackgroundProcess({
+            command: "node",
+            args: ["-e", "console.log('cleanup-age')"],
+            cwd: process.cwd(),
+            characterId: "test",
+        }, [process.cwd()]);
+
+        await waitFor(() => !getBackgroundProcess(processId)!.running);
+        const info = getBackgroundProcess(processId)!;
+        info.startedAt = Date.now() - 60_000;
+        info.settledAt = Date.now();
+
+        cleanupBackgroundProcesses(30_000);
+
+        expect(getBackgroundProcess(processId)).not.toBeNull();
+    });
+
+
     it("should reject blocked commands in background mode", async () => {
         const result = await startBackgroundProcess({
             command: "rm",

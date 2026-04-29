@@ -37,6 +37,18 @@ function getLogsDir(): string {
  */
 export function saveTerminalLog(stdout: string, stderr: string): string {
     const logId = nanoid();
+    return writeTerminalLog(logId, stdout, stderr);
+}
+
+/**
+ * Persist output to an existing log file, or create one for the supplied ID.
+ */
+export function updateTerminalLog(logId: string, stdout: string, stderr: string): string {
+    if (!logId) return saveTerminalLog(stdout, stderr);
+    return writeTerminalLog(logId, stdout, stderr);
+}
+
+function writeTerminalLog(logId: string, stdout: string, stderr: string): string {
     const logsDir = getLogsDir();
     const logPath = path.join(logsDir, `${logId}.log`);
 

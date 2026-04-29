@@ -13,6 +13,7 @@ import {
   setPersistedCommandCwd,
 } from "@/lib/command-execution/cwd-state";
 import { validateExecutionDirectory, validateShellCommand } from "@/lib/command-execution/validator";
+import { saveTerminalLog } from "@/lib/command-execution/log-manager";
 import { registerBackgroundTask } from "@/app/api/chat/delegation-waiting";
 import {
   handleBackgroundProcessSettled,
@@ -26,6 +27,7 @@ import type {
 
 const DEFAULT_BASH_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BASH_TIMEOUT_MS = 30 * 60 * 1000;
+const BASH_INLINE_OUTPUT_LIMIT = 2000;
 const CWD_MARKER = "__SELENE_CWD__:";
 
 const bashBackgroundCommands = new Map<string, string>();
@@ -71,6 +73,83 @@ function normalizeTimeout(timeout?: number): number {
     return DEFAULT_BASH_TIMEOUT_MS;
   }
   return Math.min(Math.floor(timeout), MAX_BASH_TIMEOUT_MS);
+}
+
+function logRetrievalGuidance(logId?: string): string {
+  return logId
+    ? ` Use executeCommand({ command: "readLog", logId: "${logId}" }) for full output.`
+    : "";
+}
+
+function formatBackgroundListMetadata(processInfo: {
+  logId?: string;
+  exitCode?: number | null;
+  startedAt?: string;
+  settledAt?: string;
+  cwd?: string;
+}): string {
+  const metadata: string[] = [];
+  if (processInfo.logId) metadata.push(`logId=${processInfo.logId}`);
+  if (processInfo.exitCode !== undefined) metadata.push(`exitCode=${processInfo.exitCode}`);
+  if (processInfo.startedAt) metadata.push(`startedAt=${processInfo.startedAt}`);
+  if (processInfo.settledAt) metadata.push(`settledAt=${processInfo.settledAt}`);
+  if (processInfo.cwd) metadata.push(`cwd=${processInfo.cwd}`);
+  return metadata.length > 0 ? ` ${metadata.join(" ")}` : "";
+}
+
+function compactInlineOutput(value: string | undefined, logId?: string): { output?: string; truncated: boolean } {
+  if (!value || value.length <= BASH_INLINE_OUTPUT_LIMIT) {
+    return { output: value, truncated: false };
+  }
+
+  return {
+    output: `${value.slice(0, BASH_INLINE_OUTPUT_LIMIT)}\n... [TRUNCATED ${value.length - BASH_INLINE_OUTPUT_LIMIT} CHARS] ...${logRetrievalGuidance(logId)}`,
+    truncated: true,
+  };
+}
+
+function formatBashResult(result: {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  executionTime?: number;
+  startedAt?: string;
+  error?: string;
+  logId?: string;
+  isTruncated?: boolean;
+  aborted?: boolean;
+}, cleanedStdout?: string): BashToolResult {
+  const status = result.success ? "success" : result.error?.includes("blocked") ? "blocked" : "error";
+  const fullStdout = cleanedStdout ?? result.stdout;
+  let logId = result.logId;
+  const preexistingLimitHit = result.isTruncated || result.error === "Process terminated due to timeout or output limit";
+  const needsInlineCompaction = fullStdout.length > BASH_INLINE_OUTPUT_LIMIT || result.stderr.length > BASH_INLINE_OUTPUT_LIMIT;
+
+  if (!logId && (preexistingLimitHit || needsInlineCompaction)) {
+    logId = saveTerminalLog(fullStdout, result.stderr);
+  }
+
+  const stdout = compactInlineOutput(fullStdout, logId);
+  const stderr = compactInlineOutput(result.stderr, logId);
+  const inlineTruncated = stdout.truncated || stderr.truncated;
+  const message = preexistingLimitHit || inlineTruncated
+    ? `Output exceeded inline limits.${logRetrievalGuidance(logId)}`
+    : undefined;
+
+  return {
+    status,
+    stdout: stdout.output,
+    stderr: stderr.output,
+    exitCode: result.exitCode,
+    executionTime: result.executionTime,
+    startedAt: result.startedAt,
+    error: result.error,
+    message,
+    logId,
+    isTruncated: result.isTruncated || inlineTruncated,
+    aborted: result.aborted,
+  };
 }
 
 /**
@@ -285,6 +364,11 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
 - Use \`action: "list"\` to inspect all background processes
 - For regular commands, just provide \`command\` — never set \`action\` or \`processId\`
 
+**Logs:**
+- Results may include a \`logId\` for persisted output
+- Retrieve full logs with \`executeCommand({ command: "readLog", logId: "..." })\`
+- Use \`executeCommand({ command: "readLog", logId: "...", tail: 100 })\`, \`range\`, or \`grep\` for slices
+
 **Safety:**
 - Commands still run only from synced folders/worktrees
 - Removal commands inside the shell string are blocked
@@ -331,7 +415,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           .map((processInfo) => {
             const originalCommand = bashBackgroundCommands.get(processInfo.id) || processInfo.command;
             const elapsed = Math.round(processInfo.elapsed / 1000);
-            return `[${processInfo.id}] ${processInfo.running ? "RUNNING" : "DONE"} (${elapsed}s) ${originalCommand}`;
+            return `[${processInfo.id}] ${processInfo.running ? "RUNNING" : "DONE"} (${elapsed}s) ${originalCommand}${formatBackgroundListMetadata(processInfo)}`;
           })
           .join("\n");
 
@@ -378,7 +462,8 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             stdout: cleanedStdout.stdout,
             stderr: info.stderr,
             startedAt: toIsoTimestamp(info.startedAt),
-            message: `Process '${originalCommand}' still running (${elapsed}s elapsed).`,
+            message: `Process '${originalCommand}' still running (${elapsed}s elapsed).${logRetrievalGuidance(info.logId)}`,
+            logId: info.logId,
           };
         }
 
@@ -391,7 +476,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           exitCode: info.exitCode,
           executionTime: Date.now() - info.startedAt,
           startedAt: toIsoTimestamp(info.startedAt),
-          message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.`,
+          message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.${logRetrievalGuidance(info.logId)}`,
           logId: info.logId,
         };
       }
@@ -454,20 +539,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         );
 
         return {
-          status: result.success
-            ? "success"
-            : result.error?.includes("blocked")
-              ? "blocked"
-              : "error",
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.exitCode,
-          executionTime: result.executionTime,
-          startedAt: result.startedAt,
-          error: result.error,
-          logId: result.logId,
-          isTruncated: result.isTruncated,
-          aborted: result.aborted,
+          ...formatBashResult(result),
           inlineDiff: patchHeredoc.patchText,
         };
       }
@@ -510,7 +582,8 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         return {
           status: "background_started",
           processId: backgroundResult.processId,
-          message: `Background process started. Use processId '${backgroundResult.processId}' to check status.`,
+          message: `Background process started. Use processId '${backgroundResult.processId}' to check status.${logRetrievalGuidance(backgroundResult.logId)}`,
+          logId: backgroundResult.logId,
         };
       }
 
@@ -535,22 +608,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         await setPersistedCommandCwd(sessionId, cleanedStdout.cwd);
       }
 
-      return {
-        status: result.success
-          ? "success"
-          : result.error?.includes("blocked")
-            ? "blocked"
-            : "error",
-        stdout: cleanedStdout.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        executionTime: result.executionTime,
-        startedAt: result.startedAt,
-        error: result.error,
-        logId: result.logId,
-        isTruncated: result.isTruncated,
-        aborted: result.aborted,
-      };
+      return formatBashResult(result, cleanedStdout.stdout);
     },
   });
 }

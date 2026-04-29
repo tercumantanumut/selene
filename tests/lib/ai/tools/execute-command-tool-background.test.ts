@@ -143,6 +143,7 @@ describe("process status checking", () => {
             stderr: "",
             exitCode: null,
             signal: null,
+            logId: "log-running",
         });
 
         const tool = makeTool();
@@ -154,6 +155,8 @@ describe("process status checking", () => {
         expect(result.status).toBe("running");
         expect(result.processId).toBe("bg-456");
         expect(result.stdout).toBe("installing...");
+        expect(result.logId).toBe("log-running");
+        expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-running" })');
         expect(executorMocks.markBackgroundProcessObserved).toHaveBeenCalledWith("bg-456");
     });
 
@@ -169,6 +172,7 @@ describe("process status checking", () => {
             stderr: "",
             exitCode: 0,
             signal: null,
+            logId: "log-finished",
         });
 
         const tool = makeTool();
@@ -181,6 +185,8 @@ describe("process status checking", () => {
         expect(result.processId).toBe("bg-789");
         expect(result.exitCode).toBe(0);
         expect(result.stdout).toBe("added 100 packages");
+        expect(result.logId).toBe("log-finished");
+        expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-finished" })');
     });
 
     it("should return error for a failed background process", async () => {
