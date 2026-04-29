@@ -4,19 +4,31 @@ const delegationMocks = vi.hoisted(() => ({
   getActiveDelegationsForCharacter: vi.fn(),
 }));
 
+const commandExecutionMocks = vi.hoisted(() => ({
+  getBackgroundProcess: vi.fn(),
+}));
+
 vi.mock("@/lib/ai/tools/delegate-to-subagent-tool", () => ({
   getActiveDelegationsForCharacter: delegationMocks.getActiveDelegationsForCharacter,
+}));
+
+vi.mock("@/lib/command-execution", () => ({
+  getBackgroundProcess: commandExecutionMocks.getBackgroundProcess,
 }));
 
 import {
   hasRunningDelegationsForSession,
   hasDelegationsForSession,
+  getBackgroundTasksForSession,
+  hasRunningBackgroundTasksForSession,
+  registerBackgroundTask,
   shouldStopTurn,
 } from "@/app/api/chat/delegation-waiting";
 
 describe("delegation waiting", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    commandExecutionMocks.getBackgroundProcess.mockReturnValue(null);
   });
 
   it("reports running delegations only for active entries", () => {
@@ -78,6 +90,41 @@ describe("delegation waiting", () => {
     ).toBe(false);
   });
 
+
+  it("keeps the model loop alive until a background process has been checked once", () => {
+    const processInfo = {
+      id: "bg-1",
+      command: "npm",
+      args: ["run", "dev"],
+      cwd: "/workspace",
+      startedAt: Date.now() - 1000,
+      settledAt: null,
+      running: true,
+      stdout: "Ready on http://localhost:3000",
+      stderr: "",
+      exitCode: null,
+      signal: null,
+      process: {},
+      timeoutId: null,
+    };
+    commandExecutionMocks.getBackgroundProcess.mockReturnValue(processInfo);
+
+    registerBackgroundTask("agent-init", "sess-bg", "bg-1");
+
+    expect(hasRunningBackgroundTasksForSession("agent-init", "sess-bg")).toBe(true);
+
+    processInfo.observedWhileRunning = true;
+
+    expect(hasRunningBackgroundTasksForSession("agent-init", "sess-bg")).toBe(false);
+    expect(getBackgroundTasksForSession("agent-init", "sess-bg")).toEqual([
+      expect.objectContaining({
+        processId: "bg-1",
+        command: "npm run dev",
+        running: true,
+      }),
+    ]);
+  });
+
   it("still enforces the global max step limit", () => {
     delegationMocks.getActiveDelegationsForCharacter.mockReturnValue([
       { delegationId: "del-1", running: true, completed: false },
@@ -114,6 +161,7 @@ describe("delegation waiting", () => {
       })
     ).toBe(false);
   });
+
 
   it("hasDelegationsForSession returns false for null characterId", () => {
     expect(hasDelegationsForSession(null, "sess-1")).toBe(false);

@@ -326,6 +326,7 @@ export async function buildToolsForRequest(
     ...(allTools.executeCommand && {
       executeCommand: createExecuteCommandTool({
         sessionId,
+        userId,
         characterId: characterId || null,
         onProgress: onExecuteCommandProgress,
       }),
@@ -333,6 +334,7 @@ export async function buildToolsForRequest(
     ...(allTools.bash && {
       bash: createBashTool({
         sessionId,
+        userId,
         characterId: characterId || null,
         onProgress: onExecuteCommandProgress,
       }),
@@ -680,14 +682,6 @@ export async function buildToolsForRequest(
   let webSearchDisableReason: string | null = null;
   let webSearchDisableLogged = false;
 
-  // executeCommand oversized-output loop guard
-  let consecutiveOversizedExecCommands = 0;
-  let execCommandDisabledByLoopGuard = false;
-  let execCommandDisableReason: string | null = null;
-  const EXEC_COMMAND_OVERSIZED_LIMIT = 2;
-  /** logIds from oversized results, surfaced in the disable message so the
-   *  model can retrieve slices via readLog instead of re-running commands. */
-  const oversizedExecLogIds: string[] = [];
 
   for (const [toolId, originalTool] of Object.entries(allToolsWithMCP)) {
     if (!originalTool.execute) {
@@ -714,32 +708,6 @@ export async function buildToolsForRequest(
           );
         }
 
-        // executeCommand oversized-output loop guard (pre-execution check)
-        if ((toolId === "executeCommand" || toolId === "bash") && execCommandDisabledByLoopGuard) {
-          console.warn(
-            `[CHAT API] ${toolId} disabled for remaining response (${execCommandDisableReason ?? "unknown reason"})`
-          );
-          // Build the recovery hint with the readLog escape hatch and explicit
-          // logIds so the model can retrieve slices instead of looping.
-          const logIdList = oversizedExecLogIds.length > 0
-            ? ` Previous log IDs: ${oversizedExecLogIds.join(", ")}.`
-            : "";
-          const executeCommandLoaded =
-            initialActiveTools.has("executeCommand") || discoveredTools.has("executeCommand");
-          const step0 = executeCommandLoaded
-            ? ""
-            : ` First, load executeCommand with: searchTools({ query: "select:executeCommand" }). Then, `;
-          return {
-            status: "error",
-            error:
-              `${toolId} has been temporarily disabled for this response ` +
-              `(${execCommandDisableReason}). ` +
-              `To recover without re-running:${step0} use ` +
-              `executeCommand({ command: "readLog", logId: "<id>" }) to retrieve slices ` +
-              `of the previous output.${logIdList} ` +
-              `Or, re-run with head/tail to limit output, or use a compact reporter.`,
-          };
-        }
 
         if (toolId === "webSearch") {
           const normalizedQuery = normalizeWebSearchQuery(normalizedArgs.query);
@@ -858,31 +826,6 @@ export async function buildToolsForRequest(
             consecutiveZeroResultWebSearches = 0;
           }
 
-          // Shell-command oversized-output loop guard (executeCommand + bash)
-          if (toolId === "executeCommand" || toolId === "bash") {
-            if (guardedResult.blocked) {
-              consecutiveOversizedExecCommands += 1;
-              // Collect logId from the raw result so the disable message can
-              // list explicit retrieval targets for the model.
-              const rawLogId =
-                rawResult && typeof rawResult === "object" && !Array.isArray(rawResult)
-                  ? (rawResult as Record<string, unknown>).logId
-                  : undefined;
-              if (typeof rawLogId === "string" && rawLogId.length > 0) {
-                oversizedExecLogIds.push(rawLogId);
-              }
-              if (consecutiveOversizedExecCommands >= EXEC_COMMAND_OVERSIZED_LIMIT) {
-                execCommandDisableReason =
-                  `${consecutiveOversizedExecCommands} consecutive oversized shell command results`;
-                execCommandDisabledByLoopGuard = true;
-                console.warn(
-                  `[CHAT API] ${toolId} loop guard triggered (${execCommandDisableReason})`
-                );
-              }
-            } else {
-              consecutiveOversizedExecCommands = 0;
-            }
-          }
 
           // PostToolUse: fire-and-forget
           if (hasPostHooks) {

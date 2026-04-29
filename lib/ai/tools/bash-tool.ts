@@ -362,10 +362,9 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             error: `No background process found with ID '${input.processId}'. It may have been cleaned up.`,
           };
         }
-        markBackgroundProcessObserved(input.processId);
-
         const cleanedStdout = extractCwdMarker(info.stdout);
         const elapsed = Math.round((Date.now() - info.startedAt) / 1000);
+        markBackgroundProcessObserved(input.processId);
         const originalCommand = bashBackgroundCommands.get(info.id) || info.command;
 
         if (!info.running && cleanedStdout.cwd) {

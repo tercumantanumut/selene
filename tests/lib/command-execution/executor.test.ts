@@ -28,6 +28,7 @@ const {
     executeCommand,
     startBackgroundProcess,
     getBackgroundProcess,
+    markBackgroundProcessObserved,
     killBackgroundProcess,
     listBackgroundProcesses,
     cleanupBackgroundProcesses,
@@ -216,6 +217,21 @@ describe("Background process management", () => {
         expect(info).not.toBeNull();
         expect(info!.running).toBe(true);
         expect(info!.command).toBe("node");
+    });
+
+    it("should record when a running background process has been observed", async () => {
+        const { processId } = await startBackgroundProcess({
+            command: "node",
+            args: ["-e", "setTimeout(() => console.log('alive'), 2000)"],
+            cwd: process.cwd(),
+            characterId: "test",
+        }, [process.cwd()]);
+
+        const info = markBackgroundProcessObserved(processId);
+
+        expect(info).not.toBeNull();
+        expect(info!.observedWhileRunning).toBe(true);
+        expect(info!.lastObservedAt).toEqual(expect.any(Number));
     });
 
     it("should capture stdout from background process after completion", async () => {

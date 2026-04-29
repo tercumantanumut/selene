@@ -517,8 +517,8 @@ The tool returns immediately with a processId. Poll with processId to check stat
                         error: `No background process found with ID '${processId}'. It may have been cleaned up.`,
                     };
                 }
-                markBackgroundProcessObserved(processId);
                 const elapsed = Math.round((Date.now() - info.startedAt) / 1000);
+                markBackgroundProcessObserved(processId);
                 if (info.running) {
                     return {
                         status: "running",
