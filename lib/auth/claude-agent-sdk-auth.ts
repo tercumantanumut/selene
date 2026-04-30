@@ -2,10 +2,10 @@ import path from "path";
 import { execFile } from "child_process";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
+import { query as claudeAgentQuery } from "@anthropic-ai/claude-agent-sdk";
 import { isElectronProduction } from "@/lib/utils/environment";
 import { getNodeBinary, getCliPath } from "@/lib/auth/claude-login-process";
 import { buildEnvironmentForTarget } from "@/lib/process-env/policy";
-import { loadClaudeAgentSdkRuntime } from "@/lib/ai/providers/claude-agent-sdk-runtime";
 
 const DEFAULT_CLAUDE_AGENT_MODEL = "claude-sonnet-4-5-20250929";
 
@@ -232,7 +232,6 @@ async function readClaudeAgentSdkAuthStatusOnce(
   } | null = null;
 
   const { executable, env } = getSdkExecutableConfig();
-  const { query: claudeAgentQuery } = await loadClaudeAgentSdkRuntime();
 
   const sdkQuery = claudeAgentQuery({
     prompt: "Reply with OK.",
@@ -433,7 +432,6 @@ export async function attemptClaudeAgentSdkLogout(timeoutMs = 20_000): Promise<b
   const timeout = setTimeout(() => abortController.abort(), timeoutMs);
 
   const { executable, env } = getSdkExecutableConfig();
-  const { query: claudeAgentQuery } = await loadClaudeAgentSdkRuntime();
 
   const sdkQuery = claudeAgentQuery({
     prompt: "/logout",
