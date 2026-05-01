@@ -225,6 +225,7 @@ export async function POST(req: Request) {
       }
     }
 
+    const isDelegationAutoResume = req.headers.get("X-Delegation-Auto-Resume") === "true";
     const body = await req.json();
     const { messages, sessionId: bodySessionId } = body as {
       messages: Array<{
@@ -277,7 +278,7 @@ export async function POST(req: Request) {
         ? rawDesignPreviewTheme
         : undefined;
 
-    console.debug(`[CHAT API] Session ID: header=${headerSessionId}, body=${bodySessionId}, using=${providedSessionId}, characterId=${characterId}, source=${taskSource || "chat"}`);
+    console.debug(`[CHAT API] Session ID: header=${headerSessionId}, body=${bodySessionId}, using=${providedSessionId}, characterId=${characterId}, source=${taskSource || (isDelegationAutoResume ? "delegation-auto-resume" : "chat")}`);
 
     const lastMsg = messages[messages.length - 1];
     console.debug(`[CHAT API] Last message: role=${lastMsg?.role}, hasParts=${!!lastMsg?.parts}, partsCount=${lastMsg?.parts?.length}, hasAttachments=${!!(lastMsg as any)?.experimental_attachments}`);
@@ -480,7 +481,12 @@ export async function POST(req: Request) {
       userId: dbUser.id,
       pipelineName: "chat",
       triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : "chat",
-      metadata: { characterId: resolvedCharacterId || null, messageCount: messages.length, taskSource: taskSource || "chat" },
+      metadata: {
+        characterId: resolvedCharacterId || null,
+        messageCount: messages.length,
+        taskSource: taskSource || (isDelegationAutoResume ? "delegation-auto-resume" : "chat"),
+        ...(isDelegationAutoResume ? { delegationAutoResume: true } : {}),
+      },
     });
     const chatAbortController = new AbortController();
     registerChatAbortController(agentRun.id, chatAbortController);
@@ -501,10 +507,11 @@ export async function POST(req: Request) {
       pipelineName: "chat",
       triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : isDelegation ? "delegation" : "chat",
       messageCount: messages.length,
-      metadata: isScheduledRun || isChannelSource || isDelegation
+      metadata: isScheduledRun || isChannelSource || isDelegation || isDelegationAutoResume
         ? {
             ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
             ...(isChannelSource ? { suppressFromUI: true, taskSource: "channel" } : {}),
+            ...(isDelegationAutoResume ? { delegationAutoResume: true, taskSource: "delegation-auto-resume" } : {}),
             ...(isDelegation ? {
               isDelegation: true,
               parentAgentId: sessionMetadata.parentAgentId,
@@ -533,7 +540,7 @@ export async function POST(req: Request) {
     // maxKeptPosition in deleteMessagesNotIn — which would prevent deletion of
     // the old messages between the edit point and the new message.
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!isNewSession && !isScheduledRun) {
+    if (!isNewSession && !isScheduledRun && !isDelegationAutoResume) {
       const frontendIds = new Set(
         messages
           .filter(m => m.id && uuidRegex.test(m.id))
@@ -556,7 +563,7 @@ export async function POST(req: Request) {
     let persistedUserMessageId: string | undefined;
     const userMessageCount = messages.filter((msg) => msg.role === "user").length;
 
-    if (!isScheduledRun && lastMessage && lastMessage.role === 'user') {
+    if (!isScheduledRun && !isDelegationAutoResume && lastMessage && lastMessage.role === 'user') {
       // Strip [PASTE_CONTENT:N:M]...[/PASTE_CONTENT:N] delimiter tags but keep the pasted content.
       // This ensures full content is preserved in DB for reload, without tag clutter in the UI.
       const messageForDB = stripPasteDelimitersFromMessage(lastMessage);

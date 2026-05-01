@@ -1413,11 +1413,20 @@ export const ChatProvider: FC<ChatProviderProps> = ({
         }
 
         if (typeof input === "string" && input === "/api/chat") {
+          const requestHeaders = new Headers(mergedInit?.headers);
+          const isDelegationAutoResume = requestHeaders.get("X-Delegation-Auto-Resume") === "true";
+
+          if (isDelegationAutoResume) {
+            requestHeaders.set("X-Delegation-Auto-Resume", "true");
+            requestHeaders.set("X-Task-Source", "delegation-auto-resume");
+            mergedInit = { ...(mergedInit ?? {}), headers: requestHeaders };
+          }
+
           const preflightResponse = await fetch("/api/chat/preflight", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              ...(mergedInit?.headers ? Object.fromEntries(new Headers(mergedInit.headers).entries()) : {}),
+              ...Object.fromEntries(requestHeaders.entries()),
             },
             body: mergedInit?.body,
             signal: mergedInit?.signal,
@@ -1491,6 +1500,8 @@ export const ChatProvider: FC<ChatProviderProps> = ({
   const chatStatusRef = useRef("ready");
   const autoRetryAttemptRef = useRef(0);
   const autoRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const delegationAutoResumeInFlightRef = useRef(false);
+  const delegationAutoResumeQueuedRef = useRef(false);
   const lastTrackedUserMessageIdRef = useRef<string | undefined>(undefined);
   const MAX_CLIENT_AUTO_RETRIES = 2;
   const recoverRetryStateRef = useRef<() => void>(() => {});
@@ -1599,13 +1610,17 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     chat.clearError();
   }, [chat]);
 
-  const submitRetryMessage = useCallback(async (reason: string, retryMessage = buildRetryMessage(chat.messages)) => {
+  const submitRetryMessage = useCallback(async (
+    reason: string,
+    retryMessage = buildRetryMessage(chat.messages),
+    headers?: Record<string, string>,
+  ) => {
     if (!retryMessage) {
       return false;
     }
 
     try {
-      await chat.sendMessage(retryMessage);
+      await chat.sendMessage(retryMessage, headers ? { headers } : undefined);
       return true;
     } catch (retryError) {
       const normalizedError = toError(retryError);
@@ -1774,8 +1789,68 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     lastStreamingRef.current = Date.now();
   }
 
-  // Delegation results are now auto-delivered by blocking in prepareStep —
-  // no SSE auto-resume needed. The turn stays alive while subagents run.
+  const startDelegationAutoResume = useCallback(async () => {
+    if (delegationAutoResumeInFlightRef.current) {
+      delegationAutoResumeQueuedRef.current = true;
+      return;
+    }
+
+    delegationAutoResumeInFlightRef.current = true;
+    try {
+      do {
+        delegationAutoResumeQueuedRef.current = false;
+        const submitted = await submitRetryMessage("delegation-completion", undefined, {
+          "X-Delegation-Auto-Resume": "true",
+          "X-Task-Source": "delegation-auto-resume",
+        });
+        if (!submitted) {
+          break;
+        }
+      } while (delegationAutoResumeQueuedRef.current && chatStatusRef.current !== "streaming" && chatStatusRef.current !== "submitted");
+    } finally {
+      delegationAutoResumeInFlightRef.current = false;
+    }
+  }, [submitRetryMessage]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const handleDelegationCompleted = () => {
+      if (chatStatusRef.current === "streaming" || chatStatusRef.current === "submitted") {
+        delegationAutoResumeQueuedRef.current = true;
+        return;
+      }
+      void startDelegationAutoResume();
+    };
+
+    let cancelled = false;
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-completions`, { method: "GET" })
+      .then((response) => response.ok ? response.json() as Promise<{ hasPending?: boolean }> : null)
+      .then((data) => {
+        if (!cancelled && data?.hasPending) {
+          handleDelegationCompleted();
+        }
+      })
+      .catch(() => {});
+
+    if (typeof EventSource === "undefined") {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-events`);
+    eventSource.addEventListener("delegation-completed", handleDelegationCompleted);
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+
+    return () => {
+      cancelled = true;
+      eventSource.removeEventListener("delegation-completed", handleDelegationCompleted);
+      eventSource.close();
+    };
+  }, [sessionId, startDelegationAutoResume]);
 
   return (
     <ChatErrorBoundary
