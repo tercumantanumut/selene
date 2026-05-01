@@ -22,8 +22,8 @@
  *     identically to how the host project itself reads them.
  */
 
-import { existsSync, statSync } from "fs";
-import { dirname, isAbsolute, normalize, resolve, sep } from "path";
+import { existsSync, readFileSync, statSync } from "fs";
+import { dirname, extname, isAbsolute, normalize, resolve, sep } from "path";
 import * as esbuild from "esbuild";
 import ts from "typescript";
 
@@ -217,6 +217,10 @@ function tryResolveCandidate(candidate: string): string | null {
  * package imports (`react`, `framer-motion`) fall through to esbuild's
  * default resolver.
  *
+ * Matched aliases are loaded through a plugin namespace so relative imports
+ * inside aliased project files keep resolving from the original synced project
+ * location rather than the preview virtual-module directory.
+ *
  * When a pattern matches but no candidate file exists on disk, the
  * plugin returns `null` so esbuild emits its usual "Could not resolve"
  * error. Silently swallowing the failure would mask typos in the user's
@@ -254,13 +258,30 @@ export function createTsconfigPathsPlugin(
               ? concrete
               : resolve(config.baseUrl, concrete);
             const found = tryResolveCandidate(absolute);
-            if (found) return { path: found };
+            if (found) {
+              return { path: found, namespace: "selene-tsconfig-paths" };
+            }
           }
           // Pattern matched but no candidate file existed — let esbuild
           // surface its own "Could not resolve" error for visibility.
           return null;
         }
         return null;
+      });
+
+      build.onLoad({ filter: /.*/, namespace: "selene-tsconfig-paths" }, (args) => {
+        const extension = extname(args.path).toLowerCase();
+        const loader: esbuild.Loader =
+          extension === ".tsx" ? "tsx" :
+          extension === ".jsx" ? "jsx" :
+          extension === ".json" ? "json" :
+          extension === ".js" || extension === ".mjs" || extension === ".cjs" ? "js" :
+          "ts";
+        return {
+          contents: readFileSync(args.path, "utf8"),
+          loader,
+          resolveDir: dirname(args.path),
+        };
       });
     },
   };

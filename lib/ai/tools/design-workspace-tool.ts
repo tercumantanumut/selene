@@ -93,8 +93,13 @@ import {
   type ScreenshotViewport,
 } from "../../design/workspace/screenshot";
 import type { DesignPreviewTheme } from "../../design/workspace/types";
+import {
+  findOwningSyncedFolder,
+  loadTsconfigPaths,
+  type TsconfigPathsConfig,
+} from "../../design/workspace/tsconfig-paths";
 // Direct source imports (no barrel) per W2.2 hard constraint.
-import { resolveSyncedPath } from "../filesystem/path-utils";
+import { resolveSyncedPath, resolveWorkspaceAwarePaths } from "../filesystem/path-utils";
 import { atomicWriteFile } from "../filesystem/write-utils";
 import {
   readSyncedFile,
@@ -1773,6 +1778,8 @@ async function compilePreviewForTool(
      *  `<Component />`. Validation (cap + plain-object `props`) happens at
      *  the tool boundary BEFORE this call. */
     renderMany?: readonly RenderManyCell[];
+    /** Project-local TS path aliases loaded by the import action. */
+    tsconfigPaths?: TsconfigPathsConfig;
     /**
      * Sprint 1 theme-threading regression fix (Sprint 3 Rev-F1).
      *
@@ -1804,6 +1811,7 @@ async function compilePreviewForTool(
       designImportChainSeed: options.designImportChainSeed,
       referenceImageUrl: options.referenceImageUrl,
       renderMany: options.renderMany,
+      tsconfigPaths: options.tsconfigPaths,
       // Sprint 3 Rev-F1: forward the effective theme so the preview HTML
       // matches the user's active workspace theme. Callers layer the
       // LLM's `input.previewTheme` over `options.defaultPreviewTheme` so
@@ -4706,7 +4714,9 @@ async function handleImport(
   let code: string;
   let resolvedSourcePath: string;
   let sourceBytes: number;
+  let syncedFolders: string[] = [];
   try {
+    syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
     const readResult = await readSyncedFile({
       characterId,
       sessionId,
@@ -4800,6 +4810,11 @@ async function handleImport(
     };
   }
 
+  const owningSyncedFolder = findOwningSyncedFolder(resolvedSourcePath, syncedFolders);
+  const tsconfigPaths = owningSyncedFolder
+    ? loadTsconfigPaths(owningSyncedFolder)
+    : null;
+
   // --- 4. Compile through the same pipeline `generate` uses. ---------------
   const componentName = deriveImportedComponentName(sourcePath);
   const previewResult = await compilePreviewForTool(
@@ -4810,6 +4825,7 @@ async function handleImport(
       globalsCssPath: input.globalsCssPath,
       characterId,
       sessionId,
+      tsconfigPaths: tsconfigPaths ?? undefined,
     },
   );
 

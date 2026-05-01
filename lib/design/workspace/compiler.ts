@@ -432,12 +432,249 @@ const PREVIEW_THEME_CSS = [
 
 const PROJECT_ROOT = getProjectRoot();
 const TAILWIND_INPUT_PATH = resolve(PROJECT_ROOT, "lib/design/workspace/preview.tailwind.css");
+const NEXT_PREVIEW_NAMESPACE = "selene-next-preview-stub";
 const PREVIEW_TAILWIND_SOURCE = [
   "@tailwind base;",
   "@tailwind components;",
   "@tailwind utilities;",
   "",
 ].join("\n");
+
+const NEXT_NAVIGATION_STUB_SOURCE = `
+import React from "react";
+
+const readPathname = () => {
+  if (typeof window === "undefined") return "/";
+  return window.location?.pathname || "/";
+};
+
+const readSearchParams = () => {
+  if (typeof window === "undefined") return new URLSearchParams();
+  return new URLSearchParams(window.location?.search || "");
+};
+
+export function useRouter() {
+  return {
+    back() { window.history.back(); },
+    forward() { window.history.forward(); },
+    refresh() {},
+    push(href) { window.history.pushState(null, "", href); window.dispatchEvent(new Event("popstate")); },
+    replace(href) { window.history.replaceState(null, "", href); window.dispatchEvent(new Event("popstate")); },
+    prefetch() {},
+  };
+}
+
+export function usePathname() {
+  return readPathname();
+}
+
+export function useSearchParams() {
+  return readSearchParams();
+}
+
+export function useParams() {
+  return {};
+}
+
+export function useSelectedLayoutSegment() {
+  return null;
+}
+
+export function useSelectedLayoutSegments() {
+  return [];
+}
+
+export function redirect(url) {
+  if (typeof window !== "undefined") window.location.assign(url);
+}
+
+export function permanentRedirect(url) {
+  redirect(url);
+}
+
+export function notFound() {
+  throw new Error("next/navigation notFound() is not available in the design preview.");
+}
+
+export const RedirectType = { push: "push", replace: "replace" };
+export const ReadonlyURLSearchParams = URLSearchParams;
+export default { useRouter, usePathname, useSearchParams, useParams };
+`;
+
+const NEXT_LINK_STUB_SOURCE = `
+import React from "react";
+
+export default React.forwardRef(function Link(props, ref) {
+  const { href, as, replace, scroll, shallow, prefetch, locale, legacyBehavior, passHref, children, ...rest } = props;
+  const resolvedHref = typeof href === "string" ? href : (href && href.pathname) || "#";
+  return React.createElement("a", { ...rest, ref, href: resolvedHref }, children);
+});
+`;
+
+const NEXT_HEAD_STUB_SOURCE = `
+import React from "react";
+
+export default function Head(props) {
+  return React.createElement(React.Fragment, null, props.children || null);
+}
+`;
+
+const NEXT_IMAGE_STUB_SOURCE = `
+import React from "react";
+
+export default React.forwardRef(function Image(props, ref) {
+  const { src, alt, width, height, fill, loader, quality, priority, placeholder, blurDataURL, unoptimized, sizes, ...rest } = props;
+  const resolvedSrc = typeof src === "string" ? src : (src && src.src) || "";
+  return React.createElement("img", { ...rest, ref, src: resolvedSrc, alt: alt || "", width: fill ? undefined : width, height: fill ? undefined : height, sizes });
+});
+`;
+
+const NEXT_FONT_STUB_SOURCE = `
+const createFont = () => ({ className: "", style: {}, variable: "" });
+const fontProxy = new Proxy(createFont, {
+  get(target, prop) {
+    if (prop === "default") return target;
+    if (prop === "__esModule") return true;
+    return target;
+  },
+});
+module.exports = fontProxy;
+`;
+
+const NEXT_DYNAMIC_STUB_SOURCE = `
+import React from "react";
+
+export default function dynamic(loaderOrComponent) {
+  if (typeof loaderOrComponent === "function") {
+    return function DynamicPreviewStub(props) {
+      return React.createElement(React.Fragment, null);
+    };
+  }
+  return function DynamicPreviewStub() {
+    return React.createElement(React.Fragment, null);
+  };
+}
+`;
+
+const NEXT_SCRIPT_STUB_SOURCE = `
+import React from "react";
+
+export default function Script(props) {
+  const { strategy, onLoad, onReady, onError, children, ...rest } = props;
+  return React.createElement("script", rest, children || null);
+}
+`;
+
+const NEXT_ROUTER_STUB_SOURCE = `
+function noop() {}
+
+export function useRouter() {
+  const pathname = typeof window === "undefined" ? "/" : window.location?.pathname || "/";
+  return {
+    pathname,
+    route: pathname,
+    query: {},
+    asPath: pathname,
+    basePath: "",
+    locale: undefined,
+    locales: undefined,
+    defaultLocale: undefined,
+    isReady: true,
+    isFallback: false,
+    isPreview: false,
+    back() { window.history.back(); },
+    forward() { window.history.forward(); },
+    reload() { window.location.reload(); },
+    push(href) { window.history.pushState(null, "", href); return Promise.resolve(true); },
+    replace(href) { window.history.replaceState(null, "", href); return Promise.resolve(true); },
+    prefetch() { return Promise.resolve(); },
+    beforePopState: noop,
+    events: { on: noop, off: noop, emit: noop },
+  };
+}
+
+export default { router: null, ready(callback) { if (typeof callback === "function") callback(); }, events: { on: noop, off: noop, emit: noop } };
+`;
+
+const NEXT_GENERIC_STUB_SOURCE = `
+const noop = () => undefined;
+const passthrough = (value) => value;
+const headers = () => new Headers();
+const cookies = () => ({ get: () => undefined, getAll: () => [], has: () => false });
+const draftMode = () => ({ isEnabled: false, enable: noop, disable: noop });
+const userAgent = () => ({});
+const NextResponse = { next: () => ({}), json: (body) => body, redirect: (url) => url };
+
+const generic = new Proxy(noop, {
+  get(_target, prop) {
+    if (prop === "default") return generic;
+    if (prop === "__esModule") return true;
+    if (prop === "headers") return headers;
+    if (prop === "cookies") return cookies;
+    if (prop === "draftMode") return draftMode;
+    if (prop === "userAgent") return userAgent;
+    if (prop === "NextResponse") return NextResponse;
+    if (prop === "ImageResponse") return function ImageResponse() {};
+    if (prop === "NextRequest") return function NextRequest() {};
+    if (prop === "NextFetchEvent") return function NextFetchEvent() {};
+    return noop;
+  },
+  apply(_target, _thisArg, args) {
+    return args.length === 1 ? passthrough(args[0]) : undefined;
+  },
+});
+
+module.exports = generic;
+`;
+
+function getNextPreviewStub(specifier: string): { source: string; loader: esbuild.Loader } {
+  if (specifier === "next/navigation") {
+    return { source: NEXT_NAVIGATION_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/router") {
+    return { source: NEXT_ROUTER_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/link") {
+    return { source: NEXT_LINK_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/head") {
+    return { source: NEXT_HEAD_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/image") {
+    return { source: NEXT_IMAGE_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/dynamic") {
+    return { source: NEXT_DYNAMIC_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/script") {
+    return { source: NEXT_SCRIPT_STUB_SOURCE, loader: "tsx" };
+  }
+  if (specifier === "next/font" || specifier.startsWith("next/font/")) {
+    return { source: NEXT_FONT_STUB_SOURCE, loader: "js" };
+  }
+  return { source: NEXT_GENERIC_STUB_SOURCE, loader: "js" };
+}
+
+function createNextPreviewStubsPlugin(): esbuild.Plugin {
+  return {
+    name: "selene-next-preview-stubs",
+    setup(build) {
+      build.onResolve({ filter: /^next(?:\/.*)?$/ }, (args) => ({
+        path: args.path,
+        namespace: NEXT_PREVIEW_NAMESPACE,
+      }));
+
+      build.onLoad({ filter: /.*/, namespace: NEXT_PREVIEW_NAMESPACE }, (args) => {
+        const stub = getNextPreviewStub(args.path);
+        return {
+          contents: stub.source,
+          loader: stub.loader,
+          resolveDir: PROJECT_ROOT,
+        };
+      });
+    },
+  };
+}
 
 /**
  * Per-compile alias map for the W2.3 asset-ref rewrite step.
@@ -1330,6 +1567,7 @@ async function compileReactComponent(
     const plugins: esbuild.Plugin[] = [
       createExternalUrlPlugin(),
       createComponentPlugin(componentCode),
+      createNextPreviewStubsPlugin(),
     ];
     if (tsconfigPaths) {
       plugins.push(createTsconfigPathsPlugin(tsconfigPaths));

@@ -303,6 +303,81 @@ export default function Card() {
     expect(html).toContain("filter(Boolean)");
   }, 30_000);
 
+  it("compiles @/* imports with transitive relative project imports", async () => {
+    writeFileSync(
+      join(workdir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "@/*": ["./*"] } } }),
+      "utf8",
+    );
+    mkdirSync(join(workdir, "lib"), { recursive: true });
+    writeFileSync(
+      join(workdir, "lib", "tokens.ts"),
+      `export const token = "transitive-relative-marker";`,
+      "utf8",
+    );
+    writeFileSync(
+      join(workdir, "lib", "utils.ts"),
+      `import { token } from "./tokens";
+       export const cn = (...parts: Array<string | false | null | undefined>) =>
+         [token, ...parts].filter(Boolean).join(" ");`,
+      "utf8",
+    );
+
+    const componentSource = `
+import React from "react";
+import { cn } from "@/lib/utils";
+
+export default function Card() {
+  return <div className={cn("p-4")}>alias-relative-import-marker</div>;
+}
+`;
+
+    const tsconfigPaths = loadTsconfigPaths(workdir);
+    expect(tsconfigPaths).not.toBeNull();
+
+    const { html, report } = await buildTailwindPreviewWithMetadata(
+      componentSource,
+      "Card",
+      { tsconfigPaths: tsconfigPaths!, autoInstallMissingDependencies: false },
+    );
+
+    expect(report.errors).toEqual([]);
+    expect(html).toContain("alias-relative-import-marker");
+    expect(html).toContain("transitive-relative-marker");
+  }, 30_000);
+
+  it("compiles common Next.js imports through preview stubs", async () => {
+    const componentSource = `
+import React from "react";
+import Link from "next/link";
+import Image from "next/image";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+
+export default function Card() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  return (
+    <Link href="/preview" onClick={() => router.prefetch("/preview")}>
+      <Image src="/icon.png" alt="icon" width={16} height={16} />
+      <span>next-preview-stub-marker {pathname} {params.get("q") || "none"}</span>
+    </Link>
+  );
+}
+`;
+
+    const { html, report } = await buildTailwindPreviewWithMetadata(
+      componentSource,
+      "Card",
+      { autoInstallMissingDependencies: false },
+    );
+
+    expect(report.errors).toEqual([]);
+    expect(html).toContain("next-preview-stub-marker");
+    expect(html).toContain('createElement("a"');
+    expect(html).toContain('createElement("img"');
+  }, 30_000);
+
   it("surfaces a real compile-report error when the alias target file is missing", async () => {
     writeFileSync(
       join(workdir, "tsconfig.json"),
