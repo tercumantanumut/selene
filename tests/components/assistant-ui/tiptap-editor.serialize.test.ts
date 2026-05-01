@@ -159,7 +159,12 @@ describe("serializeDocToContentArray", () => {
 
     expect(serializeDocToContentArray(doc)).toEqual([
       { type: "text", text: "**hello**" },
-      { type: "image", image: "https://example.com/a.png" },
+      {
+        type: "image",
+        id: "editor-inline-image-1",
+        image: "https://example.com/a.png",
+        displayName: "[Image 1]",
+      },
       { type: "text", text: "*after*" },
     ]);
   });

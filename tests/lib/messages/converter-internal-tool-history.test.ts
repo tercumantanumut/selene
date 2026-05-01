@@ -218,6 +218,88 @@ describe("converter internal tool history guard", () => {
     ]);
   });
 
+  it("preserves inline image identity while keeping attachment previews separate", () => {
+    const now = new Date().toISOString();
+
+    const uiMessages = convertDBMessagesToUIMessages([
+      {
+        id: "u-inline-images",
+        role: "user",
+        content: [
+          { type: "text", text: "intro" },
+          {
+            type: "image",
+            id: "editor-inline-image-1",
+            image: "/api/media/sessions/sess-1/uploads/hero.png",
+            displayName: "[Image 1]",
+            mediaType: "image/png",
+            inline: true,
+            order: 1,
+          },
+          { type: "text", text: "middle" },
+          {
+            type: "image",
+            id: "editor-inline-image-2",
+            image: "/api/media/sessions/sess-1/uploads/detail.jpg",
+            displayName: "[Image 2]",
+            mediaType: "image/jpeg",
+            inline: true,
+            order: 2,
+          },
+          { type: "text", text: "outro" },
+        ],
+        metadata: {
+          custom: {
+            inlineAttachments: [
+              {
+                id: "editor-inline-image-1",
+                name: "[Image 1]",
+                contentType: "image/png",
+                url: "/api/media/sessions/sess-1/uploads/hero.png",
+                inline: true,
+                order: 1,
+                kind: "inline-image",
+              },
+              {
+                id: "editor-inline-image-2",
+                name: "[Image 2]",
+                contentType: "image/jpeg",
+                url: "/api/media/sessions/sess-1/uploads/detail.jpg",
+                inline: true,
+                order: 2,
+                kind: "inline-image",
+              },
+            ],
+          },
+        },
+        createdAt: now,
+        orderingIndex: 1,
+      },
+    ] as any);
+
+    expect(uiMessages[0]?.parts).toEqual([
+      { type: "text", text: "intro" },
+      {
+        type: "file",
+        id: "editor-inline-image-1",
+        mediaType: "image/png",
+        url: "/api/media/sessions/sess-1/uploads/hero.png",
+        filename: "[Image 1]",
+      },
+      { type: "text", text: "middle" },
+      {
+        type: "file",
+        id: "editor-inline-image-2",
+        mediaType: "image/jpeg",
+        url: "/api/media/sessions/sess-1/uploads/detail.jpg",
+        filename: "[Image 2]",
+      },
+      { type: "text", text: "outro" },
+    ]);
+    expect((uiMessages[0]?.metadata as any)?.custom?.attachments).toBeUndefined();
+    expect((uiMessages[0]?.metadata as any)?.custom?.inlineAttachments).toHaveLength(2);
+  });
+
   it("hides leaked assistant planning prose while preserving tool parts", () => {
     const leakedPlanningText =
       "I need continue with actual tools available names. Only commentary tools under functions.* not tool. Need sequential edits. Must read current files before edit. Need use editFile and run tests. Let's implement carefully. Need add setting to app/settings/settings-types FormState.";

@@ -15,9 +15,13 @@ interface DBTextContentPart extends ContextProvenance {
 
 interface DBImageContentPart extends ContextProvenance {
   type: "image";
+  id?: string;
   image: string;
+  displayName?: string;
   filename?: string;
   mediaType?: string;
+  inline?: boolean;
+  order?: number;
 }
 
 interface DBFileContentPart extends ContextProvenance {
@@ -206,9 +210,13 @@ interface BuildUIPartsOptions {
 }
 
 type PersistedAttachmentMetadata = {
+  id?: string;
   name?: string;
   contentType?: string;
   url?: string;
+  inline?: boolean;
+  order?: number;
+  kind?: string;
 };
 
 function collectAttachmentMetadataFromContent(content: DBContentPart[]): PersistedAttachmentMetadata[] {
@@ -217,6 +225,9 @@ function collectAttachmentMetadataFromContent(content: DBContentPart[]): Persist
 
   for (const part of content) {
     if (part.type !== "image" && part.type !== "file") {
+      continue;
+    }
+    if (part.type === "image" && part.inline === true) {
       continue;
     }
 
@@ -228,8 +239,12 @@ function collectAttachmentMetadataFromContent(content: DBContentPart[]): Persist
     seen.add(url);
     attachments.push({
       url,
-      name: part.filename,
+      id: part.type === "image" ? part.id : undefined,
+      name: part.type === "image" ? part.displayName ?? part.filename : part.filename,
       contentType: part.mediaType,
+      ...(part.type === "image" && part.inline ? { inline: true } : {}),
+      ...(part.type === "image" && typeof part.order === "number" ? { order: part.order } : {}),
+      ...(part.type === "image" && part.inline ? { kind: "inline-image" } : {}),
     });
   }
 
@@ -300,7 +315,8 @@ function buildUIPartsFromDBContent(
         type: "file",
         mediaType: part.mediaType || "image/jpeg",
         url: part.image,
-        ...(part.filename ? { filename: part.filename } : {}),
+        ...(part.id ? { id: part.id } : {}),
+        ...(part.displayName || part.filename ? { filename: part.displayName || part.filename } : {}),
       });
     } else if (part.type === "file" && part.url) {
       parts.push({
@@ -461,6 +477,9 @@ function buildMessageCustomMetadata(
   }
   if (dbMeta?.custom?.designContext) {
     customMetadata.designContext = dbMeta.custom.designContext;
+  }
+  if (Array.isArray(dbMeta?.custom?.inlineAttachments) && dbMeta.custom.inlineAttachments.length > 0) {
+    customMetadata.inlineAttachments = dbMeta.custom.inlineAttachments;
   }
 
   const existingAttachments = Array.isArray(dbMeta?.custom?.attachments)

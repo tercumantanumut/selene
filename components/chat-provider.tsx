@@ -423,12 +423,16 @@ const loggedSanitizerToolCallIds = new Set<string>();
 const DEBUG_CHAT = process.env.NEXT_PUBLIC_DEBUG_CHAT === "true";
 
 type AttachmentMetadata = {
+  id?: string;
+  name?: string;
   url?: string;
   localPath?: string;
   filePath?: string;
   contentType?: string;
   size?: number;
   kind?: string;
+  inline?: boolean;
+  order?: number;
 };
 
 interface InspectContextMetadata {
@@ -487,6 +491,44 @@ type CustomToCreateMessageFunction = <UI_MESSAGE extends UIMessage = UIMessage>(
   message: AppendMessage,
 ) => CreateUIMessage<UI_MESSAGE>;
 
+function createInlineAttachmentMetadata(part: {
+  type?: string;
+  id?: string;
+  image?: string;
+  displayName?: string;
+  contentType?: string;
+  localPath?: string;
+  filePath?: string;
+  size?: number;
+}, index: number): AttachmentMetadata | null {
+  if (
+    part.type !== "image" ||
+    typeof part.image !== "string" ||
+    part.image.length === 0 ||
+    typeof part.id !== "string" ||
+    !part.id.startsWith("editor-inline-image-")
+  ) {
+    return null;
+  }
+
+  const order = index + 1;
+  return {
+    id: part.id,
+    name:
+      typeof part.displayName === "string" && part.displayName.length > 0
+        ? part.displayName
+        : `[Image ${order}]`,
+    contentType: part.contentType || "image/png",
+    url: part.image,
+    localPath: part.localPath,
+    filePath: part.filePath,
+    size: part.size,
+    kind: "inline-image",
+    inline: true,
+    order,
+  };
+}
+
 export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunction = <
   UI_MESSAGE extends UIMessage = UIMessage,
 >(message: AppendMessage): CreateUIMessage<UI_MESSAGE> => {
@@ -510,6 +552,7 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
     });
   }
 
+  let inlineImageIndex = 0;
   const rawInputParts = [
     ...message.content.filter((part) => part.type !== "file"),
     ...(message.attachments?.flatMap((attachment) =>
@@ -548,12 +591,16 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
         return { type: "text" as const, text: part.text };
       case "image":
         {
+          const inlineAttachment = createInlineAttachmentMetadata(part, inlineImageIndex++);
           const attachmentDetails = attachmentDetailsByUrl.get(part.image);
         return {
           type: "file" as const,
           url: part.image,
-          ...((part.filename || attachmentDetails?.filename) && {
-            filename: part.filename || attachmentDetails?.filename,
+          ...(inlineAttachment?.id && {
+            id: inlineAttachment.id,
+          }),
+          ...((part.filename || inlineAttachment?.name || attachmentDetails?.filename) && {
+            filename: part.filename || inlineAttachment?.name || attachmentDetails?.filename,
           }),
           mediaType:
             ("contentType" in part && typeof part.contentType === "string"
@@ -577,6 +624,11 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
         throw new Error(`Unsupported part type: ${part.type}`);
     }
   });
+
+  inlineImageIndex = 0;
+  const inlineAttachmentMetadata = inputParts
+    .map((part) => part.type === "image" ? createInlineAttachmentMetadata(part, inlineImageIndex++) : null)
+    .filter((attachment): attachment is AttachmentMetadata => attachment !== null);
 
   const attachmentMetadata = (message.attachments ?? [])
     .map((attachment) => {
@@ -618,11 +670,12 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
     parts,
     metadata: {
       ...(message.metadata ?? {}),
-      ...((attachmentMetadata.length > 0 || inspectContext || designContext)
+      ...((attachmentMetadata.length > 0 || inlineAttachmentMetadata.length > 0 || inspectContext || designContext)
         ? {
             custom: {
               ...existingCustom,
               ...(attachmentMetadata.length > 0 ? { attachments: attachmentMetadata } : {}),
+              ...(inlineAttachmentMetadata.length > 0 ? { inlineAttachments: inlineAttachmentMetadata } : {}),
               ...(inspectContext ? { inspectContext } : {}),
               ...(designContext ? { designContext } : {}),
             },

@@ -1,6 +1,19 @@
 "use client";
 
 import type { FC } from "react";
+type RichEditorAppendPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      id?: string;
+      image: string;
+      displayName?: string;
+      contentType?: string;
+      localPath?: string;
+      filePath?: string;
+      size?: number;
+      kind?: string;
+    };
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   ComposerPrimitive,
@@ -1193,8 +1206,29 @@ export const Composer: FC<{
         return;
       }
 
+      const appendContent: RichEditorAppendPart[] = [];
+      for (const part of contentParts) {
+        if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+          appendContent.push({ type: "text", text: part.text });
+          continue;
+        }
+
+        if (part.type === "image" && typeof part.image === "string") {
+          appendContent.push({
+            type: "image",
+            id: part.id,
+            image: part.image,
+            displayName: part.displayName,
+            contentType: part.contentType,
+            localPath: part.localPath,
+            filePath: part.filePath,
+            size: part.size,
+            kind: part.kind,
+          });
+        }
+      }
+
       // Prepend screen capture context if metadata is available from a unified session
-      let finalComposerText = composerText;
       if (captureSession.isUnifiedSession && captureSession.metadata) {
         const meta = captureSession.metadata;
         const contextParts: string[] = [];
@@ -1207,31 +1241,14 @@ export const Composer: FC<{
           contextParts.push(`[URL: ${meta.browserUrl}]`);
         }
         if (contextParts.length > 0) {
-          finalComposerText = contextParts.join("\n") + "\n\n" + finalComposerText;
+          appendContent.unshift({ type: "text" as const, text: contextParts.join("\n") });
         }
       }
 
-      const inlineAttachments = inlineImageParts.map((part, index) => ({
-        id: `tiptap-inline-${Date.now()}-${index}`,
-        type: "image" as const,
-        name: `inline-image-${index + 1}`,
-        contentType: part.contentType ?? "image/*",
-        content: [{ type: "image" as const, image: part.image }],
-        status: { type: "complete" as const },
-        metadata: {
-          url: part.image,
-          localPath: part.localPath,
-          filePath: part.filePath,
-          contentType: part.contentType,
-          size: part.size,
-          kind: part.kind ?? "image",
-        },
-      }));
-
       threadRuntime.append({
         role: "user",
-        content: finalComposerText ? [{ type: "text", text: finalComposerText }] : [],
-        attachments: [...composerAttachments, ...inlineAttachments],
+        content: appendContent,
+        attachments: composerAttachments,
         metadata: buildUserMessageMetadata(designContext),
       });
 

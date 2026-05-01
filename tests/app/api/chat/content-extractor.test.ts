@@ -134,6 +134,63 @@ describe("extractContent attachment persistence", () => {
     ]);
   });
 
+  it("preserves inline image order without consuming separate attachment metadata", async () => {
+    const result = await extractContent({
+      role: "user",
+      parts: [
+        { type: "text", text: "intro" },
+        {
+          type: "file",
+          id: "editor-inline-image-1",
+          url: "/api/media/sessions/sess-1/uploads/hero.png",
+          mediaType: "image/png",
+          filename: "[Image 1]",
+        },
+        { type: "text", text: "middle" },
+        {
+          type: "file",
+          id: "editor-inline-image-2",
+          url: "/api/media/sessions/sess-1/uploads/detail.jpg",
+          mediaType: "image/jpeg",
+          filename: "[Image 2]",
+        },
+        { type: "text", text: "outro" },
+      ],
+      metadata: {
+        custom: {
+          inlineAttachments: [
+            {
+              id: "editor-inline-image-1",
+              name: "[Image 1]",
+              contentType: "image/png",
+              url: "/api/media/sessions/sess-1/uploads/hero.png",
+              inline: true,
+              order: 1,
+              kind: "inline-image",
+            },
+            {
+              id: "editor-inline-image-2",
+              name: "[Image 2]",
+              contentType: "image/jpeg",
+              url: "/api/media/sessions/sess-1/uploads/detail.jpg",
+              inline: true,
+              order: 2,
+              kind: "inline-image",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result).toEqual([
+      { type: "text", text: "intro" },
+      { type: "image", image: "/api/media/sessions/sess-1/uploads/hero.png" },
+      { type: "text", text: "middle" },
+      { type: "image", image: "/api/media/sessions/sess-1/uploads/detail.jpg" },
+      { type: "text", text: "outro" },
+    ]);
+  });
+
   it("prefers structured parts over raw string content when both are present", async () => {
     const result = await extractContent(
       {

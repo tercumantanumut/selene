@@ -63,6 +63,7 @@ type VectorMention = {
 };
 
 type AttachmentPathMetadata = {
+  id?: string;
   name?: string;
   contentType?: string;
   url?: string;
@@ -70,6 +71,8 @@ type AttachmentPathMetadata = {
   filePath?: string;
   size?: number;
   kind?: string;
+  inline?: boolean;
+  order?: number;
 };
 
 type ModelContentPart = {
@@ -107,7 +110,9 @@ type MessageInput = {
   parts?: Array<{
     type: string;
     text?: string;
+    id?: string;
     image?: string;
+    displayName?: string;
     url?: string;
     localPath?: string;
     filePath?: string;
@@ -123,6 +128,7 @@ type MessageInput = {
   metadata?: {
     custom?: {
       attachments?: AttachmentPathMetadata[];
+      inlineAttachments?: AttachmentPathMetadata[];
       inspectContext?: unknown;
       designContext?: unknown;
       vectorMentions?: VectorMention[];
@@ -218,6 +224,7 @@ function buildAttachmentLookup(msg: {
   metadata?: {
     custom?: {
       attachments?: Array<AttachmentPathMetadata>;
+      inlineAttachments?: Array<AttachmentPathMetadata>;
     };
   };
 }): Map<string, AttachmentPathMetadata> {
@@ -230,14 +237,20 @@ function buildAttachmentLookup(msg: {
     const existing = lookup.get(url);
     lookup.set(url, {
       url,
+      id: normalizeAttachmentString(existing?.id) ?? normalizeAttachmentString(attachment.id),
       name: normalizeAttachmentString(existing?.name) ?? normalizeAttachmentString(attachment.name),
       contentType: normalizeAttachmentString(existing?.contentType) ?? normalizeAttachmentString(attachment.contentType),
       filePath: normalizeAttachmentString(existing?.filePath) ?? normalizeAttachmentString(attachment.filePath),
       localPath: normalizeAttachmentString(existing?.localPath) ?? normalizeAttachmentString(attachment.localPath),
       kind: normalizeAttachmentString(existing?.kind) ?? normalizeAttachmentString(attachment.kind),
+      inline: existing?.inline === true || attachment.inline === true,
+      order: typeof existing?.order === "number" ? existing.order : attachment.order,
     });
   };
 
+  for (const attachment of msg.metadata?.custom?.inlineAttachments ?? []) {
+    register(attachment);
+  }
   for (const attachment of msg.metadata?.custom?.attachments ?? []) {
     register(attachment);
   }
@@ -256,12 +269,15 @@ function resolveAttachmentForHelper(
   const fromLookup = url ? lookup.get(url) : undefined;
 
   return {
+    id: normalizeAttachmentString(attachment.id) ?? normalizeAttachmentString(fromLookup?.id),
     name: normalizeAttachmentString(attachment.name) ?? normalizeAttachmentString(fromLookup?.name),
     contentType: normalizeAttachmentString(attachment.contentType) ?? normalizeAttachmentString(fromLookup?.contentType),
     url,
     filePath: normalizeAttachmentString(attachment.filePath) ?? normalizeAttachmentString(fromLookup?.filePath),
     localPath: normalizeAttachmentString(attachment.localPath) ?? normalizeAttachmentString(fromLookup?.localPath),
     kind: normalizeAttachmentString(attachment.kind) ?? normalizeAttachmentString(fromLookup?.kind),
+    inline: attachment.inline === true || fromLookup?.inline === true,
+    order: typeof attachment.order === "number" ? attachment.order : fromLookup?.order,
   };
 }
 
