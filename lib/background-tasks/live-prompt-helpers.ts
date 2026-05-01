@@ -87,14 +87,13 @@ export function hasStopIntent(content: string): boolean {
 
 /**
  * Sanitize user-provided content before injecting into the model context.
- * Strips prompt-injection attempts and caps length.
+ * Strips prompt-injection attempts without truncating the user's message.
  */
 export function sanitizeLivePromptContent(content: string): string {
   return content
     .replace(/\[SYSTEM:/gi, "[USER-INJECTED:")
     .replace(/<\/?system>/gi, "")
-    .trim()
-    .slice(0, 2000);
+    .trim();
 }
 
 /**
