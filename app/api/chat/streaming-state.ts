@@ -8,14 +8,14 @@ import {
 import { activeDelegations } from "@/lib/ai/tools/delegate-to-subagent-types";
 
 /**
- * Hard cap on accumulated argsText per tool call (100KB).
+ * Update: 300KB. Hard cap on accumulated argsText per tool call (100KB).
  * Prevents unbounded memory growth when models produce runaway/repeated
  * content in tool-call arguments (e.g. duplicated test blocks in editFile).
  * Lowered from 512KB — legitimate tool calls rarely exceed 50KB of JSON args,
  * and catching runaway streams earlier prevents downstream cascading failures
  * (e.g. degenerate values causing bloated tool results → socket errors).
  */
-export const MAX_ARGS_TEXT_BYTES = 100_000;
+export const MAX_ARGS_TEXT_BYTES = 300_000;
 
 /** Max chars of argsText to include in console warnings to prevent log flooding. */
 const LOG_ARGS_TEXT_PREVIEW_CHARS = 500;

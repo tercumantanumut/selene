@@ -98,7 +98,7 @@ function unwrapMcpTextWrappedToolResult(output: unknown): unknown {
   return output;
 }
 
-const EXECUTE_COMMAND_CONTEXT_OUTPUT_LIMIT = 2000;
+const COMMAND_CONTEXT_OUTPUT_LIMIT = 2000;
 
 function truncateField(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -106,7 +106,7 @@ function truncateField(value: unknown, maxLength: number): string | undefined {
   return `${value.slice(0, maxLength)}\n... [TRUNCATED ${value.length - maxLength} CHARS] ...`;
 }
 
-function compactExecuteCommandOutput(output: unknown): unknown {
+function compactCommandOutput(output: unknown): unknown {
   const result = getRecord(output);
   if (!result) return output;
 
@@ -120,8 +120,8 @@ function compactExecuteCommandOutput(output: unknown): unknown {
   if (result.isTruncated === true) compact.isTruncated = true;
   if (typeof result.error === "string") compact.error = result.error;
 
-  const stdout = truncateField(result.stdout, EXECUTE_COMMAND_CONTEXT_OUTPUT_LIMIT);
-  const stderr = truncateField(result.stderr, EXECUTE_COMMAND_CONTEXT_OUTPUT_LIMIT);
+  const stdout = truncateField(result.stdout, COMMAND_CONTEXT_OUTPUT_LIMIT);
+  const stderr = truncateField(result.stderr, COMMAND_CONTEXT_OUTPUT_LIMIT);
   if (stdout) compact.stdout = stdout;
   if (stderr) compact.stderr = stderr;
 
@@ -345,8 +345,8 @@ export function normalizeToolResultOutput(
   // Canonical history must remain lossless. Projection is allowed to compact/limit.
   const mode = options.mode;
   let normalizedOutput = unwrapMcpTextWrappedToolResult(output);
-  if (mode === "projection" && toolName === "executeCommand") {
-    normalizedOutput = compactExecuteCommandOutput(normalizedOutput);
+  if (mode === "projection" && (toolName === "executeCommand" || toolName === "bash")) {
+    normalizedOutput = compactCommandOutput(normalizedOutput);
   }
 
   // Get session ID from run context for content storage

@@ -212,6 +212,29 @@ describe("normalizeToolResultOutput - readFile exemption", () => {
     expect(normalized.truncatedContentId).toBeUndefined();
   });
 
+  it("compacts bash output in projection mode before model input limiting", async () => {
+    const { limitToolOutput } = await import("@/lib/ai/output-limiter");
+
+    const stdout = "x".repeat(50_000);
+    const result = normalizeToolResultOutput("bash", {
+      status: "success",
+      stdout,
+      stderr: "",
+      logId: "log_bash_123",
+      exitCode: 0,
+    }, undefined, {
+      mode: "projection",
+    });
+
+    const firstCallOutput = vi.mocked(limitToolOutput).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(firstCallOutput.stdout).toHaveLength(2032);
+    expect(firstCallOutput.logId).toBe("log_bash_123");
+
+    const normalized = result.output as Record<string, unknown>;
+    expect(normalized.stdout).not.toBe(stdout);
+    expect(normalized.logId).toBe("log_bash_123");
+  });
+
   it("unwraps MCP CallToolResult text payloads into structured objects", () => {
     const output = {
       content: [

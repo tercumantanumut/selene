@@ -59,6 +59,7 @@ import { nowISO } from "@/lib/utils/timestamp";
 import { convertDBMessagesToUIMessages, type DBToolCallPart } from "@/lib/messages/converter";
 import type { FrontendMessage } from "@/lib/messages/tool-enhancement";
 import { MAX_STREAM_TOOL_RESULT_TOKENS } from "@/lib/ai/tool-result-stream-guard";
+import { createToolInputStallWatchdog } from "@/lib/ai/tool-input-stall-watchdog";
 import {
   withRunContext,
   createAgentRun,
@@ -1060,6 +1061,53 @@ export async function POST(req: Request) {
       req.signal.addEventListener("abort", markClientDisconnected, { once: true });
     }
 
+    // ── Tool-input stall watchdog ─────────────────────────────────────────
+    // Some models (notably GPT-5.5/Codex) occasionally stall mid-tool-input:
+    // they emit `tool-input-start` then stop sending deltas, leaving the run
+    // hung until the user manually stops. This watchdog only covers the
+    // JSON-args streaming phase — once `tool-call` arrives (args complete),
+    // the timer is cleared and tool execution proceeds with its own timeouts.
+    const TOOL_INPUT_STALL_MS = (() => {
+      const env = Number(process.env.TOOL_INPUT_STALL_MS);
+      return Number.isFinite(env) && env > 0 ? env : 60_000;
+    })();
+    // Capture `agentRun.id` for the watchdog closure — by the time the timer
+    // may fire, narrowing of `agentRun` (declared as nullable upstream) has
+    // been lost across the closure boundary.
+    const watchdogRunId = agentRun.id;
+    const toolInputStallWatchdog = createToolInputStallWatchdog({
+      stallMs: TOOL_INPUT_STALL_MS,
+      isCancelled: () => chatAbortController.signal.aborted,
+      onStall: (toolCallId, toolName, stallMs) => {
+        console.warn(
+          `[CHAT API] Tool-input stall: ${toolName} (${toolCallId}) — no deltas for ${stallMs}ms ` +
+            `(session=${sessionId}, run=${watchdogRunId}). Aborting run.`
+        );
+        if (streamingState && syncStreamingMessage) {
+          const stallSeconds = Math.round(stallMs / 1000);
+          const recorded = recordToolResultChunk(
+            streamingState,
+            toolCallId,
+            toolName,
+            {
+              status: "error",
+              error: `Model stopped emitting tool input for ${stallSeconds}s — aborted to prevent hang.`,
+            },
+            false
+          );
+          if (recorded) {
+            void syncStreamingMessage();
+          }
+        }
+        chatAbortController.abort(`tool-input-stall:${toolName}:${stallMs}ms`);
+      },
+    });
+    chatAbortController.signal.addEventListener(
+      "abort",
+      () => toolInputStallWatchdog.disarmAll(),
+      { once: true }
+    );
+
     // Build shared callback context
     const callbackCtx = {
       sessionId,
@@ -1559,9 +1607,12 @@ export async function POST(req: Request) {
                 changed = appendReasoningPartToState(streamingState, delta) || changed;
               } else if (chunk.type === "tool-input-start") {
                 changed = recordToolInputStart(streamingState, chunk.id, chunk.toolName) || changed;
+                toolInputStallWatchdog.arm(chunk.id, chunk.toolName);
               } else if (chunk.type === "tool-input-delta") {
                 changed = recordToolInputDelta(streamingState, chunk.id, chunk.delta) || changed;
+                toolInputStallWatchdog.arm(chunk.id);
               } else if (chunk.type === "tool-call") {
+                toolInputStallWatchdog.disarm(chunk.toolCallId);
                 // Detect argsText conflict: streaming deltas already accumulated
                 // but a complete tool-call event arrived (e.g. from repairToolCall).
                 const existingPart = streamingState.toolCallParts.get(chunk.toolCallId);
@@ -1594,6 +1645,7 @@ export async function POST(req: Request) {
                 }
                 changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, effectiveInput) || changed;
               } else if (chunk.type === "tool-result") {
+                toolInputStallWatchdog.disarm(chunk.toolCallId);
                 changed = recordToolResultChunk(streamingState, chunk.toolCallId, chunk.toolName, chunk.output, chunk.preliminary) || changed;
                 changed = tagIntermediateDelegationParts(streamingState, chunk.toolCallId) || changed;
                 if (provider === "claudecode" && chunk.toolName && isDelegatedToolName(chunk.toolName)) {

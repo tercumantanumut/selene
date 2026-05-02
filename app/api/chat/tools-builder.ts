@@ -645,7 +645,14 @@ export async function buildToolsForRequest(
       "AskUserQuestion", "Agent", "TaskOutput", "TaskStop",
       "Skill", "EnterPlanMode", "ExitPlanMode",
       "TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
-      "EnterWorktree",
+      "EnterWorktree", "ExitWorktree",
+      // Claude Agent SDK tools added in Opus 4.7:
+      // ScheduleWakeup paces /loop dynamic mode; the cron family manages
+      // recurring triggers; Monitor streams events from background tasks;
+      // PushNotification / RemoteTrigger drive remote agent signaling.
+      "ScheduleWakeup",
+      "CronCreate", "CronDelete", "CronList",
+      "Monitor", "PushNotification", "RemoteTrigger",
     ] as const;
 
     for (const name of SDK_AGENT_TOOLS) {

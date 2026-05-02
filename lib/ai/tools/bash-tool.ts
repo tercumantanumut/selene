@@ -27,7 +27,6 @@ import type {
 
 const DEFAULT_BASH_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_BASH_TIMEOUT_MS = 30 * 60 * 1000;
-const BASH_INLINE_OUTPUT_LIMIT = 2000;
 const CWD_MARKER = "__SELENE_CWD__:";
 
 const bashBackgroundCommands = new Map<string, string>();
@@ -97,17 +96,6 @@ function formatBackgroundListMetadata(processInfo: {
   return metadata.length > 0 ? ` ${metadata.join(" ")}` : "";
 }
 
-function compactInlineOutput(value: string | undefined, logId?: string): { output?: string; truncated: boolean } {
-  if (!value || value.length <= BASH_INLINE_OUTPUT_LIMIT) {
-    return { output: value, truncated: false };
-  }
-
-  return {
-    output: `${value.slice(0, BASH_INLINE_OUTPUT_LIMIT)}\n... [TRUNCATED ${value.length - BASH_INLINE_OUTPUT_LIMIT} CHARS] ...${logRetrievalGuidance(logId)}`,
-    truncated: true,
-  };
-}
-
 function formatBashResult(result: {
   success: boolean;
   stdout: string;
@@ -122,32 +110,40 @@ function formatBashResult(result: {
 }, cleanedStdout?: string): BashToolResult {
   const status = result.success ? "success" : result.error?.includes("blocked") ? "blocked" : "error";
   const fullStdout = cleanedStdout ?? result.stdout;
-  let logId = result.logId;
-  const preexistingLimitHit = result.isTruncated || result.error === "Process terminated due to timeout or output limit";
-  const needsInlineCompaction = fullStdout.length > BASH_INLINE_OUTPUT_LIMIT || result.stderr.length > BASH_INLINE_OUTPUT_LIMIT;
 
-  if (!logId && (preexistingLimitHit || needsInlineCompaction)) {
+  // Bash no longer applies a character-based inline cap. The downstream
+  // `guardToolResultForStreaming` (lib/ai/tool-result-stream-guard.ts) is the
+  // single source of truth for output sizing, using token-based tiers
+  // (≤10K tokens passthrough, 10K–25K preview+stub, >25K stub-only).
+  //
+  // We only persist a terminal log here when the *executor itself* truncated
+  // the output (timeout or 1MB process-level cap). In that case the result
+  // already carries `isTruncated: true` and ideally a `logId`. We mint a logId
+  // only as a fallback if the executor didn't supply one. For below-cap runs,
+  // the stream-guard owns the storeFullContent fallback path.
+  const executorTruncated =
+    result.isTruncated || result.error === "Process terminated due to timeout or output limit";
+
+  let logId = result.logId;
+  if (!logId && executorTruncated) {
     logId = saveTerminalLog(fullStdout, result.stderr);
   }
 
-  const stdout = compactInlineOutput(fullStdout, logId);
-  const stderr = compactInlineOutput(result.stderr, logId);
-  const inlineTruncated = stdout.truncated || stderr.truncated;
-  const message = preexistingLimitHit || inlineTruncated
-    ? `Output exceeded inline limits.${logRetrievalGuidance(logId)}`
+  const message = executorTruncated
+    ? `Process terminated by executor (timeout or output cap).${logRetrievalGuidance(logId)}`
     : undefined;
 
   return {
     status,
-    stdout: stdout.output,
-    stderr: stderr.output,
+    stdout: fullStdout,
+    stderr: result.stderr,
     exitCode: result.exitCode,
     executionTime: result.executionTime,
     startedAt: result.startedAt,
     error: result.error,
     message,
     logId,
-    isTruncated: result.isTruncated || inlineTruncated,
+    isTruncated: executorTruncated,
     aborted: result.aborted,
   };
 }
@@ -309,7 +305,7 @@ const bashSchema = jsonSchema<BashInput>({
     command: {
       type: "string",
       description:
-        "Shell command string to execute. This tool preserves working directory across calls.",
+        "Shell command string to execute. Preserves working directory across calls.",
     },
     timeout: {
       type: "number",
@@ -327,13 +323,13 @@ const bashSchema = jsonSchema<BashInput>({
     processId: {
       type: "string",
       description:
-        "ID of a background process to check or manage. Only use with processes started via run_in_background. Do NOT set this for regular commands.",
+        "ID of a background process started via run_in_background.",
     },
     action: {
       type: "string",
       enum: ["status", "kill", "list"],
       description:
-        "Background process management ONLY. Do NOT set this when running a command — just provide 'command' alone. 'status' checks a process by processId, 'kill' stops it, 'list' shows all background processes.",
+        "Background process action: status, kill, or list.",
     },
   },
   required: [],

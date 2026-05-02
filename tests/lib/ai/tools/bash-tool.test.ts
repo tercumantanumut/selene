@@ -119,7 +119,11 @@ describe("bash-tool", () => {
 
 
 
-  it("compacts large foreground output and persists it through readLog", async () => {
+  it("passes through large foreground output verbatim (stream-guard owns tiering)", async () => {
+    // Bash no longer pre-truncates by character count. Below the executor's
+    // 1MB process-level cap, the full stdout reaches the model untouched and
+    // the downstream `guardToolResultForStreaming` decides whether to slice
+    // based on token count. This test pins the bash-side invariant only.
     const largeOutput = "docker-layer\n".repeat(400);
     commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
       success: true,
@@ -141,15 +145,17 @@ describe("bash-tool", () => {
       createToolContext()
     );
 
-    expect(logManagerMocks.saveTerminalLog).toHaveBeenCalledWith(largeOutput, "");
-    expect(result.logId).toBe("bash-log-1");
-    expect(result.isTruncated).toBe(true);
-    expect(result.stdout!.length).toBeLessThan(largeOutput.length);
-    expect(result.stdout).toContain("[TRUNCATED");
-    expect(result.message).toContain('executeCommand({ command: "readLog", logId: "bash-log-1" })');
+    // No log persistence when the executor didn't truncate.
+    expect(logManagerMocks.saveTerminalLog).not.toHaveBeenCalled();
+    expect(result.logId).toBeUndefined();
+    expect(result.isTruncated).toBe(false);
+    // Full output reaches the result unmodified — no [TRUNCATED] marker.
+    expect(result.stdout).toBe(largeOutput);
+    expect(result.stdout).not.toContain("[TRUNCATED");
+    expect(result.message).toBeUndefined();
   });
 
-  it("returns concise output-limit failures with readLog guidance", async () => {
+  it("propagates executor-supplied logId and surfaces readLog guidance on hard truncation", async () => {
     const largeOutput = "Downloading [====>] 1MB/100MB\n".repeat(400);
     commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
       success: false,
@@ -174,11 +180,14 @@ describe("bash-tool", () => {
       createToolContext()
     );
 
+    // The executor already minted the log — bash must NOT mint a second one.
     expect(logManagerMocks.saveTerminalLog).not.toHaveBeenCalled();
     expect(result.status).toBe("error");
     expect(result.logId).toBe("executor-log-1");
     expect(result.isTruncated).toBe(true);
-    expect(result.stdout!.length).toBeLessThan(largeOutput.length);
+    // Bash forwards the executor's stdout verbatim — sizing is the stream-guard's job.
+    expect(result.stdout).toBe(largeOutput);
+    // The retrieval guidance is reattached so the model knows how to pull the full log.
     expect(result.message).toContain('executeCommand({ command: "readLog", logId: "executor-log-1" })');
   });
 
@@ -251,10 +260,11 @@ describe("bash-tool", () => {
     }
   });
 
-  it("returns compact output with readLog guidance when foreground output is too large", async () => {
+  it("strips the cwd marker but preserves stdout body when executor truncates", async () => {
+    const stdoutBody = "docker-layer\n".repeat(300);
     commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
       success: false,
-      stdout: `${"docker-layer\n".repeat(300)}__SELENE_CWD__:/workspace`,
+      stdout: `${stdoutBody}__SELENE_CWD__:/workspace`,
       stderr: "[Output size limit exceeded]",
       exitCode: null,
       signal: null,
@@ -278,7 +288,9 @@ describe("bash-tool", () => {
     expect(result.status).toBe("error");
     expect(result.logId).toBe("log-large");
     expect(result.isTruncated).toBe(true);
-    expect(result.stdout!.length).toBeLessThan(2500);
+    // Cwd marker is stripped, but the body is no longer pre-truncated by bash.
+    expect(result.stdout).not.toContain("__SELENE_CWD__");
+    expect(result.stdout).toContain("docker-layer");
     expect(result.stderr).toContain("[Output size limit exceeded]");
     expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-large" })');
   });
