@@ -45,6 +45,11 @@ import {
   buildStopSystemMessage,
   buildUserInjectionContent,
 } from "@/lib/background-tasks/live-prompt-helpers";
+import {
+  recordClaudeCodeSubagentActivity,
+  recordClaudeCodeSubagentFinished,
+  recordClaudeCodeSubagentStarted,
+} from "@/lib/claudecode/subagent-activity-store";
 
 const CLAUDECODE_MAX_RETRY_ATTEMPTS = 5;
 const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -127,6 +132,13 @@ type ClaudeAgentQueryStreamMessage = {
 
 type ClaudeAgentQueryStream = AsyncGenerator<ClaudeAgentQueryStreamMessage, void> & {
   streamInput?: (stream: AsyncIterable<SDKUserMessage>) => Promise<void>;
+};
+
+type ClaudeCodeSubagentCaptureContext = {
+  userId?: string;
+  sessionId?: string;
+  runId?: string;
+  characterId?: string;
 };
 
 /**
@@ -599,6 +611,169 @@ function normalizeToolUseInput(input: unknown): Record<string, unknown> {
     _recoveredInvalidToolUseInput: true,
     _inputType: input === null ? "null" : Array.isArray(input) ? "array" : typeof input,
   };
+}
+
+function textPreview(value: unknown, fallback = "", max = 360): string {
+  if (typeof value === "string") return value.replace(/\s+/g, " ").trim().slice(0, max);
+  if (value === undefined || value === null) return fallback;
+  try {
+    return JSON.stringify(value).replace(/\s+/g, " ").slice(0, max);
+  } catch {
+    return String(value).replace(/\s+/g, " ").slice(0, max);
+  }
+}
+
+function extractRootAgentToolStart(message: unknown): Array<{
+  parentToolUseId: string;
+  toolName: string;
+  subagentName?: string;
+  subagentType?: string;
+  description?: string;
+  summary?: string;
+}> {
+  if (!isDictionary(message) || message.type !== "stream_event") return [];
+  const event = isDictionary(message.event) ? message.event : null;
+  if (event?.type !== "content_block_start" || !isDictionary(event.content_block)) return [];
+  const block = event.content_block;
+  if (block.type !== "tool_use") return [];
+  const toolName = normalizeClaudeSdkToolName(block.name);
+  if (toolName !== "Agent" && toolName !== "Task") return [];
+  const parentToolUseId = typeof block.id === "string" ? block.id : "";
+  if (!parentToolUseId) return [];
+  const input = isDictionary(block.input) ? block.input : {};
+  const subagentType = typeof input.subagent_type === "string" ? input.subagent_type : undefined;
+  const name = typeof input.name === "string" ? input.name : undefined;
+  const description = typeof input.description === "string" ? input.description : undefined;
+  return [{
+    parentToolUseId,
+    toolName,
+    subagentName: name || subagentType || `${toolName} sub-agent`,
+    subagentType,
+    description,
+    summary: description || `Claude Code ${toolName} sub-agent started.`,
+  }];
+}
+
+function captureClaudeCodeSubagentMessage(
+  rawMessage: unknown,
+  scope: ClaudeCodeSubagentCaptureContext,
+) {
+  if (!scope.userId || !scope.sessionId) return;
+  try {
+    for (const started of extractRootAgentToolStart(rawMessage)) {
+      recordClaudeCodeSubagentStarted({ ...scope, ...started });
+    }
+
+    if (!isDictionary(rawMessage)) return;
+    const parentToolUseId = getClaudeSdkParentToolUseId(rawMessage);
+    const taskId = typeof rawMessage.task_id === "string" ? rawMessage.task_id : undefined;
+
+    if (rawMessage.type === "system" && typeof rawMessage.subtype === "string") {
+      if (rawMessage.subtype === "task_started") {
+        const toolUseId = typeof rawMessage.tool_use_id === "string" ? rawMessage.tool_use_id : parentToolUseId;
+        if (!toolUseId) return;
+        recordClaudeCodeSubagentStarted({
+          ...scope,
+          parentToolUseId: toolUseId,
+          taskId,
+          subagentType: typeof rawMessage.task_type === "string" ? rawMessage.task_type : undefined,
+          description: typeof rawMessage.description === "string" ? rawMessage.description : undefined,
+          summary: typeof rawMessage.description === "string" ? rawMessage.description : "Claude Code task started.",
+        });
+        return;
+      }
+      if (rawMessage.subtype === "task_progress") {
+        recordClaudeCodeSubagentActivity({
+          ...scope,
+          parentToolUseId: typeof rawMessage.tool_use_id === "string" ? rawMessage.tool_use_id : parentToolUseId,
+          taskId,
+          status: "running",
+          summary: textPreview(rawMessage.summary || rawMessage.description || "Claude Code sub-agent is running."),
+          toolName: typeof rawMessage.last_tool_name === "string" ? rawMessage.last_tool_name : undefined,
+        });
+        return;
+      }
+      if (rawMessage.subtype === "task_updated") {
+        const patch = isDictionary(rawMessage.patch) ? rawMessage.patch : {};
+        const status = patch.status === "failed" || patch.status === "killed" ? "failed" : patch.status === "completed" ? "completed" : "running";
+        recordClaudeCodeSubagentActivity({
+          ...scope,
+          parentToolUseId,
+          taskId,
+          status,
+          summary: textPreview(patch.error || patch.description || `Claude Code task ${status}.`),
+        });
+        return;
+      }
+      if (rawMessage.subtype === "task_notification") {
+        const status = rawMessage.status === "failed" ? "failed" : rawMessage.status === "stopped" ? "cancelled" : "completed";
+        recordClaudeCodeSubagentFinished({
+          ...scope,
+          parentToolUseId: typeof rawMessage.tool_use_id === "string" ? rawMessage.tool_use_id : parentToolUseId,
+          taskId,
+          status,
+          failed: status === "failed",
+          summary: textPreview(rawMessage.summary || `Claude Code task ${status}.`),
+        });
+        return;
+      }
+    }
+
+    if (rawMessage.type === "tool_progress") {
+      recordClaudeCodeSubagentActivity({
+        ...scope,
+        parentToolUseId,
+        taskId,
+        status: "running",
+        toolName: normalizeClaudeSdkToolName(rawMessage.tool_name),
+        streamEvent: true,
+        summary: `Running ${normalizeClaudeSdkToolName(rawMessage.tool_name) || "tool"} for ${rawMessage.elapsed_time_seconds ?? 0}s.`,
+      });
+      return;
+    }
+
+    if (rawMessage.type === "user" && parentToolUseId) {
+      const parentToolName = normalizeClaudeSdkToolName(rawMessage.tool_name);
+      if ((parentToolName === "Task" || parentToolName === "Agent") && "tool_use_result" in rawMessage) {
+        const output = rawMessage.tool_use_result;
+        const failed = isDictionary(output) && (output.status === "failed" || output.is_error === true);
+        recordClaudeCodeSubagentFinished({
+          ...scope,
+          parentToolUseId,
+          taskId,
+          failed,
+          summary: failed
+            ? textPreview(output, "Claude Code native sub-agent failed.")
+            : textPreview(output, "Claude Code native sub-agent completed."),
+        });
+        return;
+      }
+    }
+
+    if (parentToolUseId) {
+      const event = isDictionary(rawMessage.event) ? rawMessage.event : null;
+      const block = isDictionary(event?.content_block) ? event?.content_block : null;
+      const delta = isDictionary(event?.delta) ? event?.delta : null;
+      const toolName = normalizeClaudeSdkToolName(block?.name);
+      const summary =
+        typeof delta?.text === "string" ? delta.text :
+        typeof delta?.partial_json === "string" ? `${toolName || "Tool"} input: ${delta.partial_json}` :
+        toolName ? `Started ${toolName}.` :
+        typeof rawMessage.tool_use_result === "string" ? rawMessage.tool_use_result :
+        `Claude Code nested ${rawMessage.type || "event"}.`;
+      recordClaudeCodeSubagentActivity({
+        ...scope,
+        parentToolUseId,
+        taskId,
+        status: "running",
+        toolName,
+        summary: textPreview(summary),
+        streamEvent: true,
+      });
+    }
+  } catch (error) {
+    console.debug("[ClaudeCode] Non-fatal native sub-agent activity capture failed:", error);
+  }
 }
 
 export function normalizeAnthropicToolUseInputs(body: Record<string, unknown>): {
@@ -1142,6 +1317,12 @@ function createStreamingClaudeCodeResponse(options: {
         const { mcpCtx, seleneMcpServers, resolvedCwd, mergedPlugins, mergedHookMap } =
           await resolveSeleneContext(sdk);
         const sdkToolResultBridge = mcpCtx?.sdkToolResultBridge;
+        const subagentCaptureScope: ClaudeCodeSubagentCaptureContext = {
+          userId: mcpCtx?.userId,
+          sessionId: mcpCtx?.sessionId,
+          runId: mcpCtx?.runId,
+          characterId: mcpCtx?.characterId ?? undefined,
+        };
 
         // ── Interactive tool gate: pause SDK for AskUserQuestion / ExitPlanMode ──
         // The async PreToolUse hook blocks the SDK from auto-executing
@@ -1497,6 +1678,7 @@ function createStreamingClaudeCodeResponse(options: {
 
         for await (const rawMessage of query) {
           const message = rawMessage as { type?: string };
+          captureClaudeCodeSubagentMessage(rawMessage, subagentCaptureScope);
 
           // Claude SDK annotates nested subagent traffic with parent_tool_use_id.
           // Keep those events inside the root Task/Agent call instead of replaying
@@ -1883,6 +2065,12 @@ async function runClaudeAgentQuery(options: {
   const sdk = options.sdkOptions;
   const { mcpCtx, seleneMcpServers, resolvedCwd, mergedPlugins, mergedHookMap } =
     await resolveSeleneContext(sdk);
+  const subagentCaptureScope: ClaudeCodeSubagentCaptureContext = {
+    userId: mcpCtx?.userId,
+    sessionId: mcpCtx?.sessionId,
+    runId: mcpCtx?.runId,
+    characterId: mcpCtx?.characterId ?? undefined,
+  };
 
   const finalHooks = mergeHooks(mergedHookMap, {
     PreToolUse: [buildBashSanitizerHookMatcher()],
@@ -1950,6 +2138,7 @@ async function runClaudeAgentQuery(options: {
   try {
     for await (const rawMessage of query) {
       const message = rawMessage as { type?: string };
+      captureClaudeCodeSubagentMessage(rawMessage, subagentCaptureScope);
 
       if (getClaudeSdkParentToolUseId(rawMessage)) {
         continue;

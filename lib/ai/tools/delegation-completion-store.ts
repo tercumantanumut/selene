@@ -12,6 +12,10 @@ export interface DelegationCompletion {
    * result can be injected by prepareStep in the next turn.
    */
   resultContent?: string;
+  resultVersion?: number;
+  deliveryId?: string;
+  resultHash?: string;
+  deliveredAt?: number;
 }
 
 type DelegationCompletionStore = Map<string, DelegationCompletion[]>;

@@ -75,6 +75,7 @@ import { ContextWindowIndicator } from "./context-window-indicator";
 import { ModelSelector } from "./model-selector";
 import { ActiveDelegationsIndicator } from "./active-delegations-indicator";
 import { BackgroundProcessesIndicator } from "./background-processes-indicator";
+import { ClaudeCodeSubagentsIndicator } from "./claude-code-subagents-indicator";
 import FileMentionAutocomplete, { type MentionSelection } from "./file-mention-autocomplete";
 import { ComposerAttachment } from "./thread-message-components";
 import { ComposerActionBar } from "./composer-action-bar";
@@ -2278,6 +2279,7 @@ export const Composer: FC<{
         workspaceMode={workspaceMode}
         onOpenSession={onOpenDelegationSession}
       />
+      <ClaudeCodeSubagentsIndicator sessionId={sessionId} />
       <BackgroundProcessesIndicator
         characterId={character?.id ?? null}
         sessionId={sessionId}

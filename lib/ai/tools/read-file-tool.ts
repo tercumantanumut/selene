@@ -23,6 +23,7 @@ import {
   selectLines,
   formatLinesWithNumbers,
 } from "@/lib/ai/tools/file-content-utils";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -199,7 +200,7 @@ export function createReadFileTool(options: ReadFileToolOptions) {
         // (via resolveSyncedFolderPaths → getAccessibleSyncFolders) and applies
         // worktree isolation filtering. No extra merge needed.
         syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
-        if (syncedFolders.length === 0) {
+        if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
           return {
             status: "error",
             error: "No synced folders configured for this agent. Add folders in agent settings to enable file reading.",

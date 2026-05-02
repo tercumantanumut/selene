@@ -8,6 +8,7 @@
 
 import { isAbsolute, join, normalize, resolve, sep, basename, dirname } from "path";
 import { mkdir, realpath } from "fs/promises";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
 import { getSession } from "@/lib/db/queries-sessions";
 import { getWorkspaceInfo } from "@/lib/workspace/types";
@@ -106,6 +107,10 @@ export async function isPathAllowed(filePath: string, allowedFolderPaths: string
   // (e.g., ç as U+00E7 vs c + combining cedilla)
   filePath = filePath.normalize("NFC");
   allowedFolderPaths = allowedFolderPaths.map((p) => p.normalize("NFC"));
+
+  if (areUnsafeAgentPermissionsEnabled()) {
+    return isAbsolute(filePath) ? normalize(filePath) : resolve(filePath);
+  }
 
   // Case 1: Path is already absolute
   if (isAbsolute(filePath)) {
@@ -290,7 +295,7 @@ export async function resolveSyncedPath(
   let syncedFolders: string[];
   try {
     syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
-    if (syncedFolders.length === 0) {
+    if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
       return {
         ok: false,
         status: "no_folders",
@@ -314,7 +319,8 @@ export async function resolveSyncedPath(
     };
   }
 
-  return { ok: true, validPath, syncedFolders };
+  const diagnosticFolders = syncedFolders.length > 0 ? syncedFolders : [dirname(validPath)];
+  return { ok: true, validPath, syncedFolders: diagnosticFolders };
 }
 
 /**

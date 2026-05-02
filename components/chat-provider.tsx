@@ -1812,6 +1812,16 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     }
   }, [submitRetryMessage]);
 
+  // Latest-ref for the SSE/poll effect below. `useChat` returns a fresh helpers
+  // object on every render, which cascades through `submitRetryMessage` →
+  // `startDelegationAutoResume` and would otherwise re-fire the effect on every
+  // render — closing/reopening the EventSource and re-issuing the catch-up GET,
+  // each cycle triggering another `chat.sendMessage` until React #185.
+  const startDelegationAutoResumeRef = useRef(startDelegationAutoResume);
+  useEffect(() => {
+    startDelegationAutoResumeRef.current = startDelegationAutoResume;
+  }, [startDelegationAutoResume]);
+
   useEffect(() => {
     if (!sessionId) return;
 
@@ -1820,7 +1830,7 @@ export const ChatProvider: FC<ChatProviderProps> = ({
         delegationAutoResumeQueuedRef.current = true;
         return;
       }
-      void startDelegationAutoResume();
+      void startDelegationAutoResumeRef.current();
     };
 
     let cancelled = false;
@@ -1850,7 +1860,7 @@ export const ChatProvider: FC<ChatProviderProps> = ({
       eventSource.removeEventListener("delegation-completed", handleDelegationCompleted);
       eventSource.close();
     };
-  }, [sessionId, startDelegationAutoResume]);
+  }, [sessionId]);
 
   return (
     <ChatErrorBoundary

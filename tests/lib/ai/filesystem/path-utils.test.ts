@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import path from "path";
 
 // Mock DB-dependent imports to prevent better-sqlite3 from loading
@@ -36,6 +36,9 @@ vi.mock("@/lib/vectordb/sync-service", () => ({
 import { isPathAllowed } from "@/lib/ai/filesystem/path-utils";
 
 describe("isPathAllowed", () => {
+  afterEach(() => {
+    delete process.env.SELENE_UNSAFE_AGENT_PERMISSIONS;
+  });
   // Use platform-specific paths for allowed folders
   // We use path.resolve to ensure they are absolute and normalized for the current platform
   const workspaceRoot = path.resolve(process.cwd(), "test-workspace");
@@ -107,6 +110,29 @@ describe("isPathAllowed", () => {
   describe("edge cases", () => {
     it("returns null for empty allowed folders", async () => {
       expect(await isPathAllowed(path.join(workspaceRoot, "file.txt"), [])).toBeNull();
+    });
+
+    it("allows arbitrary absolute paths when unsafe agent permissions are enabled", async () => {
+      process.env.SELENE_UNSAFE_AGENT_PERMISSIONS = "true";
+      const outsidePath = path.resolve(process.cwd(), "outside", "file.txt");
+      expect(await isPathAllowed(outsidePath, [])).toBe(outsidePath);
+    });
+
+    it("resolves arbitrary relative paths when unsafe agent permissions are enabled", async () => {
+      process.env.SELENE_UNSAFE_AGENT_PERMISSIONS = "true";
+      const relPath = path.join("..", "outside.txt");
+      expect(await isPathAllowed(relPath, [])).toBe(path.resolve(relPath));
+    });
+
+    it("allows any absolute path when unsafe agent permissions are enabled", async () => {
+      process.env.SELENE_UNSAFE_AGENT_PERMISSIONS = "true";
+      const filePath = path.resolve(process.cwd(), "outside", "file.txt");
+      expect(await isPathAllowed(filePath, [])).toBe(filePath);
+    });
+
+    it("resolves any relative path from process cwd when unsafe agent permissions are enabled", async () => {
+      process.env.SELENE_UNSAFE_AGENT_PERMISSIONS = "true";
+      expect(await isPathAllowed("../outside.txt", [])).toBe(path.resolve("../outside.txt"));
     });
 
     it("handles paths with double slashes", async () => {

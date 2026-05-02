@@ -122,7 +122,7 @@ describe("createToolInputStallWatchdog", () => {
     expect(onStall).not.toHaveBeenCalled();
   });
 
-  it("falls back to default 60s when stallMs is invalid", () => {
+  it("falls back to default 5m when stallMs is invalid", () => {
     const timers = makeFakeTimers();
     const onStall = vi.fn();
     const watchdog = createToolInputStallWatchdog({
@@ -135,7 +135,7 @@ describe("createToolInputStallWatchdog", () => {
     watchdog.arm("call-1", "bash");
     const [handle] = Array.from(timers.pending.keys());
     timers.fire(handle);
-    expect(onStall).toHaveBeenCalledWith("call-1", "bash", 60_000);
+    expect(onStall).toHaveBeenCalledWith("call-1", "bash", 300_000);
   });
 
   it("retains the toolName captured at arm time across re-arms without a name", () => {

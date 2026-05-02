@@ -46,6 +46,7 @@ import {
 import {
   drainDelegationCompletions,
 } from "@/lib/ai/tools/delegation-completion-store";
+import { markDelegationResultDelivered } from "@/lib/ai/tools/delegation-delivery-registry";
 import { createHeartbeatStream } from "@/lib/utils/heartbeat-stream";
 import {
     classifyRecoverability,
@@ -130,6 +131,25 @@ import {
   isUiChunkCommittable,
   shouldAttemptPrecommitRecovery,
 } from "./ui-stream-recovery";
+
+function markDeliveredDelegationPromptEntries(
+  entries: Array<{ id: string; timestamp: number; metadata?: { kind?: string; delegationId?: string; resultVersion?: number; deliveryId?: string; resultHash?: string } }>,
+  channel: "live-prompt" | "completion-store",
+): void {
+  for (const entry of entries) {
+    if (entry.metadata?.kind !== "delegation_completion" || !entry.metadata.deliveryId || !entry.metadata.resultHash) {
+      continue;
+    }
+    markDelegationResultDelivered({
+      delegationId: entry.metadata.delegationId ?? entry.id,
+      resultVersion: entry.metadata.resultVersion ?? 1,
+      deliveryId: entry.metadata.deliveryId,
+      resultHash: entry.metadata.resultHash,
+      deliveredAt: entry.timestamp,
+      channel,
+    });
+  }
+}
 
 // Initialize tool event handler for observability (once per runtime)
 initializeToolEventHandler();
@@ -877,6 +897,7 @@ export async function POST(req: Request) {
             orphanToolCalls,
             nextAssistantMessageId,
           });
+          markDeliveredDelegationPromptEntries(entries, "live-prompt");
 
           if (_state && _sync) {
             assistantMessageId = nextAssistantMessageId;
@@ -1069,7 +1090,7 @@ export async function POST(req: Request) {
     // the timer is cleared and tool execution proceeds with its own timeouts.
     const TOOL_INPUT_STALL_MS = (() => {
       const env = Number(process.env.TOOL_INPUT_STALL_MS);
-      return Number.isFinite(env) && env > 0 ? env : 60_000;
+      return Number.isFinite(env) && env > 0 ? env : 300_000;
     })();
     // Capture `agentRun.id` for the watchdog closure — by the time the timer
     // may fire, narrowing of `agentRun` (declared as nullable upstream) has
@@ -1269,9 +1290,9 @@ export async function POST(req: Request) {
               const storeCompletions = drainDelegationCompletions(sessionId);
               if (storeCompletions.length > 0) {
                 const completionEntries = storeCompletions.map((c) => ({
-                  id: `deleg-store-${c.delegationId}`,
+                  id: c.deliveryId || `deleg-store-${c.delegationId}`,
                   content: c.resultContent || [
-                    `<delegation-result delegationId="${c.delegationId}" delegate="${c.delegateName}" status="${c.error ? "failed" : "completed"}">`,
+                    `<delegation-result delegationId="${c.delegationId}" delegate="${c.delegateName}" status="${c.error ? "failed" : "completed"}" resultVersion="${c.resultVersion ?? 1}">`,
                     c.error || "Result content not available — use observe to read full response.",
                     `</delegation-result>`,
                   ].join("\n"),
@@ -1281,6 +1302,9 @@ export async function POST(req: Request) {
                     kind: "delegation_completion" as const,
                     delegationId: c.delegationId,
                     delegateName: c.delegateName,
+                    resultVersion: c.resultVersion,
+                    deliveryId: c.deliveryId,
+                    resultHash: c.resultHash,
                   },
                 }));
                 pendingPrompts = [...completionEntries, ...queuedPrompts];
@@ -1331,6 +1355,7 @@ export async function POST(req: Request) {
                 orphanToolCalls,
                 nextAssistantMessageId,
               });
+              markDeliveredDelegationPromptEntries(pendingPrompts, "live-prompt");
 
               // Rotate assistant UUID + set stepOffset only if the handler
               // actually resealed state (background mode might have pre-split
@@ -1448,6 +1473,7 @@ export async function POST(req: Request) {
                     orphanToolCalls,
                     nextAssistantMessageId,
                   });
+                  markDeliveredDelegationPromptEntries(delegationPrompts, "live-prompt");
 
                   if (syncStreamingMessage && streamingState) {
                     assistantMessageId = nextAssistantMessageId;

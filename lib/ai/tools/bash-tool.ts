@@ -1,5 +1,6 @@
 import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
 import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import {
   executeCommandWithValidation,
   startBackgroundProcess,
@@ -265,7 +266,7 @@ async function resolveExecutionContext(
   try {
     syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
 
-    if (syncedFolders.length === 0) {
+    if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
       return {
         error: {
           status: "no_folders",
@@ -284,12 +285,12 @@ async function resolveExecutionContext(
   }
 
   const persistedCwd = await getPersistedCommandCwd(sessionId);
-  const preferredExecutionDir = persistedCwd || syncedFolders[0];
+  const preferredExecutionDir = persistedCwd || syncedFolders[0] || process.cwd();
   const preferredValidation = await validateExecutionDirectory(preferredExecutionDir, syncedFolders);
 
   const executionDir = preferredValidation.valid
     ? preferredValidation.resolvedPath ?? preferredExecutionDir
-    : syncedFolders[0];
+    : syncedFolders[0] || process.cwd();
 
   return {
     syncedFolders,
@@ -367,7 +368,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
 
 **Safety:**
 - Commands still run only from synced folders/worktrees
-- Removal commands inside the shell string are blocked
+- \`SELENE_UNSAFE_AGENT_PERMISSIONS=true\` allows broader local filesystem access
 - Prefer \`localGrep\`, \`readFile\`, \`editFile\`, and \`writeFile\` for direct codebase operations when possible`,
     inputSchema: bashSchema,
     execute: async (

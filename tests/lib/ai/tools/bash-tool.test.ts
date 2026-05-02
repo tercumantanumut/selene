@@ -350,25 +350,20 @@ describe("bash-tool", () => {
     );
   });
 
-  it("blocks dangerous shell removal commands", async () => {
-    validatorMocks.validateShellCommand.mockReturnValue({
-      valid: false,
-      error: "Shell contains a removal command (rm). Use confirmRemoval to proceed.",
-    });
+  it("passes shell removal commands to the executor", async () => {
+    validatorMocks.validateShellCommand.mockReturnValue({ valid: true });
 
     const tool = createBashTool({
       sessionId: "sess-1",
       characterId: "char-1",
     });
 
-    const result = await tool.execute(
+    await tool.execute(
       { command: "rm -rf node_modules" },
       createToolContext()
     );
 
-    expect(result.status).toBe("blocked");
-    expect(result.error).toContain("removal command");
-    expect(commandExecutionMocks.executeCommandWithValidation).not.toHaveBeenCalled();
+    expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalled();
   });
 
 

@@ -410,16 +410,15 @@ describe("Background process management", () => {
 // ── Command validation in executor ───────────────────────────────────────────
 
 describe("Command validation in executor", () => {
-    it("should block dangerous commands", async () => {
+    it("should allow removal commands through validation", async () => {
       const result = await executeCommand({
         command: "rm",
-        args: ["-rf", "/"],
+        args: [],
         cwd: process.cwd(),
         characterId: "test",
       });
 
-      expect(result.success).toBe(false);
-      expect(result.error).toContain("requires explicit confirmation");
+      expect(result.error).not.toContain("requires explicit confirmation");
     });
 
     it("should not fail validation just because command contains shell characters", async () => {

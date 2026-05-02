@@ -206,7 +206,7 @@ export async function startBackgroundProcess(
     error?: string;
     logId?: string;
 }> {
-    const { command, args, stdin, cwd, characterId, confirmRemoval, windowsVerbatimArguments, onBackgroundProcessSettled } = options;
+    const { command, args, stdin, cwd, characterId, windowsVerbatimArguments, onBackgroundProcessSettled } = options;
     const timeout = options.timeout ?? BACKGROUND_TIMEOUT;
     const maxOutputSize = options.maxOutputSize ?? MAX_BACKGROUND_OUTPUT;
     const shouldRetryThroughShellOnMessage = (message: string): boolean => {
@@ -216,7 +216,7 @@ export async function startBackgroundProcess(
     };
 
     // Validate command
-    const cmdValidation = validateCommand(command, args, { confirmRemoval });
+    const cmdValidation = validateCommand(command, args);
     if (!cmdValidation.valid) {
         return { processId: "", error: cmdValidation.error };
     }
@@ -584,7 +584,6 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         stdin,
         cwd,
         characterId,
-        confirmRemoval,
         maxOutputSize = DEFAULT_MAX_OUTPUT_SIZE,
         forceDirectExecution = false,
         forceShellExecution = false,
@@ -627,7 +626,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
     commandLogger.logExecutionStart(command, args, cwd, context);
 
-    const cmdValidation = validateCommand(command, args, { confirmRemoval });
+    const cmdValidation = validateCommand(command, args);
     commandLogger.logValidation(cmdValidation.valid, command, cmdValidation.error, { characterId, cwd });
 
     if (!cmdValidation.valid) {

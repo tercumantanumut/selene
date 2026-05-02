@@ -34,6 +34,9 @@ import {
 } from "./delegate-to-subagent-types";
 import { appendToLivePromptQueueBySession } from "@/lib/background-tasks/live-prompt-queue-registry";
 import { addDelegationCompletion } from "./delegation-completion-store";
+import {
+  buildDelegationDeliveryMetadata,
+} from "./delegation-delivery-registry";
 import { emitDelegationCompleted } from "@/lib/background-tasks/delegation-completion-signal";
 
 // ---------------------------------------------------------------------------
@@ -417,19 +420,29 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     : Date.now() - delegation.startedAt;
 
   const completionMessage = [
-    `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${delegation.error ? "failed" : "completed"}" elapsed="${elapsed}ms">`,
+    `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${delegation.error ? "failed" : "completed"}" elapsed="${elapsed}ms" resultVersion="${delegation.resultVersion}">`,
     resultContent,
     `</delegation-result>`,
   ].join("\n");
 
+  const deliveryMetadata = buildDelegationDeliveryMetadata({
+    delegationId: delegation.id,
+    resultVersion: delegation.resultVersion,
+    resultContent: completionMessage,
+    deliveredAt: delegation.settledAt ?? Date.now(),
+  });
+
   const queued = appendToLivePromptQueueBySession(delegation.initiatorSessionId, {
-    id: `deleg-complete-${delegation.id}`,
+    id: deliveryMetadata.deliveryId,
     content: completionMessage,
     stopIntent: false,
     metadata: {
       kind: "delegation_completion",
       delegationId: delegation.id,
       delegateName: delegation.delegateName,
+      resultVersion: deliveryMetadata.resultVersion,
+      deliveryId: deliveryMetadata.deliveryId,
+      resultHash: deliveryMetadata.resultHash,
     },
   });
 
@@ -448,6 +461,10 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     completedAt: delegation.settledAt ?? Date.now(),
     error: delegation.error,
     resultContent: completionMessage,
+    resultVersion: deliveryMetadata.resultVersion,
+    deliveryId: deliveryMetadata.deliveryId,
+    resultHash: deliveryMetadata.resultHash,
+    deliveredAt: deliveryMetadata.deliveredAt,
   });
 
   // Signal the SSE endpoint so the frontend can auto-resume the conversation.

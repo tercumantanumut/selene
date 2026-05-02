@@ -37,7 +37,7 @@ export interface ExecuteOptions {
   args: string[];
   /** Optional stdin payload written to the child process before closing stdin. */
   stdin?: string;
-  /** Working directory - must be within synced folders */
+  /** Working directory. Unsafe mode allows any absolute path. */
   cwd: string;
   /** Character/agent ID for folder validation */
   characterId: string;
@@ -45,8 +45,6 @@ export interface ExecuteOptions {
   timeout?: number;
   /** Maximum output buffer size in bytes (default: 1048576 = 1MB) */
   maxOutputSize?: number;
-  /** Explicit confirmation required for removal commands (rm/rmdir/del/...) */
-  confirmRemoval?: boolean;
   /** Internal use: skip RTK wrapping for this invocation */
   forceDirectExecution?: boolean;
   /** Internal use: retry the command through the user's login shell on Unix. */
@@ -196,7 +194,7 @@ export interface ExecuteCommandInput {
   args?: string[];
   /** Optional raw stdin payload for commands that read from stdin */
   stdin?: string;
-  /** Working directory (must be within synced folders) */
+  /** Working directory. Unsafe mode allows any absolute path. */
   cwd?: string;
   /** Timeout in milliseconds */
   timeout?: number;
@@ -204,8 +202,6 @@ export interface ExecuteCommandInput {
   background?: boolean;
   /** Process ID to check status of a background process (instead of executing a new command) */
   processId?: string;
-  /** Explicit confirmation required for removal commands (rm/rmdir/del/...) */
-  confirmRemoval?: boolean;
   /** When command==="readLog": first N lines of the log */
   head?: number;
   /** When command==="readLog": last N lines of the log */

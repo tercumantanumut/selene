@@ -115,7 +115,8 @@ export function buildWorkflowPromptContext(input: WorkflowPromptContextInput): s
       "- mode='background' returns immediately with a delegationId.",
       "- Results are auto-delivered: when a subagent completes, its full result is injected into your conversation automatically as a <delegation-result> message. You do NOT need to call observe() — just wait.",
       "- After launching background delegations, output a natural response (e.g. 'I've launched N agents, waiting for results...') and let the turn end. You will be notified when each agent completes.",
-      "- observe() is still available if you need to poll or re-read a result, but it is no longer required.",
+      "- If a <delegation-result> was injected, do not call observe() unless you need pending prompts, missing output, or a refresh; observe() returns compact already-delivered metadata by default after auto-delivery.",
+      "- To intentionally re-read an already-delivered settled result, call observe with force=true.",
       "- resume: map to continue using delegationId to preserve delegation context.",
     );
 

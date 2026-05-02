@@ -10,6 +10,7 @@ import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 import fs from "fs/promises";
 import path from "path";
 import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import {
     executeCommandWithValidation,
     startBackgroundProcess,
@@ -384,11 +385,6 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
         head: { type: "number" },
         tail: { type: "number" },
         grep: { type: "string" },
-        confirmRemoval: {
-            type: "boolean",
-            description:
-                "Required for removal commands (rm/rmdir/del/erase/rd). Set true only when deletion is explicitly intended.",
-        },
     },
     required: [],
     additionalProperties: false,
@@ -439,8 +435,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
 - timeout: Max execution time in ms (auto-detected based on command type)
 - background: Run in background and return processId (default: false)
 - processId: Check/manage a background process by its ID
-- logId: The log ID to read when command is 'readLog'
-- confirmRemoval: Must be true for removal commands (rm/rmdir/del/erase/rd)`,
+- logId: The log ID to read when command is 'readLog'`,
 
         inputSchema: executeCommandSchema,
 
@@ -466,7 +461,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            const { command, args = [], stdin, cwd, timeout, background, processId, logId, head, tail, range, grep, confirmRemoval = false } = input;
+            const { command, args = [], stdin, cwd, timeout, background, processId, logId, head, tail, range, grep } = input;
 
             // ── Read Log ────────────────────────────────────────────────
             if (command === "readLog" && logId) {
@@ -605,7 +600,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
             try {
                 syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
 
-                if (syncedFolders.length === 0) {
+                if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
                     return {
                         status: "no_folders",
                         message:
@@ -619,7 +614,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            const executionDir = cwd || syncedFolders[0];
+            const executionDir = cwd || syncedFolders[0] || process.cwd();
 
             try {
                 const resolvedCommand = await resolveClaudePluginRootPlaceholder(command);
@@ -641,7 +636,6 @@ The tool returns immediately with a processId. Poll with processId to check stat
                             cwd: executionDir,
                             timeout: Math.min(timeout || 600_000, maxBgTimeout),
                             characterId: characterId,
-                            confirmRemoval,
                             onBackgroundProcessSettled: handleBackgroundProcessSettled,
                         },
                         syncedFolders
@@ -684,7 +678,6 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     cwd: executionDir,
                     timeout: timeout ? Math.min(timeout, maxTimeout) : undefined,
                     characterId: characterId,
-                    confirmRemoval,
                     abortSignal,
                     onProgress: forwardProgress,
                 };

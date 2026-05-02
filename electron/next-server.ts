@@ -271,6 +271,7 @@ export async function startNextServer(opts: StartNextServerOptions): Promise<voi
           NEXT_TELEMETRY_DISABLED: "1",
           ELECTRON_RESOURCES_PATH: resourcesPath,
           SELENE_PRODUCTION_BUILD: "1",
+          SELENE_UNSAFE_AGENT_PERMISSIONS: process.env.SELENE_UNSAFE_AGENT_PERMISSIONS || "true",
           // Keep-alive timeout for idle sockets between requests (milliseconds).
           // Default is 5000ms which can recycle sockets too aggressively during
           // periods of bursty activity. Set to 10 minutes.

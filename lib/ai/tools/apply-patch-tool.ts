@@ -10,6 +10,7 @@
 import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
 import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import { executeCommandWithValidation } from "@/lib/command-execution";
 import { computeInlineDiffs } from "./execute-command-tool";
 import type {
@@ -159,7 +160,7 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
             let syncedFolders: string[];
             try {
                 syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
-                if (syncedFolders.length === 0) {
+                if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
                     return {
                         status: "no_folders",
                         message: "No synced folders configured. Add synced folders for this agent to enable patch application.",
@@ -172,7 +173,7 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                 };
             }
 
-            const executionDir = input.cwd || syncedFolders[0];
+            const executionDir = input.cwd || syncedFolders[0] || process.cwd();
 
             // Ensure patch ends with newline for stdin
             const stdin = patch.endsWith("\n") ? patch : `${patch}\n`;

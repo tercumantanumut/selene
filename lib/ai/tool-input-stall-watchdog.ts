@@ -28,7 +28,7 @@ export interface ToolInputStallWatchdog {
 }
 
 export interface ToolInputStallWatchdogOptions {
-  /** Threshold in milliseconds. Defaults to 60_000. */
+  /** Threshold in milliseconds. Defaults to 300_000 (5 minutes). */
   stallMs?: number;
   /**
    * Invoked once per stalled toolCallId. The watchdog has already removed
@@ -48,7 +48,7 @@ export interface ToolInputStallWatchdogOptions {
   clearTimer?: (handle: unknown) => void;
 }
 
-const DEFAULT_STALL_MS = 60_000;
+const DEFAULT_STALL_MS = 300_000;
 
 export function createToolInputStallWatchdog(
   options: ToolInputStallWatchdogOptions

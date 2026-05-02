@@ -10,6 +10,9 @@ export interface LivePromptEntry {
     kind?: "generic" | "delegation_completion";
     delegationId?: string;
     delegateName?: string;
+    resultVersion?: number;
+    deliveryId?: string;
+    resultHash?: string;
     /** Legacy: pre-unification design payload covering inspect-only context. */
     inspectContext?: InspectMessageContext | null;
     /** Unified design-workspace payload (inspect + measurements + colors). */
