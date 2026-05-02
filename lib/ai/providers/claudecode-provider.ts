@@ -48,6 +48,50 @@ import {
 
 const CLAUDECODE_MAX_RETRY_ATTEMPTS = 5;
 const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+/**
+ * Built-in Claude Agent SDK tools that exist as tool *declarations* but have no
+ * SDK-side execution — they are designed to be intercepted and fulfilled by the
+ * Claude Code CLI harness. When Selene embeds the SDK as a provider (no harness),
+ * these tool calls return nothing useful, the model fabricates fake "success"
+ * narration, and users are misled. We strip them from the model's view so it
+ * never tries to call them.
+ *
+ * Selene exposes real equivalents for the legitimate use-cases:
+ *   ScheduleWakeup / Cron* → `scheduleTask` (Selene MCP — real persisted scheduler)
+ *   EnterWorktree / ExitWorktree → `workspace` (Selene MCP — real git worktree)
+ *
+ * `Monitor`, `PushNotification`, `RemoteTrigger` depend on harness-only state
+ * (managed background processes, mobile push tokens, remote agent IDs) that
+ * Selene's runtime does not currently provide.
+ *
+ * Added in Opus 4.7. Keep this list in sync with the SDK_AGENT_TOOLS passthrough
+ * list in app/api/chat/tools-builder.ts (these names should appear in NEITHER —
+ * disallowed here means the SDK never emits a tool_use for them, and absent
+ * from the passthrough list means the AI SDK never sees a registration either).
+ */
+const HARNESS_ONLY_DISALLOWED_TOOLS = [
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Monitor",
+  "PushNotification",
+  "RemoteTrigger",
+  "EnterWorktree",
+  "ExitWorktree",
+] as const;
+
+/**
+ * Merge caller-provided disallowedTools with the always-disallowed harness-only
+ * list, deduping. Returns undefined if both are empty so callers can spread the
+ * result conditionally without producing an empty `disallowedTools: []`.
+ */
+function buildDisallowedTools(callerProvided?: string[]): string[] {
+  const merged = new Set<string>(HARNESS_ONLY_DISALLOWED_TOOLS);
+  for (const name of callerProvided ?? []) merged.add(name);
+  return Array.from(merged);
+}
 const CLAUDECODE_INPUT_DELTA_BATCH_ENABLED =
   process.env.CLAUDECODE_INPUT_DELTA_BATCH_ENABLED !== "false";
 const CLAUDECODE_INPUT_DELTA_BATCH_MAX_CHARS = (() => {
@@ -1237,7 +1281,7 @@ function createStreamingClaudeCodeResponse(options: {
             ...(seleneMcpServers ? { mcpServers: seleneMcpServers } : {}),
             ...(sdk?.agents ? { agents: sdk.agents } : {}),
             ...(sdk?.allowedTools ? { allowedTools: sdk.allowedTools } : {}),
-            ...(sdk?.disallowedTools ? { disallowedTools: sdk.disallowedTools } : {}),
+            disallowedTools: buildDisallowedTools(sdk?.disallowedTools),
             ...(finalHooks ? { hooks: finalHooks } : {}),
             ...(mergedPlugins ? { plugins: mergedPlugins } : {}),
             ...(sdk?.resume ? { resume: sdk.resume } : {}),
@@ -1871,7 +1915,7 @@ async function runClaudeAgentQuery(options: {
       // SDK-native passthrough options
       ...(sdk?.agents ? { agents: sdk.agents } : {}),
       ...(sdk?.allowedTools ? { allowedTools: sdk.allowedTools } : {}),
-      ...(sdk?.disallowedTools ? { disallowedTools: sdk.disallowedTools } : {}),
+      disallowedTools: buildDisallowedTools(sdk?.disallowedTools),
       ...(finalHooks ? { hooks: finalHooks } : {}),
       ...(mergedPlugins ? { plugins: mergedPlugins } : {}),
       ...(sdk?.resume ? { resume: sdk.resume } : {}),

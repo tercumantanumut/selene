@@ -637,6 +637,15 @@ export async function buildToolsForRequest(
       });
 
     // (a) SDK built-in tools (Bash, Read, Write, etc.)
+    //
+    // NOTE: Harness-only SDK tools (ScheduleWakeup, Cron*, Monitor,
+    // PushNotification, RemoteTrigger, EnterWorktree, ExitWorktree) are
+    // intentionally absent from this list. They are blocked at the SDK level
+    // via `disallowedTools` in claudecode-provider.ts (HARNESS_ONLY_DISALLOWED_TOOLS),
+    // so the model never emits a tool_use for them. Selene exposes real
+    // equivalents via MCP (`scheduleTask` for scheduling, `workspace` for
+    // git worktrees). If you add a name here that is also disallowed at the
+    // SDK level, the registration is a dead branch — keep them in sync.
     const SDK_AGENT_TOOLS = [
       "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep",
       "Task", "WebFetch", "WebSearch", "NotebookEdit", "TodoRead",
@@ -645,14 +654,6 @@ export async function buildToolsForRequest(
       "AskUserQuestion", "Agent", "TaskOutput", "TaskStop",
       "Skill", "EnterPlanMode", "ExitPlanMode",
       "TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
-      "EnterWorktree", "ExitWorktree",
-      // Claude Agent SDK tools added in Opus 4.7:
-      // ScheduleWakeup paces /loop dynamic mode; the cron family manages
-      // recurring triggers; Monitor streams events from background tasks;
-      // PushNotification / RemoteTrigger drive remote agent signaling.
-      "ScheduleWakeup",
-      "CronCreate", "CronDelete", "CronList",
-      "Monitor", "PushNotification", "RemoteTrigger",
     ] as const;
 
     for (const name of SDK_AGENT_TOOLS) {

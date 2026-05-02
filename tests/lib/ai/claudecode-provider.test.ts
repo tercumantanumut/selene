@@ -502,7 +502,13 @@ describe("queryWithSdkOptions — SDK options forwarding", () => {
     expect(callArg.options.agents).toEqual(agents);
   });
 
-  it("forwards allowedTools and disallowedTools to SDK query()", async () => {
+  it("forwards allowedTools and merges caller disallowedTools with the always-disallowed harness-only list", async () => {
+    // The provider always disallows Claude Code harness-only tools that the
+    // SDK ships as declarations only (ScheduleWakeup, Cron*, Monitor,
+    // PushNotification, RemoteTrigger, EnterWorktree, ExitWorktree). They have
+    // no SDK execution and would otherwise be silently called by the model
+    // and return fabricated "success" narration. Caller-provided entries are
+    // merged on top of that baseline.
     await queryWithSdkOptions({
       prompt: "hi",
       sdkOptions: { allowedTools: ["Bash", "Read"], disallowedTools: ["Write"] },
@@ -510,7 +516,31 @@ describe("queryWithSdkOptions — SDK options forwarding", () => {
 
     const callArg = (mockQuery as MockedFunction<typeof mockQuery>).mock.calls[0][0];
     expect(callArg.options.allowedTools).toEqual(["Bash", "Read"]);
-    expect(callArg.options.disallowedTools).toEqual(["Write"]);
+    // Always present (harness-only baseline):
+    expect(callArg.options.disallowedTools).toEqual(
+      expect.arrayContaining([
+        "ScheduleWakeup",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "Monitor",
+        "PushNotification",
+        "RemoteTrigger",
+        "EnterWorktree",
+        "ExitWorktree",
+      ]),
+    );
+    // Caller-provided entry merged on top:
+    expect(callArg.options.disallowedTools).toEqual(expect.arrayContaining(["Write"]));
+  });
+
+  it("disallows harness-only tools by default even when caller passes no disallowedTools", async () => {
+    await queryWithSdkOptions({ prompt: "hi" });
+
+    const callArg = (mockQuery as MockedFunction<typeof mockQuery>).mock.calls[0][0];
+    expect(callArg.options.disallowedTools).toEqual(
+      expect.arrayContaining(["ScheduleWakeup", "EnterWorktree", "ExitWorktree"]),
+    );
   });
 
   it("injects a Bash sanitizer hook even when no other hooks are configured", async () => {
