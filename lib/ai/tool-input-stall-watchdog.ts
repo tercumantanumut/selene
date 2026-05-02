@@ -69,7 +69,9 @@ export function createToolInputStallWatchdog(
     const existing = handles.get(toolCallId);
     if (existing !== undefined) clearTimer(existing);
     if (toolName) names.set(toolCallId, toolName);
-    const resolvedName = names.get(toolCallId) ?? "tool";
+    // Empty string signals "we never saw a name" so callers can skip
+    // synthesizing a phantom-named tool-result on stall.
+    const resolvedName = names.get(toolCallId) ?? "";
     const handle = setTimer(() => {
       handles.delete(toolCallId);
       names.delete(toolCallId);

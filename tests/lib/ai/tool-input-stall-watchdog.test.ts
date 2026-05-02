@@ -155,7 +155,10 @@ describe("createToolInputStallWatchdog", () => {
     expect(onStall).toHaveBeenCalledWith("call-1", "bash", 1_000);
   });
 
-  it("uses 'tool' fallback when no name was ever provided", () => {
+  it("passes empty toolName when no name was ever provided so callers can skip phantom side-effects", () => {
+    // Regression: previously this fell back to the literal string "tool",
+    // which then round-tripped to the model on the next turn as a phantom
+    // function call named `tool` (confusing GPT-5/Codex reasoning).
     const timers = makeFakeTimers();
     const onStall = vi.fn();
     const watchdog = createToolInputStallWatchdog({
@@ -168,7 +171,7 @@ describe("createToolInputStallWatchdog", () => {
     watchdog.arm("call-1");
     const [handle] = Array.from(timers.pending.keys());
     timers.fire(handle);
-    expect(onStall).toHaveBeenCalledWith("call-1", "tool", 1_000);
+    expect(onStall).toHaveBeenCalledWith("call-1", "", 1_000);
   });
 
   it("ignores empty toolCallIds for arm and disarm", () => {

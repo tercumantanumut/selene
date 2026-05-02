@@ -329,6 +329,17 @@ function buildUIPartsFromDBContent(
       if (renderedToolCallIds.has(part.toolCallId)) {
         continue;
       }
+      // Boundary filter: drop parts whose toolName is missing or the literal
+      // "tool" placeholder. Such rows can exist from before the streaming-state
+      // fix (or from any future regression) — projecting them as `tool-tool`
+      // round-trips to the model and produces confused reasoning summaries
+      // ("I called a function with a strange name 'tool'…").
+      if (!part.toolName || part.toolName === "tool") {
+        console.warn(
+          `[CONVERTER] Dropping unnamed tool-call ${part.toolCallId} from UI projection (toolName=${JSON.stringify(part.toolName)})`
+        );
+        continue;
+      }
       const toolResult = toolResults.get(part.toolCallId);
       const inferredState: ToolInvocationState =
         toolResult?.state ||
@@ -425,7 +436,15 @@ function buildUIPartsFromDBContent(
     for (const [toolCallId, toolResult] of toolResults) {
       if (renderedToolCallIds.has(toolCallId)) continue;
 
-      const toolName = toolResult.toolName || "tool";
+      // Same boundary filter for orphan results: refuse to synthesize a
+      // `tool-tool` UI part that would round-trip to the model.
+      if (!toolResult.toolName || toolResult.toolName === "tool") {
+        console.warn(
+          `[CONVERTER] Dropping orphan tool-result ${toolCallId} from UI projection (toolName=${JSON.stringify(toolResult.toolName)})`
+        );
+        continue;
+      }
+      const toolName = toolResult.toolName;
       const rawState: ToolInvocationState =
         toolResult.state ||
         (toolResult.errorText ? "output-error" : "output-available");

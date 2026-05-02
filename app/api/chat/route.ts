@@ -1079,11 +1079,17 @@ export async function POST(req: Request) {
       stallMs: TOOL_INPUT_STALL_MS,
       isCancelled: () => chatAbortController.signal.aborted,
       onStall: (toolCallId, toolName, stallMs) => {
+        const labelName = toolName || "<unnamed>";
         console.warn(
-          `[CHAT API] Tool-input stall: ${toolName} (${toolCallId}) — no deltas for ${stallMs}ms ` +
+          `[CHAT API] Tool-input stall: ${labelName} (${toolCallId}) — no deltas for ${stallMs}ms ` +
             `(session=${sessionId}, run=${watchdogRunId}). Aborting run.`
         );
-        if (streamingState && syncStreamingMessage) {
+        // If we never saw a toolName for this stalled call, skip writing a
+        // tool-result entirely — synthesizing one with a placeholder name
+        // would round-trip back to the model on the next turn and confuse it
+        // (see GPT-5/Codex phantom-"tool" issue). The run-level abort below
+        // still surfaces the failure to the user.
+        if (toolName && streamingState && syncStreamingMessage) {
           const stallSeconds = Math.round(stallMs / 1000);
           const recorded = recordToolResultChunk(
             streamingState,
@@ -1099,7 +1105,7 @@ export async function POST(req: Request) {
             void syncStreamingMessage();
           }
         }
-        chatAbortController.abort(`tool-input-stall:${toolName}:${stallMs}ms`);
+        chatAbortController.abort(`tool-input-stall:${labelName}:${stallMs}ms`);
       },
     });
     chatAbortController.signal.addEventListener(

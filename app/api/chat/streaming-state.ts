@@ -24,6 +24,14 @@ export interface StreamingMessageState {
   parts: DBContentPart[];
   toolCallParts: Map<string, DBToolCallPart>;
   loggedIncompleteToolCalls: Set<string>;
+  /**
+   * argsText deltas received before a `tool-input-start` (or the equivalent
+   * `tool-call`) supplied a toolName. We buffer them keyed by toolCallId and
+   * drain on the first `ensureToolCallPart` call that has a real name. If no
+   * name ever arrives, the buffer is dropped along with the unnamed run.
+   * See: GPT-5/Codex Responses API occasionally omits/late-emits toolName.
+   */
+  pendingArgsDeltas?: Map<string, string>;
   messageId?: string;
   isCreating?: boolean;
   lastBroadcastAt: number;
@@ -139,17 +147,21 @@ export function appendReasoningPartToState(
   return true;
 }
 
-function ensureToolCallPart(state: StreamingMessageState, toolCallId: string, toolName?: string): DBToolCallPart {
+function ensureToolCallPart(state: StreamingMessageState, toolCallId: string, toolName?: string): DBToolCallPart | null {
   let part = state.toolCallParts.get(toolCallId);
   if (!part) {
+    if (!toolName) return null;
+    const buffered = state.pendingArgsDeltas?.get(toolCallId);
     part = applyProvenanceToPart(state, {
       type: "tool-call",
       toolCallId,
-      toolName: toolName ?? "tool",
+      toolName,
       state: "input-streaming",
+      ...(buffered ? { argsText: buffered } : {}),
     }) as DBToolCallPart;
     state.toolCallParts.set(toolCallId, part);
     state.parts.push(part);
+    state.pendingArgsDeltas?.delete(toolCallId);
   } else if (toolName && part.toolName !== toolName) {
     part.toolName = toolName;
   }
@@ -161,6 +173,17 @@ export function recordToolInputStart(state: StreamingMessageState, toolCallId: s
     return false;
   }
   const part = ensureToolCallPart(state, toolCallId, toolName);
+  if (!part) {
+    const key = `unnamed:${toolCallId}`;
+    if (!state.loggedIncompleteToolCalls.has(key)) {
+      state.loggedIncompleteToolCalls.add(key);
+      console.warn(
+        `[CHAT API] Deferring tool-input-start without toolName for ${toolCallId}. ` +
+        `Likely upstream provider (e.g. GPT-5/Codex Responses API) emitted an unnamed chunk.`
+      );
+    }
+    return false;
+  }
   part.state = "input-streaming";
   return true;
 }
@@ -170,6 +193,26 @@ export function recordToolInputDelta(state: StreamingMessageState, toolCallId: s
     return false;
   }
   const part = ensureToolCallPart(state, toolCallId);
+  if (!part) {
+    // No named part exists yet for this toolCallId — buffer the delta until a
+    // real toolName arrives via tool-input-start or tool-call. If nothing
+    // arrives, the buffer is dropped (no phantom part is ever created).
+    if (!state.pendingArgsDeltas) state.pendingArgsDeltas = new Map();
+    const existing = state.pendingArgsDeltas.get(toolCallId) ?? "";
+    if (existing.length + delta.length > MAX_ARGS_TEXT_BYTES) {
+      const guardKey = `pending-oversized:${toolCallId}`;
+      if (!state.loggedIncompleteToolCalls.has(guardKey)) {
+        state.loggedIncompleteToolCalls.add(guardKey);
+        console.warn(
+          `[CHAT API] Pending argsText for unnamed ${toolCallId} would exceed ${MAX_ARGS_TEXT_BYTES} bytes ` +
+          `(current: ${existing.length}, delta: ${delta.length}). Dropping further deltas.`
+        );
+      }
+      return false;
+    }
+    state.pendingArgsDeltas.set(toolCallId, existing + delta);
+    return false;
+  }
   const currentLength = part.argsText?.length ?? 0;
 
   // Hard cap: stop accumulating if argsText would exceed the safety limit.
@@ -351,6 +394,12 @@ export function sealDanglingToolCalls(
       continue;
     }
 
+    // Skip parts with no toolName — synthesizing a phantom-named tool-result
+    // would round-trip back to the model on the next turn and confuse it.
+    if (!part.toolName) {
+      continue;
+    }
+
     // Normalize unresolved tool call into a terminal state.
     if (!part.args) {
       if (part.argsText) {
@@ -369,7 +418,7 @@ export function sealDanglingToolCalls(
     nextParts.push({
       type: "tool-result",
       toolCallId: part.toolCallId,
-      toolName: part.toolName || "tool",
+      toolName: part.toolName,
       result: {
         status: "error",
         error: reason,
@@ -422,6 +471,17 @@ export function recordStructuredToolCall(
     return false;
   }
   const part = ensureToolCallPart(state, toolCallId, toolName);
+  if (!part) {
+    const key = `unnamed:${toolCallId}`;
+    if (!state.loggedIncompleteToolCalls.has(key)) {
+      state.loggedIncompleteToolCalls.add(key);
+      console.warn(
+        `[CHAT API] Dropping structured tool-call without toolName for ${toolCallId}.`
+      );
+    }
+    state.pendingArgsDeltas?.delete(toolCallId);
+    return false;
+  }
 
   if (part.argsText && part.argsText.length > 0) {
     const serializedInput = JSON.stringify(input ?? {});
@@ -473,8 +533,21 @@ export function recordToolResultChunk(
   if (!toolCallId) {
     return false;
   }
-  const normalizedName = toolName || state.toolCallParts.get(toolCallId)?.toolName || "tool";
+  const existingName = state.toolCallParts.get(toolCallId)?.toolName;
+  const normalizedName = toolName || existingName || "";
   const callPart = ensureToolCallPart(state, toolCallId, normalizedName);
+  if (!callPart) {
+    const key = `unnamed-result:${toolCallId}`;
+    if (!state.loggedIncompleteToolCalls.has(key)) {
+      state.loggedIncompleteToolCalls.add(key);
+      console.warn(
+        `[CHAT API] Dropping tool-result without toolName for ${toolCallId}; ` +
+        `no prior named tool-call exists.`
+      );
+    }
+    state.pendingArgsDeltas?.delete(toolCallId);
+    return false;
+  }
   const normalized = normalizeToolResultOutput(
     normalizedName,
     output,
