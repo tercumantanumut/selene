@@ -17,6 +17,7 @@ import { hybridSearchV2 } from "./v2/hybrid-search";
 import { searchSwiftEngine } from "./swift-engine-adapter";
 import { SwiftEngineUnavailableError } from "@/lib/swift-engine/types";
 import { getVectorSearchConfig } from "@/lib/config/vector-search";
+import { recordEngineSelection } from "@/lib/swift-engine/telemetry";
 
 /**
  * Router that picks the active vector-search engine based on global config.
@@ -30,24 +31,50 @@ export async function searchWithRouter(params: {
   const config = getVectorSearchConfig();
 
   if (config.searchEngine === "swift") {
+    const startedAt = Date.now();
     try {
-      return await searchSwiftEngine(params);
+      const hits = await searchSwiftEngine(params);
+      recordEngineSelection({
+        engine: "swift",
+        outcome: "primary",
+        durationMs: Date.now() - startedAt,
+      });
+      return hits;
     } catch (err) {
       if (err instanceof SwiftEngineUnavailableError) {
         console.warn(
           `[SearchRouter] Swift engine unavailable (${err.state}); falling back to LanceDB.`,
         );
+        recordEngineSelection({
+          engine: "lance",
+          outcome: "fallback-unavailable",
+          durationMs: Date.now() - startedAt,
+          errorCode: `swift_unavailable:${err.state}`,
+        });
         return runLanceFallback(params, config.enableHybridSearch);
       }
+      // Non-availability adapter errors propagate (preserves prior behaviour);
+      // record the fallback-style telemetry so operators still see the spike.
+      recordEngineSelection({
+        engine: "swift",
+        outcome: "fallback-error",
+        durationMs: Date.now() - startedAt,
+        errorCode: err instanceof Error ? err.name || "swift_error" : "swift_error",
+      });
       throw err;
     }
   }
 
-  if (config.enableHybridSearch) {
-    return hybridSearchV2(params);
-  }
-
-  return searchVectorDB(params);
+  const startedAt = Date.now();
+  const hits = config.enableHybridSearch
+    ? await hybridSearchV2(params)
+    : await searchVectorDB(params);
+  recordEngineSelection({
+    engine: "lance",
+    outcome: "primary",
+    durationMs: Date.now() - startedAt,
+  });
+  return hits;
 }
 
 function runLanceFallback(
