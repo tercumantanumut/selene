@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearClaudeCodeSubagentActivityForTests,
   getClaudeCodeSubagentSnapshot,
@@ -11,7 +11,6 @@ import {
 describe("Claude Code native sub-agent activity store", () => {
   beforeEach(() => {
     clearClaudeCodeSubagentActivityForTests();
-    vi.useFakeTimers();
   });
 
   it("records start, live nested activity, and completion", () => {
@@ -65,7 +64,13 @@ describe("Claude Code native sub-agent activity store", () => {
       description: "fallback probe",
     });
 
-    vi.advanceTimersByTime(5_001);
+    recordClaudeCodeSubagentActivity({
+      userId: "u1",
+      sessionId: "s1",
+      parentToolUseId: "toolu_2",
+      type: "stream-unavailable",
+      summary: "Live nested stream is unavailable; waiting for Claude Code completion.",
+    });
 
     const snapshot = getClaudeCodeSubagentSnapshot({ userId: "u1", sessionId: "s1" });
     expect(snapshot.activities[0].streamAvailability).toBe("unavailable");

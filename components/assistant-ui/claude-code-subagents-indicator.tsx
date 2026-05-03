@@ -34,9 +34,14 @@ function statusIcon(activity: ClaudeCodeSubagentActivity) {
   return <Loader2 className="h-3.5 w-3.5 animate-spin text-orange-500" />;
 }
 
-export const ClaudeCodeSubagentsIndicator: FC<{ sessionId?: string | null }> = ({ sessionId }) => {
+interface ClaudeCodeSubagentsIndicatorProps {
+  enabled?: boolean;
+  sessionId?: string | null;
+}
+
+const ClaudeCodeSubagentsIndicatorContent: FC<{ sessionId: string }> = ({ sessionId }) => {
   useClaudeCodeSubagentEvents(sessionId);
-  const activities = useClaudeCodeSubagentActivities(sessionId ?? undefined);
+  const activities = useClaudeCodeSubagentActivities(sessionId);
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = useMemo(
@@ -45,7 +50,7 @@ export const ClaudeCodeSubagentsIndicator: FC<{ sessionId?: string | null }> = (
   );
   const timeline = useClaudeCodeSubagentTimeline(selected?.id);
 
-  if (!sessionId || activities.length === 0) return null;
+  if (activities.length === 0) return null;
 
   const activeCount = activities.filter((activity) => activity.status === "running" || activity.status === "starting").length;
   const label = activeCount > 0
@@ -149,4 +154,12 @@ export const ClaudeCodeSubagentsIndicator: FC<{ sessionId?: string | null }> = (
       </Dialog>
     </div>
   );
+};
+
+export const ClaudeCodeSubagentsIndicator: FC<ClaudeCodeSubagentsIndicatorProps> = ({
+  enabled = false,
+  sessionId,
+}) => {
+  if (!enabled || !sessionId) return null;
+  return <ClaudeCodeSubagentsIndicatorContent sessionId={sessionId} />;
 };

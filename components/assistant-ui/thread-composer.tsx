@@ -2279,7 +2279,10 @@ export const Composer: FC<{
         workspaceMode={workspaceMode}
         onOpenSession={onOpenDelegationSession}
       />
-      <ClaudeCodeSubagentsIndicator sessionId={sessionId} />
+      <ClaudeCodeSubagentsIndicator
+        enabled={activeLlmProvider === "claudecode"}
+        sessionId={sessionId}
+      />
       <BackgroundProcessesIndicator
         characterId={character?.id ?? null}
         sessionId={sessionId}

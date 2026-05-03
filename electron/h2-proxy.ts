@@ -144,12 +144,12 @@ export function startH2Proxy(opts: H2ProxyOptions): http2.Http2SecureServer {
     });
 
     // If the client disconnects early, cleanly tear down the upstream pipeline.
-    // We set clientDisconnected first so the error handlers on proxyReq/proxyRes
-    // know not to log or re-respond — the "aborted" errors they emit are a
-    // side-effect of our own destroy() calls, not real upstream failures.
+    // Do not use req "close" for this: on HTTP/2 GET/SSE requests the request
+    // side can close as soon as headers/body are consumed while the response
+    // stream is still meant to stay open.
     let clientDisconnected = false;
     let activeProxyRes: http.IncomingMessage | null = null;
-    req.on("close", () => {
+    const teardownUpstream = () => {
       clientDisconnected = true;
       if (!proxyReq.destroyed) {
         proxyReq.destroy();
@@ -157,7 +157,8 @@ export function startH2Proxy(opts: H2ProxyOptions): http2.Http2SecureServer {
       if (activeProxyRes && !activeProxyRes.destroyed) {
         activeProxyRes.destroy();
       }
-    });
+    };
+    req.on("aborted", teardownUpstream);
 
     // Pipe client request body → upstream without buffering.
     req.pipe(proxyReq);

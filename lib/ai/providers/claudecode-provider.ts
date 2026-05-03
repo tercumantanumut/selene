@@ -623,6 +623,66 @@ function textPreview(value: unknown, fallback = "", max = 360): string {
   }
 }
 
+
+function extractTextFromClaudeSdkContent(content: unknown): string | undefined {
+  if (typeof content === "string") return textPreview(content);
+  if (!Array.isArray(content)) return undefined;
+
+  const text = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!isDictionary(part)) return "";
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.content === "string") return part.content;
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+
+  return text.trim() ? textPreview(text) : undefined;
+}
+
+function summarizeNestedClaudeSdkEvent(rawMessage: Record<string, unknown>): { summary?: string; toolName?: string } {
+  const event = isDictionary(rawMessage.event) ? rawMessage.event : null;
+  const block = isDictionary(event?.content_block) ? event.content_block : null;
+  const delta = isDictionary(event?.delta) ? event.delta : null;
+  const toolName = normalizeClaudeSdkToolName(block?.name) ?? normalizeClaudeSdkToolName(rawMessage.tool_name);
+
+  if (typeof delta?.text === "string" && delta.text.trim()) {
+    return { summary: textPreview(delta.text), toolName };
+  }
+
+  if (typeof delta?.partial_json === "string" && delta.partial_json.trim()) {
+    return { summary: `${toolName || "Tool"} input: ${textPreview(delta.partial_json)}`, toolName };
+  }
+
+  if (toolName && event?.type === "content_block_start") {
+    return { summary: `Started ${toolName}.`, toolName };
+  }
+
+  if (rawMessage.type === "tool_progress") {
+    const progressToolName = normalizeClaudeSdkToolName(rawMessage.tool_name);
+    return {
+      summary: `Running ${progressToolName || "tool"}${typeof rawMessage.elapsed_time_seconds === "number" ? ` for ${rawMessage.elapsed_time_seconds}s` : ""}.`,
+      toolName: progressToolName,
+    };
+  }
+
+  const innerMessage = isDictionary(rawMessage.message) ? rawMessage.message : null;
+  const contentText = extractTextFromClaudeSdkContent(innerMessage?.content ?? rawMessage.content);
+  if (contentText) return { summary: contentText, toolName };
+
+  if (typeof rawMessage.tool_use_result === "string" && rawMessage.tool_use_result.trim()) {
+    return { summary: textPreview(rawMessage.tool_use_result), toolName };
+  }
+
+  if (rawMessage.tool_use_result !== undefined) {
+    return { summary: textPreview(rawMessage.tool_use_result), toolName };
+  }
+
+  return { toolName };
+}
+
 function extractRootAgentToolStart(message: unknown): Array<{
   parentToolUseId: string;
   toolName: string;
@@ -751,23 +811,15 @@ function captureClaudeCodeSubagentMessage(
     }
 
     if (parentToolUseId) {
-      const event = isDictionary(rawMessage.event) ? rawMessage.event : null;
-      const block = isDictionary(event?.content_block) ? event?.content_block : null;
-      const delta = isDictionary(event?.delta) ? event?.delta : null;
-      const toolName = normalizeClaudeSdkToolName(block?.name);
-      const summary =
-        typeof delta?.text === "string" ? delta.text :
-        typeof delta?.partial_json === "string" ? `${toolName || "Tool"} input: ${delta.partial_json}` :
-        toolName ? `Started ${toolName}.` :
-        typeof rawMessage.tool_use_result === "string" ? rawMessage.tool_use_result :
-        `Claude Code nested ${rawMessage.type || "event"}.`;
+      const { summary, toolName } = summarizeNestedClaudeSdkEvent(rawMessage);
+      if (!summary) return;
       recordClaudeCodeSubagentActivity({
         ...scope,
         parentToolUseId,
         taskId,
         status: "running",
         toolName,
-        summary: textPreview(summary),
+        summary,
         streamEvent: true,
       });
     }

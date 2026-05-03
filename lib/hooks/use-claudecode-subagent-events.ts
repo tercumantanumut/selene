@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { startTransition, useEffect } from "react";
 import { useClaudeCodeSubagentActivityStore } from "@/lib/stores/claudecode-subagent-activity-store";
 import type {
   ClaudeCodeSubagentActivity,
@@ -16,6 +16,12 @@ function parseJson<T>(raw: string): T | null {
   }
 }
 
+function deferStoreUpdate(update: () => void) {
+  queueMicrotask(() => {
+    startTransition(update);
+  });
+}
+
 export function useClaudeCodeSubagentEvents(sessionId?: string | null) {
   const setSnapshot = useClaudeCodeSubagentActivityStore((state) => state.setSnapshot);
   const appendEvent = useClaudeCodeSubagentActivityStore((state) => state.appendEvent);
@@ -27,12 +33,12 @@ export function useClaudeCodeSubagentEvents(sessionId?: string | null) {
 
     const handleSnapshot = (event: MessageEvent<string>) => {
       const snapshot = parseJson<ClaudeCodeSubagentSnapshot>(event.data);
-      if (snapshot) setSnapshot(snapshot);
+      if (snapshot) deferStoreUpdate(() => setSnapshot(snapshot));
     };
 
     const handleActivity = (event: MessageEvent<string>) => {
       const payload = parseJson<{ event: ClaudeCodeSubagentEvent; activity: ClaudeCodeSubagentActivity }>(event.data);
-      if (payload?.event) appendEvent(payload.event, payload.activity);
+      if (payload?.event) deferStoreUpdate(() => appendEvent(payload.event, payload.activity));
     };
 
     source.addEventListener("snapshot", handleSnapshot as EventListener);

@@ -366,28 +366,11 @@ app.whenReady().then(async () => {
     }
   } else {
     debugLog("[App] Development mode - skipping embedded server");
-
-    // Start HTTP/2 proxy in dev too — same connection exhaustion applies.
-    // WebSocket upgrade is proxied for HMR compatibility.
-    if (localCerts) {
-      const DEV_PROXY_PORT = 3001;
-      const DEV_NEXT_PORT = 3000;
-      try {
-        startH2Proxy({
-          cert: localCerts.cert,
-          key: localCerts.key,
-          listenPort: DEV_PROXY_PORT,
-          targetPort: DEV_NEXT_PORT,
-        });
-        debugLog(`[App] HTTP/2 dev proxy started: https://localhost:${DEV_PROXY_PORT} → http://localhost:${DEV_NEXT_PORT}`);
-      } catch (error) {
-        debugError("[App] Failed to start dev HTTP/2 proxy:", error);
-      }
-    }
+    debugLog("[App] Development mode - using Next.js dev server directly");
   }
 
   // Determine the URL the renderer will load
-  const useH2 = localCerts != null;
+  const useH2 = !isDev && localCerts != null;
   const devProxyUrl = useH2 ? "https://127.0.0.1:3001" : "http://127.0.0.1:3000";
 
   debugLog("[App] Setting up IPC handlers...");

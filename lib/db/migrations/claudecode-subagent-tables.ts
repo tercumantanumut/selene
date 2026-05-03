@@ -1,11 +1,24 @@
 import Database from "better-sqlite3";
 
+function migrateLegacyForeignKeyTable(sqlite: Database.Database): void {
+  const table = sqlite.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='claudecode_subagent_activities'",
+  ).get() as { sql?: string } | undefined;
+  if (!table?.sql || !/REFERENCES\s+(users|sessions)/i.test(table.sql)) return;
+
+  sqlite.exec(`
+    DROP TABLE IF EXISTS claudecode_subagent_events;
+    DROP TABLE IF EXISTS claudecode_subagent_activities;
+  `);
+}
+
 export function initClaudeCodeSubagentTablesWith(sqlite: Database.Database): void {
+  migrateLegacyForeignKeyTable(sqlite);
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS claudecode_subagent_activities (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
       run_id TEXT,
       character_id TEXT,
       parent_tool_use_id TEXT NOT NULL,
