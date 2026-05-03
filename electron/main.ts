@@ -12,6 +12,7 @@ import * as fs from "fs";
 import Module from "module";
 import { initializeRTK } from "../lib/rtk";
 import { initializeProcessEnvironment } from "../lib/process-env/policy";
+import { getSwiftEngineSidecar } from "../lib/swift-engine/sidecar";
 
 // ---------------------------------------------------------------------------
 // Dev-mode detection
@@ -291,6 +292,21 @@ app.whenReady().then(async () => {
     await initializeRTK();
   } catch (error) {
     debugError("[RTK] Initialization failed:", error);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Swift engine sidecar (Phase 1, opt-in via SEARCH_ENGINE=swift)
+  // Non-blocking: failure here must NEVER block app boot. The search-router
+  // falls back to LanceDB when sendRequest throws SwiftEngineUnavailableError.
+  // ---------------------------------------------------------------------------
+  try {
+    const sidecar = getSwiftEngineSidecar();
+    sidecar.start().then(
+      () => debugLog("[SwiftEngine] sidecar ready"),
+      (err) => debugError("[SwiftEngine] startup failed:", err),
+    );
+  } catch (error) {
+    debugError("[SwiftEngine] supervisor init failed:", error);
   }
 
   // ---------------------------------------------------------------------------
@@ -660,6 +676,9 @@ app.on("before-quit", () => {
   void cleanupAllVoiceProcesses().catch((err) => {
     debugError("[App] Voice process cleanup failed:", err);
   });
+  void getSwiftEngineSidecar()
+    .dispose()
+    .catch((err) => debugError("[SwiftEngine] dispose failed:", err));
 });
 
 // Security: Prevent new webview creation
