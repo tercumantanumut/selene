@@ -596,6 +596,100 @@ try {
     console.log('  RTK bundle step failed or skipped; experimental RTK mode will remain unavailable.');
 }
 
+// 14b. Verify the Swift sidecar binary (Sprint 7 W7.1.B) is present and
+// executable. The binary is produced by ../swiftapp/scripts/build-swift-engine.sh
+// and placed at binaries/selene-engine/<platform>/selene-engine. At runtime
+// lib/swift-engine/sidecar.ts looks for it under
+// process.resourcesPath/binaries/selene-engine/<platform>/selene-engine in
+// packaged builds, falling back to the dev .build/release-bundle path.
+//
+// Phase 1 contract: the SEARCH_ENGINE config defaults to "lance", so a missing
+// sidecar binary must NOT fail the build — runtime falls back to LanceDB.
+// We only invoke the upstream builder if SELENE_ENGINE_REPO points to the
+// swiftapp checkout AND the binary is missing.
+console.log('Verifying Swift sidecar binary (selene-engine)...');
+(() => {
+    const swiftPlatform = (() => {
+        if (process.platform === 'darwin') {
+            // Prefer the universal slice if present (production .dmg target),
+            // else fall back to the host-arch slice.
+            return ['macos-universal', process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64'];
+        }
+        if (process.platform === 'linux') {
+            return ['linux-x64'];
+        }
+        if (process.platform === 'win32') {
+            return ['win32-x64'];
+        }
+        return [];
+    })();
+
+    const binaryName = process.platform === 'win32' ? 'selene-engine.exe' : 'selene-engine';
+    const swiftEngineRoot = path.join(rootDir, 'binaries', 'selene-engine');
+
+    const findExisting = () => {
+        for (const sub of swiftPlatform) {
+            const candidate = path.join(swiftEngineRoot, sub, binaryName);
+            if (fs.existsSync(candidate)) return { sub, path: candidate };
+        }
+        return null;
+    };
+
+    let found = findExisting();
+
+    if (!found && process.env.SELENE_ENGINE_REPO) {
+        const repo = process.env.SELENE_ENGINE_REPO;
+        const builder = path.join(repo, 'scripts', 'build-swift-engine.sh');
+        if (fs.existsSync(builder)) {
+            console.log(`  Binary missing — invoking upstream builder at ${builder}`);
+            // Default arch: universal on macOS so the same dmg ships to both
+            // Apple Silicon and Intel; native elsewhere.
+            const arch = process.platform === 'darwin' ? 'universal' : 'native';
+            const outDir = path.join(
+                swiftEngineRoot,
+                process.platform === 'darwin'
+                    ? (arch === 'universal' ? 'macos-universal' : (process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64'))
+                    : (process.platform === 'linux' ? 'linux-x64' : 'win32-x64'),
+            );
+            ensureDir(outDir);
+            try {
+                execSync(`bash "${builder}" --arch ${arch} --output-dir "${outDir}"`, {
+                    stdio: 'inherit',
+                    cwd: repo,
+                });
+            } catch (error) {
+                console.warn(`  Warning: build-swift-engine.sh failed (${error.message}). Continuing without sidecar — runtime will fall back to LanceDB.`);
+            }
+            found = findExisting();
+        } else {
+            console.warn(`  Warning: SELENE_ENGINE_REPO=${repo} but ${builder} is missing.`);
+        }
+    }
+
+    if (!found) {
+        console.warn(
+            '  Warning: selene-engine binary not found under binaries/selene-engine/<platform>/. '
+            + 'Sprint 7 Phase 1 ships SEARCH_ENGINE=lance by default, so runtime will fall back '
+            + 'to LanceDB. To bundle the Swift sidecar, set SELENE_ENGINE_REPO to your swiftapp '
+            + 'checkout (or run scripts/build-swift-engine.sh manually) and re-run electron:prepare.'
+        );
+        return;
+    }
+
+    ensureExecutable(found.path);
+    try {
+        const stats = fs.statSync(found.path);
+        const isExec = (stats.mode & 0o111) !== 0;
+        if (!isExec) {
+            console.warn(`  Warning: ${found.path} exists but is not marked executable.`);
+        } else {
+            console.log(`  selene-engine ready at binaries/selene-engine/${found.sub}/${binaryName} (${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
+        }
+    } catch (error) {
+        console.warn(`  Warning: could not stat selene-engine binary: ${error.message}`);
+    }
+})();
+
 // 15. Bundle Node.js executable for MCP subprocess spawning
 // Downloads the official Node.js binary from nodejs.org which is fully statically linked.
 // IMPORTANT: Do NOT use process.execPath (Homebrew/nvm node) — those binaries dynamically
