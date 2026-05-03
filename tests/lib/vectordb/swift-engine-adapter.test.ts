@@ -67,6 +67,35 @@ const fakeSidecar: SwiftEngineSidecar = {
     );
     return result as SwiftEngineResponse<TResult>;
   },
+  // Mirrors the production callTool helper: records a synthetic
+  // `{method: name, params: args}` request so existing assertions on
+  // `lastRequest()` still inspect the search params directly. The actual
+  // wire-shape sent to the binary is `tools/call` (verified by the
+  // integration smoke at tests/integration/swift-engine-e2e.test.ts).
+  callTool: async <TResult = unknown>(
+    name: string,
+    args: Record<string, unknown> = {},
+  ) => {
+    const synthetic: SwiftEngineRequest<unknown> = {
+      method: name,
+      params: args,
+    };
+    sentRequests.push(synthetic);
+    const inner = await fakeSidecarState.handleRequest(synthetic);
+    if (inner.error) {
+      return { error: inner.error };
+    }
+    // Wrap the test fixture result in the tool-call envelope shape.
+    const parsed = inner.result as TResult | undefined;
+    return {
+      result: {
+        parsed,
+        rawTexts:
+          parsed === undefined ? [] : [JSON.stringify(parsed)],
+        isError: false,
+      },
+    };
+  },
 };
 
 // Plant the fake via the adapter's test seam (the production

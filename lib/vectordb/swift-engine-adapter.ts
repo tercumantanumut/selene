@@ -29,7 +29,6 @@
 
 import type {
   SwiftEngineSidecar,
-  SwiftEngineResponse,
 } from "@/lib/swift-engine/types";
 import { SwiftEngineUnavailableError } from "@/lib/swift-engine/types";
 import type {
@@ -190,12 +189,15 @@ export async function searchSwiftEngine(params: {
   const config = getVectorSearchConfig();
   const mcpParams = buildVectorSearchParams(params, config.enableQueryExpansion);
 
-  let response: SwiftEngineResponse<SwiftVectorSearchResult>;
+  let envelope: Awaited<ReturnType<typeof sidecar.callTool<SwiftVectorSearchResult>>>;
   try {
-    response = await sidecar.sendRequest<SwiftVectorSearchParams, SwiftVectorSearchResult>({
-      method: "vector.search",
-      params: mcpParams,
-    });
+    // The Swift binary requires the standard MCP `tools/call` envelope —
+    // calling raw `vector.search` returns "Method not found". The
+    // SwiftEngineSidecar.callTool helper wraps + parses the envelope.
+    envelope = await sidecar.callTool<SwiftVectorSearchResult>(
+      "vector.search",
+      mcpParams as unknown as Record<string, unknown>,
+    );
   } catch (err) {
     // Transport-level failure (process died mid-request, request timed out, etc.)
     // is treated as "unavailable" so the router falls back rather than crashing.
@@ -204,13 +206,21 @@ export async function searchSwiftEngine(params: {
     throw new SwiftEngineUnavailableError(sidecar.health().state, message);
   }
 
-  if (response.error) {
-    const code = response.error.code;
-    const message = response.error.message ?? "vector.search failed";
+  if (envelope.error) {
+    const code = envelope.error.code;
+    const message = envelope.error.message ?? "vector.search failed";
     throw new Error(`[SwiftEngineAdapter] vector.search error (${code}): ${message}`);
   }
 
-  const result = response.result;
+  const toolResult = envelope.result;
+  // Tool reported a typed error envelope (e.g. embedding model unavailable).
+  // Surface it as an Error so search-router can record telemetry and decide.
+  if (toolResult?.isError) {
+    const errText = toolResult.rawTexts[0] ?? "tool reported isError";
+    throw new Error(`[SwiftEngineAdapter] vector.search tool-error: ${errText}`);
+  }
+
+  const result = toolResult?.parsed;
   if (!result || !Array.isArray(result.hits)) {
     return [];
   }

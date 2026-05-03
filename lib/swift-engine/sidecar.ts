@@ -30,6 +30,7 @@ import {
   type SwiftEngineSidecar,
   type SwiftEngineSidecarState,
   type SwiftEngineSpawnOptions,
+  type SwiftEngineToolCallResult,
   SwiftEngineUnavailableError,
 } from "./types";
 import { resolveBinaryPath } from "./binary-resolver";
@@ -193,6 +194,64 @@ export class SwiftEngineSidecarImpl implements SwiftEngineSidecar {
         );
       }
     });
+  }
+
+  /**
+   * Invoke an MCP tool via the standard `tools/call` envelope. The Swift
+   * engine ONLY dispatches tools through this envelope — calling raw tool
+   * methods (e.g. `method: "vector.search"`) returns "Method not found".
+   *
+   * Parses `content[0].text` as JSON. If the tool returned multiple text
+   * frames they are preserved verbatim in `rawTexts` for callers that need
+   * them. If the parse fails, `parsed` is undefined but `rawTexts` still
+   * holds the raw payloads.
+   */
+  async callTool<TResult = unknown>(
+    name: string,
+    args: Record<string, unknown> = {},
+  ): Promise<SwiftEngineResponse<SwiftEngineToolCallResult<TResult>>> {
+    type ToolCallEnvelope = {
+      content?: Array<{ type: string; text?: string }>;
+      isError?: boolean;
+    };
+    const raw = await this.sendRequest<
+      { name: string; arguments: Record<string, unknown> },
+      ToolCallEnvelope
+    >({
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+
+    if (raw.error) {
+      return { error: raw.error };
+    }
+
+    const envelope = raw.result;
+    const frames = Array.isArray(envelope?.content) ? envelope!.content : [];
+    const rawTexts: string[] = [];
+    for (const frame of frames) {
+      if (frame && typeof frame.text === "string") {
+        rawTexts.push(frame.text);
+      }
+    }
+
+    let parsed: TResult | undefined;
+    if (rawTexts.length > 0) {
+      try {
+        parsed = JSON.parse(rawTexts[0]) as TResult;
+      } catch {
+        // Tool returned a non-JSON text frame (rare — log-only tools, etc.).
+        // Leave parsed undefined; callers can still inspect rawTexts.
+      }
+    }
+
+    return {
+      result: {
+        parsed,
+        rawTexts,
+        isError: envelope?.isError === true,
+      },
+    };
   }
 
   isReady(): boolean {

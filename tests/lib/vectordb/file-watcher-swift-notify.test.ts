@@ -27,9 +27,17 @@ const mocks = vi.hoisted(() => {
   });
 
   const sendRequest = vi.fn(async () => ({ result: { accepted: 0, queued: 0 } }));
+  const callTool = vi.fn(async () => ({
+    result: {
+      parsed: { accepted: 0, queued: 0 },
+      rawTexts: [JSON.stringify({ accepted: 0, queued: 0 })],
+      isError: false,
+    },
+  }));
   const isReady = vi.fn(() => true);
   const sidecarFake = {
     sendRequest,
+    callTool,
     isReady,
     start: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
@@ -46,6 +54,7 @@ const mocks = vi.hoisted(() => {
     emitters,
     watchSpy,
     sendRequest,
+    callTool,
     isReady,
     sidecarFake,
     getSwiftEngineSidecar,
@@ -177,10 +186,15 @@ async function startWatcherFor(folderId: string, folderPath: string): Promise<Ev
   return em;
 }
 
+// callTool is invoked as `callTool(name, args)`; we rebuild the legacy
+// `{method, params}` shape so the existing test assertions stay readable.
 function getNotifyCalls(): Array<{ method: string; params: { folderId: string; changes: Array<{ path: string; op: string; oldPath?: string }> } }> {
-  return mocks.sendRequest.mock.calls
-    .map((c) => c[0] as { method: string; params: { folderId: string; changes: Array<{ path: string; op: string; oldPath?: string }> } })
-    .filter((req) => req?.method === "index.notifyChange");
+  return mocks.callTool.mock.calls
+    .filter(([name]) => name === "index.notifyChange")
+    .map(([name, args]) => ({
+      method: name as string,
+      params: args as { folderId: string; changes: Array<{ path: string; op: string; oldPath?: string }> },
+    }));
 }
 
 const ORIGINAL_SEARCH_ENGINE = process.env.SEARCH_ENGINE;
@@ -193,6 +207,14 @@ beforeEach(() => {
   mocks.emitters.length = 0;
   mocks.sendRequest.mockClear();
   mocks.sendRequest.mockResolvedValue({ result: { accepted: 0, queued: 0 } });
+  mocks.callTool.mockClear();
+  mocks.callTool.mockResolvedValue({
+    result: {
+      parsed: { accepted: 0, queued: 0 },
+      rawTexts: [JSON.stringify({ accepted: 0, queued: 0 })],
+      isError: false,
+    },
+  });
   mocks.isReady.mockReset();
   mocks.isReady.mockReturnValue(true);
   mocks.indexFileToVectorDB.mockClear();
@@ -243,6 +265,7 @@ describe("file-watcher Swift notifyChange dispatch", () => {
     await new Promise((r) => setTimeout(r, 350));
 
     expect(mocks.sendRequest).not.toHaveBeenCalled();
+    expect(mocks.callTool).not.toHaveBeenCalled();
     expect(mocks.getSwiftEngineSidecar).not.toHaveBeenCalled();
   });
 
@@ -383,7 +406,7 @@ describe("file-watcher Swift notifyChange dispatch", () => {
     procMock.mockClear();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      mocks.sendRequest.mockRejectedValue(
+      mocks.callTool.mockRejectedValue(
         new SwiftEngineUnavailableError("degraded", "boom"),
       );
       process.env.SEARCH_ENGINE = "swift";

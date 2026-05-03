@@ -92,6 +92,22 @@ export interface SwiftEngineResponse<TResult = unknown> {
 }
 
 /**
+ * MCP `tools/call` response envelope. The Swift engine wraps every tool result
+ * in `content: [{ type: "text", text: <json-stringified-dto> }]` per MCP spec.
+ * `isError: true` indicates the tool itself reported a typed error envelope
+ * (distinct from a JSON-RPC transport error, which lands in `response.error`).
+ */
+export interface SwiftEngineToolCallResult<TResult = unknown> {
+  /** Parsed JSON content of the tool's first text frame, or undefined when the
+   *  envelope was empty (e.g., streaming tool that emits side-channel frames). */
+  parsed?: TResult;
+  /** Raw text frames (in order) — useful for tools that emit multi-frame output. */
+  rawTexts: string[];
+  /** True when the tool reported a typed error (parsed body holds the error DTO). */
+  isError: boolean;
+}
+
+/**
  * Supervisor surface. Singleton accessor lives in lib/swift-engine/sidecar.ts.
  */
 export interface SwiftEngineSidecar {
@@ -101,6 +117,19 @@ export interface SwiftEngineSidecar {
   sendRequest<TParams = unknown, TResult = unknown>(
     request: SwiftEngineRequest<TParams>,
   ): Promise<SwiftEngineResponse<TResult>>;
+  /**
+   * Invoke an MCP tool via the standard `tools/call` envelope and parse the
+   * `content[0].text` JSON DTO. The Swift engine ONLY dispatches tools through
+   * this envelope — calling raw tool methods (e.g. `method: "vector.search"`)
+   * returns "Method not found".
+   *
+   * Returns the parsed DTO + raw texts + the typed-error flag. Throws via
+   * sendRequest if the JSON-RPC transport itself fails.
+   */
+  callTool<TResult = unknown>(
+    name: string,
+    args?: Record<string, unknown>,
+  ): Promise<SwiftEngineResponse<SwiftEngineToolCallResult<TResult>>>;
   /** Returns true once the initialize handshake has completed. */
   isReady(): boolean;
   /** Lifecycle exit — also called from app.before-quit. */

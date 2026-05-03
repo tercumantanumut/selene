@@ -642,17 +642,28 @@ async function dispatchSwiftNotifyChange(
 ): Promise<void> {
   if (changes.length === 0) return;
   try {
-    await sidecar.sendRequest({
-      method: "index.notifyChange",
-      params: {
-        folderId,
-        changes: changes.map((c) => {
-          const out: Record<string, unknown> = { path: c.path, op: c.op };
-          if (c.oldPath) out.oldPath = c.oldPath;
-          return out;
-        }),
-      },
+    // Swift binary requires the standard MCP `tools/call` envelope; raw
+    // method invocation returns "Method not found".
+    const envelope = await sidecar.callTool("index.notifyChange", {
+      folderId,
+      changes: changes.map((c) => {
+        const out: Record<string, unknown> = { path: c.path, op: c.op };
+        if (c.oldPath) out.oldPath = c.oldPath;
+        return out;
+      }),
     });
+    if (envelope.error) {
+      handleSwiftDispatchError(
+        new Error(
+          `index.notifyChange MCP error (${envelope.error.code}): ${envelope.error.message}`,
+        ),
+      );
+      return;
+    }
+    if (envelope.result?.isError) {
+      const txt = envelope.result.rawTexts[0] ?? "tool reported isError";
+      handleSwiftDispatchError(new Error(txt));
+    }
   } catch (err) {
     handleSwiftDispatchError(err);
   }
