@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { BrainIcon, KeyIcon, SparklesIcon } from "lucide-react";
 import { CustomWorkflowsManager } from "@/components/comfyui";
 import { AdvancedVectorSettings } from "@/components/settings/advanced-vector-settings";
+import { SwiftEngineSettings } from "@/components/settings/swift-engine-settings";
 import { MCPSettings } from "@/components/settings/mcp-settings";
 import { PluginSettings } from "@/components/settings/plugin-settings";
 import {
@@ -495,6 +496,9 @@ export function SettingsPanel({
               embeddingModel={formState.embeddingModel}
               embeddingProvider={formState.embeddingProvider}
             />
+
+            {/* Sprint 7 W7.1.G — Swift retrieval engine opt-in */}
+            <SwiftEngineSettings />
           </div>
         )}
       </div>
