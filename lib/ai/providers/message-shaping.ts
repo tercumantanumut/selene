@@ -36,6 +36,7 @@
 
 import { toModelToolResultOutput } from "@/app/api/chat/tool-call-utils";
 import type { SyntheticToolResultDescriptor } from "@/lib/ai/streaming/injection-stream-emitter";
+import { toStructuredToolName } from "@/lib/messages/tool-name-placeholder";
 
 /**
  * Minimal shape we walk — intentionally loose so this helper accepts both
@@ -94,10 +95,7 @@ export function findOrphanToolCalls(
     if (!toolCallId) continue;
     if (resolved.has(toolCallId)) continue;
 
-    const toolName =
-      typeof part.toolName === "string" && part.toolName.length > 0
-        ? part.toolName
-        : "tool";
+    const toolName = toStructuredToolName(part.toolName);
     orphans.push({ toolCallId, toolName });
   }
 
@@ -121,10 +119,7 @@ export function buildSyntheticModelToolResults(
   if (!orphans || orphans.length === 0) return [];
 
   return orphans.map((orphan) => {
-    const toolName =
-      typeof orphan.toolName === "string" && orphan.toolName.length > 0
-        ? orphan.toolName
-        : "tool";
+    const toolName = toStructuredToolName(orphan.toolName);
     return {
       type: "tool-result" as const,
       toolCallId: orphan.toolCallId,

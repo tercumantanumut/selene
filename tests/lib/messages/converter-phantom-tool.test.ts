@@ -89,6 +89,37 @@ describe("converter phantom-tool boundary filter", () => {
     warnSpy.mockRestore();
   });
 
+  it("drops tool-call parts whose toolName is the structured unknown sentinel", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const now = new Date().toISOString();
+
+    const uiMessages = convertDBMessagesToUIMessages([
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-unknown",
+            toolName: "__unknown_tool__",
+            args: {},
+            state: "input-available",
+          },
+        ],
+        createdAt: now,
+        orderingIndex: 1,
+      },
+    ] as any);
+
+    const assistant = uiMessages.find((msg) => msg.role === "assistant");
+    const toolParts = (assistant?.parts ?? []).filter((part) =>
+      typeof part.type === "string" && part.type.startsWith("tool-")
+    );
+    expect(toolParts).toHaveLength(0);
+
+    warnSpy.mockRestore();
+  });
+
   it("drops orphan tool-results whose toolName is 'tool' even when no matching tool-call exists", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const now = new Date().toISOString();

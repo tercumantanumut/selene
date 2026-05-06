@@ -115,6 +115,7 @@ import { prepareMessagesForRequest } from "./message-prep";
 import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
 import { buildSystemPromptForRequest } from "./system-prompt-builder";
+import { createVisibleAssistantChunkSanitizer } from "./ui-stream-sanitizer";
 import { mcpContextStore, type SeleneMcpContext } from "@/lib/ai/providers/mcp-context-store";
 import { createSdkToolResultBridge } from "./sdk-tool-result-bridge";
 import {
@@ -1848,6 +1849,7 @@ export async function POST(req: Request) {
         let closed = false;
         let clientCommitted = false;
         let bufferedChunks: UIMessageChunk[] = [];
+        let visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
 
         const emitChunk = (chunk: UIMessageChunk) => {
           if (closed) return;
@@ -1929,6 +1931,7 @@ export async function POST(req: Request) {
           recreateThinkTagFilter();
           bufferedChunks = [];
           clientCommitted = false;
+          visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
           await sleepWithAbort(delay, streamAbortSignal);
           ({ result, attempt: requestAttempt } = await createStreamResultWithRecovery(requestAttempt + 1));
           return true;
@@ -1942,6 +1945,15 @@ export async function POST(req: Request) {
               while (!closed) {
                 const { done, value } = await activeUiReader.read();
                 if (done) {
+                  const trailingChunks = visibleAssistantChunkSanitizer.flush();
+                  if (!clientCommitted) {
+                    bufferedChunks.push(...trailingChunks);
+                  } else {
+                    for (const trailingChunk of trailingChunks) {
+                      emitChunk(trailingChunk);
+                    }
+                  }
+
                   if (!clientCommitted && bufferedChunks.length > 0) {
                     for (const pendingChunk of bufferedChunks) {
                       emitChunk(pendingChunk);
@@ -1953,27 +1965,34 @@ export async function POST(req: Request) {
                   return;
                 }
 
-                if (value.type === "error") {
-                  shouldRestart = await preparePrecommitRetry(value.errorText ?? "Unknown stream error");
-                  if (shouldRestart) break;
-                  await finalizeAndEmitError(value.errorText ?? "Unknown stream error");
-                  return;
-                }
-
-                if (!clientCommitted && !isUiChunkCommittable(value)) {
-                  bufferedChunks.push(value);
-                  continue;
-                }
-
-                if (!clientCommitted) {
-                  for (const pendingChunk of bufferedChunks) {
-                    emitChunk(pendingChunk);
+                const sanitizedChunks = visibleAssistantChunkSanitizer.process(value);
+                for (const sanitizedChunk of sanitizedChunks) {
+                  if (sanitizedChunk.type === "error") {
+                    shouldRestart = await preparePrecommitRetry(
+                      sanitizedChunk.errorText ?? "Unknown stream error"
+                    );
+                    if (shouldRestart) break;
+                    await finalizeAndEmitError(sanitizedChunk.errorText ?? "Unknown stream error");
+                    return;
                   }
-                  bufferedChunks = [];
-                  clientCommitted = true;
+
+                  if (!clientCommitted && !isUiChunkCommittable(sanitizedChunk)) {
+                    bufferedChunks.push(sanitizedChunk);
+                    continue;
+                  }
+
+                  if (!clientCommitted) {
+                    for (const pendingChunk of bufferedChunks) {
+                      emitChunk(pendingChunk);
+                    }
+                    bufferedChunks = [];
+                    clientCommitted = true;
+                  }
+
+                  emitChunk(sanitizedChunk);
                 }
 
-                emitChunk(value);
+                if (shouldRestart) break;
               }
             } catch (error) {
               const errorMessage = normalizeStreamError(error).message;

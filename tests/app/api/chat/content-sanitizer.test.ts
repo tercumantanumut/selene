@@ -15,6 +15,9 @@ vi.mock("@/lib/ai/truncated-content-store", () => ({
 const leakedPlanningText =
   "I need continue with actual tools available names. Only commentary tools under functions.* not tool. Need sequential edits. Must read current files before edit. Need use editFile and run tests. Let's implement carefully. Need add setting to app/settings/settings-types FormState.";
 
+const exactNamespaceLeakText =
+  "Need use actual tool names weird transcript says functions.tool due maybe alias? Need continue. Read route.";
+
 describe("sanitizeAssistantOutputText", () => {
   it("strips leaked internal planning prose when tool-call context is present", () => {
     expect(
@@ -26,8 +29,32 @@ describe("sanitizeAssistantOutputText", () => {
     expect(sanitizeAssistantOutputText(leakedPlanningText)).toBe(leakedPlanningText);
   });
 
+  it("strips the exact namespace leak even before a tool-call part exists", () => {
+    expect(sanitizeAssistantOutputText(exactNamespaceLeakText)).toBe("");
+  });
+
+  it("strips the leak fragment that ends mid-token at `functions.`", () => {
+    // Regression for INTERNAL_TOOL_NAMESPACE_LEAK_BUG_REPORT.md.
+    // When the AI SDK stream tokenizer splits the leak at the period
+    // inside `functions.tool`, the first half no longer matches the
+    // `functions.<word>` namespace pattern. The detector must still
+    // catch it via the high-confidence + directive cues.
+    const fragment =
+      "Need use actual tool names weird transcript says functions.";
+    expect(sanitizeAssistantOutputText(fragment)).toBe("");
+    expect(
+      sanitizeAssistantOutputText(fragment, { hasToolCallLikeParts: true }),
+    ).toBe("");
+  });
+
   it("preserves normal assistant text even when tool-call context is present", () => {
     const text = "I checked the files and updated the response formatting.";
+    expect(sanitizeAssistantOutputText(text, { hasToolCallLikeParts: true })).toBe(text);
+  });
+
+  it("preserves a benign sentence that happens to mention the route", () => {
+    const text = "I need to read the route handler before making changes.";
+    expect(sanitizeAssistantOutputText(text)).toBe(text);
     expect(sanitizeAssistantOutputText(text, { hasToolCallLikeParts: true })).toBe(text);
   });
 });

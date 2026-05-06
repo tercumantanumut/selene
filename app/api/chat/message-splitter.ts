@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai";
 import type { ContextWindowStatus as ManagedContextWindowStatus } from "@/lib/context-window";
+import { toStructuredToolName } from "@/lib/messages/tool-name-placeholder";
 import { toModelToolResultOutput } from "./tool-call-utils";
 
 export function buildContextWindowPromptBlock(status: ManagedContextWindowStatus): string {
@@ -53,7 +54,7 @@ export function splitToolResultsFromAssistantMessages(messages: ModelMessage[]):
   ): Record<string, unknown> => ({
     type: "tool-result",
     toolCallId,
-    toolName: toolName || "tool",
+    toolName: toStructuredToolName(toolName),
     output: toModelToolResultOutput({
       status: "error",
       error: "Tool call had no persisted tool result in conversation history.",
@@ -101,7 +102,7 @@ export function splitToolResultsFromAssistantMessages(messages: ModelMessage[]):
         .map((part) => ({
           type: "tool-call",
           toolCallId: part.toolCallId as string,
-          toolName: (typeof part.toolName === "string" ? part.toolName : "tool"),
+          toolName: toStructuredToolName(part.toolName),
           input: {
             __reconstructed: true,
             reason: "missing_tool_call_in_history",

@@ -3,6 +3,7 @@ import { normalizeToolResultOutput } from "@/lib/ai/tool-result-utils";
 import { ToolRegistry } from "@/lib/ai/tool-registry/registry";
 import { buildOutputStub, deriveOutline } from "@/lib/ai/output-stub";
 import { storeFullContent } from "@/lib/ai/truncated-content-store";
+import { toStructuredToolName } from "@/lib/messages/tool-name-placeholder";
 import { normalizeToolCallInput } from "./tool-call-utils";
 import { cloneContentParts } from "./streaming-state";
 import { sanitizeAssistantOutputText } from "./content-sanitizer";
@@ -46,10 +47,6 @@ function sanitizeAssistantTextParts(
   parts: DBContentPart[],
   hasToolContext: boolean
 ): DBContentPart[] {
-  if (!hasToolContext) {
-    return parts;
-  }
-
   const sanitized: DBContentPart[] = [];
   for (const part of parts) {
     if (part.type !== "text") {
@@ -143,7 +140,7 @@ export function buildCanonicalAssistantContentFromSteps(
           seenToolResults.add(res.toolCallId);
 
           const meta = toolCallMetadata.get(res.toolCallId);
-          const toolName = res.toolName || meta?.toolName || "tool";
+          const toolName = toStructuredToolName(res.toolName || meta?.toolName);
           const normalized = normalizeToolResultOutput(toolName, res.output, meta?.input, {
             mode: "canonical",
           });
@@ -210,7 +207,7 @@ export function reconcileDbToolCallResultPairs(parts: DBContentPart[]): DBConten
         normalized.push({
           type: "tool-call",
           toolCallId: part.toolCallId,
-          toolName: part.toolName || "tool",
+          toolName: toStructuredToolName(part.toolName),
           args: {
             __reconstructed: true,
             reason: "missing_tool_call_in_history",
@@ -239,7 +236,7 @@ export function reconcileDbToolCallResultPairs(parts: DBContentPart[]): DBConten
     normalized.push({
       type: "tool-result",
       toolCallId,
-      toolName: callPart?.toolName || "tool",
+      toolName: toStructuredToolName(callPart?.toolName),
       result: {
         status: "error",
         error: "Tool execution did not return a persisted result in conversation history.",

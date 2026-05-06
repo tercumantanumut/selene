@@ -34,6 +34,9 @@ import type { DBContentPart } from "@/lib/messages/converter";
 const leakedPlanningText =
   "I need continue with actual tools available names. Only commentary tools under functions.* not tool. Need sequential edits. Must read current files before edit. Need use editFile and run tests. Let's implement carefully. Need add setting to app/settings/settings-types FormState.";
 
+const exactNamespaceLeakText =
+  "Need use actual tool names weird transcript says functions.tool due maybe alias? Need continue. Read route.";
+
 function makeState(parts: DBContentPart[]): StreamingMessageState {
   return {
     parts,
@@ -147,5 +150,30 @@ describe("createSyncStreamingMessage", () => {
 
     const progressContent = mocks.emitProgress.mock.calls[0]?.[3]?.progressContent as DBContentPart[];
     expect(progressContent[0]).toEqual({ type: "text", text: assistantText });
+  });
+
+  it("replaces exact leaked namespace planning text with generic progress when no tool part exists yet", async () => {
+    const streamingState = makeState([{ type: "text", text: exactNamespaceLeakText }]);
+
+    const syncStreamingMessage = createSyncStreamingMessage({
+      sessionId: "session-1",
+      userId: "user-1",
+      eventCharacterId: "char-1",
+      scheduledRunId: null,
+      scheduledTaskId: null,
+      scheduledTaskName: null,
+      getAgentRunId: () => "run-3",
+      streamingState,
+      getAssistantMessageId: () => "msg-1",
+    });
+
+    await syncStreamingMessage(true);
+
+    const persistedContent = mocks.updateMessage.mock.calls[0]?.[1]?.content as DBContentPart[];
+    expect(persistedContent).toEqual([{ type: "text", text: "Working..." }]);
+
+    expect(mocks.emitProgress.mock.calls[0]?.[1]).toBe("Working...");
+    const progressContent = mocks.emitProgress.mock.calls[0]?.[3]?.progressContent as DBContentPart[];
+    expect(progressContent).toEqual([{ type: "text", text: "Working..." }]);
   });
 });

@@ -12,6 +12,7 @@ import { limitProgressContent } from "@/lib/background-tasks/progress-content-li
 import { nextOrderingIndex } from "@/lib/session/message-ordering";
 import { nowISO } from "@/lib/utils/timestamp";
 import type { DBContentPart, DBToolCallPart } from "@/lib/messages/converter";
+import { toDisplayToolName } from "@/lib/messages/tool-name-placeholder";
 import { sanitizeAssistantOutputText } from "./content-sanitizer";
 import {
   type StreamingMessageState,
@@ -38,7 +39,7 @@ function emitDroppedToolCallTelemetry(
   persistedToolResultIds: Set<string>
 ): void {
   const toolCallId = part.toolCallId || "unknown-tool-call";
-  const toolName = part.toolName || "tool";
+  const toolName = toDisplayToolName(part.toolName);
   const logKey = `drop:${reason}:${toolCallId}`;
   if (streamingState.loggedIncompleteToolCalls.has(logKey)) {
     return;
@@ -220,9 +221,7 @@ function hasToolCallLikeParts(parts: DBContentPart[]): boolean {
 }
 
 function sanitizeAssistantProgressParts(parts: DBContentPart[]): DBContentPart[] {
-  if (!hasToolCallLikeParts(parts)) {
-    return parts;
-  }
+  const hasToolContext = hasToolCallLikeParts(parts);
 
   const sanitized: DBContentPart[] = [];
   for (const part of parts) {
@@ -232,7 +231,7 @@ function sanitizeAssistantProgressParts(parts: DBContentPart[]): DBContentPart[]
     }
 
     const cleanedText = sanitizeAssistantOutputText(part.text, {
-      hasToolCallLikeParts: true,
+      hasToolCallLikeParts: hasToolContext,
     });
     if (!cleanedText.trim()) {
       continue;
@@ -354,7 +353,7 @@ export function createSyncStreamingMessage(
         for (let index = streamingState.parts.length - 1; index >= 0; index -= 1) {
           const part = streamingState.parts[index];
           if (part?.type === "tool-call") {
-            progressText = `Running ${part.toolName || "tool"}...`;
+            progressText = `Running ${toDisplayToolName(part.toolName)}...`;
             break;
           }
         }
@@ -383,13 +382,17 @@ export function createSyncStreamingMessage(
         // Strip argsText from tool-call parts before progress emission.
         // argsText is only needed for finalization, not for display, and can
         // be hundreds of KB from runaway model outputs.
-        const strippedSnapshot = progressSnapshot.map((part) => {
+        let strippedSnapshot = progressSnapshot.map((part) => {
           if (part.type === "tool-call" && "argsText" in part) {
             const { argsText: _strip, ...rest } = part as unknown as Record<string, unknown>;
             return rest as unknown as DBContentPart;
           }
           return part;
         });
+
+        if (strippedSnapshot.length === 0) {
+          strippedSnapshot = [{ type: "text", text: "Working..." }];
+        }
 
         const progressLimit = DISABLE_PROGRESS_CONTENT_LIMITER
           ? null

@@ -3,6 +3,7 @@ import {
   isInternalAssistantLeakText,
   isInternalToolHistoryLeakText,
 } from "@/lib/messages/internal-tool-history";
+import { isMissingOrPlaceholderToolName } from "@/lib/messages/tool-name-placeholder";
 import type { ContextProvenance } from "@/lib/context-window/scoped-counting-contract";
 import { parseMessageMetadata } from "@/lib/messages/parse-metadata";
 
@@ -334,7 +335,7 @@ function buildUIPartsFromDBContent(
       // fix (or from any future regression) — projecting them as `tool-tool`
       // round-trips to the model and produces confused reasoning summaries
       // ("I called a function with a strange name 'tool'…").
-      if (!part.toolName || part.toolName === "tool") {
+      if (isMissingOrPlaceholderToolName(part.toolName)) {
         console.warn(
           `[CONVERTER] Dropping unnamed tool-call ${part.toolCallId} from UI projection (toolName=${JSON.stringify(part.toolName)})`
         );
@@ -438,7 +439,7 @@ function buildUIPartsFromDBContent(
 
       // Same boundary filter for orphan results: refuse to synthesize a
       // `tool-tool` UI part that would round-trip to the model.
-      if (!toolResult.toolName || toolResult.toolName === "tool") {
+      if (isMissingOrPlaceholderToolName(toolResult.toolName)) {
         console.warn(
           `[CONVERTER] Dropping orphan tool-result ${toolCallId} from UI projection (toolName=${JSON.stringify(toolResult.toolName)})`
         );

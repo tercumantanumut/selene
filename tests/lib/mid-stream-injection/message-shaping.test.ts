@@ -66,7 +66,7 @@ describe("findOrphanToolCalls", () => {
     );
     const parts = [{ type: "tool-call", toolCallId: "tx" }];
     expect(findOrphanToolCalls(parts)).toEqual([
-      { toolCallId: "tx", toolName: "tool" },
+      { toolCallId: "tx", toolName: "__unknown_tool__" },
     ]);
   });
 
@@ -145,7 +145,7 @@ describe("buildSyntheticModelToolResults", () => {
       [{ toolCallId: "tx", toolName: "" as unknown as string }],
       "cancelled",
     );
-    expect(results[0].toolName).toBe("tool");
+    expect(results[0].toolName).toBe("__unknown_tool__");
   });
 });
 
