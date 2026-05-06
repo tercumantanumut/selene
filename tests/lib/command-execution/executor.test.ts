@@ -39,11 +39,41 @@ const {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Wait until `fn()` returns truthy, polling every `interval` ms. */
-async function waitFor(fn: () => boolean, timeout = 10_000, interval = 100) {
+async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 10_000, interval = 100) {
     const start = Date.now();
-    while (!fn()) {
+    while (!(await fn())) {
         if (Date.now() - start > timeout) throw new Error("waitFor timed out");
         await new Promise((r) => setTimeout(r, interval));
+    }
+}
+
+async function findProcessIdsByMarker(marker: string): Promise<number[]> {
+    if (process.platform === "win32") return [];
+    const { execFileSync } = await import("child_process");
+    const output = execFileSync("ps", ["-axo", "pid,command"], { encoding: "utf8" });
+    return output
+        .split("\n")
+        .filter((line) => line.includes(marker))
+        .map((line) => Number(line.trim().split(/\s+/, 1)[0]))
+        .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+}
+
+async function killProcessesByMarker(marker: string): Promise<void> {
+    const pids = await findProcessIdsByMarker(marker);
+    for (const pid of pids) {
+        try {
+            process.kill(pid, "SIGTERM");
+        } catch {
+            // Already gone.
+        }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    for (const pid of await findProcessIdsByMarker(marker)) {
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch {
+            // Already gone.
+        }
     }
 }
 
@@ -143,6 +173,39 @@ describe("Smart timeout defaults", () => {
         expect(result.aborted).toBe(true);
         expect(result.error).toBe("Process cancelled by abort signal");
         expect(Date.now() - startedAt).toBeLessThan(10_000);
+    });
+
+    it("settles shell-wrapped timeouts whose grandchildren inherit stdio", async () => {
+        if (process.platform === "win32") return;
+
+        const marker = `selene_pg_timeout_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const command = `node -e "setInterval(() => {}, 1000)" ${marker}`;
+        const pending = executeCommand({
+            command: "/bin/sh",
+            args: ["-lc", command],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 300,
+        });
+
+        try {
+            const result = await Promise.race([
+                pending,
+                new Promise<never>((_, reject) => {
+                    setTimeout(() => reject(new Error("shell-wrapped timeout did not settle")), 5000);
+                }),
+            ]);
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Process terminated due to timeout or output limit");
+            await waitFor(async () => (await findProcessIdsByMarker(marker)).length === 0, 5000, 100);
+        } finally {
+            await killProcessesByMarker(marker);
+            await Promise.race([
+                pending.catch(() => undefined),
+                new Promise((resolve) => setTimeout(resolve, 1000)),
+            ]);
+        }
     });
 });
 

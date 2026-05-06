@@ -12,6 +12,27 @@ import { mkdtemp, open, readFile, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
+function isUnixLikePlatform(): boolean {
+    return process.platform === "darwin" || process.platform === "linux";
+}
+
+function signalChildProcess(child: ReturnType<typeof spawn>, signal: NodeJS.Signals, useProcessGroup: boolean): void {
+    if (useProcessGroup && child.pid && isUnixLikePlatform()) {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        }
+    }
+
+    try {
+        child.kill(signal);
+    } catch {
+        // Process already exited.
+    }
+}
+
 /**
  * Returns true when the error is an EBADF (bad file descriptor) failure.
  * On macOS in Electron's utilityProcess, creating stdio pipes triggers EBADF.
@@ -83,6 +104,7 @@ export async function spawnWithFileCapture(
                     env,
                     // Avoid stdio pipes entirely; child writes directly to temp files.
                     stdio: [inHandle ? inHandle.fd : "ignore", outHandle.fd, errHandle.fd],
+                    detached: isUnixLikePlatform(),
                     windowsHide: true,
                 });
 
@@ -93,8 +115,10 @@ export async function spawnWithFileCapture(
 
                 const timer = setTimeout(() => {
                     timedOut = true;
-                    try { child.kill("SIGTERM"); } catch { /* already dead */ }
-                    setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ok */ } }, 5000);
+                    signalChildProcess(child, "SIGTERM", isUnixLikePlatform());
+                    setTimeout(() => {
+                        signalChildProcess(child, "SIGKILL", isUnixLikePlatform());
+                    }, 5000);
                 }, timeout);
 
                 child.on("error", (err) => {

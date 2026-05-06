@@ -103,20 +103,39 @@ function terminateChildProcess(
     child: ChildProcess | null | undefined,
     _reason: TerminationReason,
     onSignalError?: (error: unknown) => void,
+    useProcessGroup = false,
 ): void {
     if (!child) return;
-    try {
-        child.kill("SIGTERM");
-    } catch (error) {
-        onSignalError?.(error);
-    }
+    signalChildProcess(child, "SIGTERM", useProcessGroup, onSignalError);
     setTimeout(() => {
+        signalChildProcess(child, "SIGKILL", useProcessGroup, onSignalError);
+    }, ESCALATION_DELAY_MS);
+}
+
+function signalChildProcess(
+    child: ChildProcess,
+    signal: NodeJS.Signals,
+    useProcessGroup: boolean,
+    onSignalError?: (error: unknown) => void,
+): void {
+    if (useProcessGroup && child.pid && isUnixLikePlatform()) {
         try {
-            child.kill("SIGKILL");
+            process.kill(-child.pid, signal);
+            return;
         } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+                onSignalError?.(error);
+            }
+        }
+    }
+
+    try {
+        child.kill(signal);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
             onSignalError?.(error);
         }
-    }, ESCALATION_DELAY_MS);
+    }
 }
 
 function shellQuote(value: string): string {
@@ -235,11 +254,13 @@ export async function startBackgroundProcess(
     const { finalCommand, finalArgs, finalEnv } = resolveCommandRuntime(command, args, baseEnv);
 
     const id = nextBgId();
+    const useProcessGroup = isUnixLikePlatform();
 
     try {
         const child = spawn(finalCommand, finalArgs, {
             cwd: resolvedCwd,
             shell: needsWindowsShell(finalCommand),
+            detached: useProcessGroup,
             // Use "pipe" for stdin rather than "ignore".  On macOS inside
             // Electron's utilityProcess "ignore" can itself trigger EBADF; we
             // close stdin immediately below to give the child EOF instead.
@@ -391,10 +412,7 @@ export async function startBackgroundProcess(
                 info.stderr += "\n[Background process timed out]";
                 const logId = saveBackgroundLogSnapshot(info, true);
                 settleBackgroundProcess({ stderr: info.stderr, logId });
-                try { child.kill("SIGTERM"); } catch { /* already dead */ }
-                setTimeout(() => {
-                    try { child.kill("SIGKILL"); } catch { /* already dead */ }
-                }, 5000);
+                terminateChildProcess(child, "timeout", undefined, useProcessGroup);
             }
         }, timeout);
 
@@ -519,12 +537,7 @@ export function killBackgroundProcess(processId: string): boolean {
     info.running = false;
     info.settledAt = Date.now();
     if (info.timeoutId) clearTimeout(info.timeoutId);
-    try {
-        info.process.kill("SIGTERM");
-        setTimeout(() => {
-            try { info.process.kill("SIGKILL"); } catch { /* already dead */ }
-        }, 3000);
-    } catch { /* already dead */ }
+    terminateChildProcess(info.process, "abort", undefined, isUnixLikePlatform());
     return true;
 }
 
@@ -657,12 +670,13 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         let terminationReason: TerminationReason | null = null;
         let timeoutId: NodeJS.Timeout | null = null;
         let child: ChildProcess | undefined;
+        const useProcessGroup = isUnixLikePlatform();
 
         const terminate = (reason: TerminationReason): void => {
             if (terminationReason) return;
             killed = true;
             terminationReason = reason;
-            terminateChildProcess(child, reason);
+            terminateChildProcess(child, reason, undefined, useProcessGroup);
         };
 
         const onAbort = () => terminate("abort");
@@ -748,8 +762,8 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         try {
             child = spawn(finalCommand, finalArgs, {
                 cwd,
-                timeout,
                 shell: needsWindowsShell(finalCommand),
+                detached: useProcessGroup,
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
                 windowsVerbatimArguments: windowsVerbatimArguments ?? false,

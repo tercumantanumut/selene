@@ -401,12 +401,18 @@ async function extractFinalResponse(sessionId: string): Promise<string | undefin
 async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation): Promise<void> {
   // Fetch the actual final response from the subagent's session
   let resultContent: string;
+  let shouldAppendObserveReminder = false;
   if (delegation.error) {
     resultContent = `<error>${delegation.error}</error>`;
   } else {
     try {
       const finalResponse = await extractFinalResponse(delegation.sessionId);
-      resultContent = finalResponse || "No response captured. Observe the session first, send continue preferably.";
+      if (finalResponse?.trim()) {
+        resultContent = finalResponse;
+        shouldAppendObserveReminder = true;
+      } else {
+        resultContent = "No response captured. Observe the session first, send continue preferably.";
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Delegation] Failed to read final response for ${delegation.id}:`, error);
@@ -419,11 +425,19 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     ? delegation.settledAt - delegation.startedAt
     : Date.now() - delegation.startedAt;
 
-  const completionMessage = [
+  const completionMessageParts = [
     `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${delegation.error ? "failed" : "completed"}" elapsed="${elapsed}ms" resultVersion="${delegation.resultVersion}">`,
     resultContent,
     `</delegation-result>`,
-  ].join("\n");
+  ];
+
+  if (shouldAppendObserveReminder) {
+    completionMessageParts.push(
+      `Note: You have the sub agent result in your context window, avoid using observe action to see full results again unless necessary.`,
+    );
+  }
+
+  const completionMessage = completionMessageParts.join("\n");
 
   const deliveryMetadata = buildDelegationDeliveryMetadata({
     delegationId: delegation.id,
