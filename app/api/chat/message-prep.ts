@@ -380,44 +380,20 @@ function ensureReasoningOnAllAssistantMessages(
   return guarded;
 }
 
-// ─── Image stripping for text-only providers ──────────────────────────────────
+// --- Lazy image references ---------------------------------------------------
 
-// The set of image-rejecting providers lives in
-// `lib/ai/provider-types.ts` (`PROVIDERS_REJECTING_INLINE_IMAGES` /
-// `providerRejectsInlineImages`) so the chat composer can import the same
-// helper and warn the user BEFORE they send. If you're adding a new
-// image-rejecting provider, update the set in that file, not here.
+// The set of image-rejecting providers lives in `lib/ai/provider-types.ts` so
+// the chat composer can import the same helper and warn before send. Server-side
+// prep uses the same capability to avoid sending pixels to blind providers.
 
-/**
- * Reference extracted from an image-bearing content part. We preserve the
- * original URL/data-URI so the placeholder can point the model at a concrete
- * target for the `describeImage` tool. Base64 data URIs are kept intact
- * because `describeImage` accepts them via `imageToDataUrl`.
- */
-type DroppedImageReference = {
-  /** Full URL, storage ref, or data URI — whatever the model should pass to describeImage. */
+type ImageReference = {
   reference: string;
-  /** True when the reference is an inline base64 data URI. */
   isDataUri: boolean;
-  /** Media type hint (e.g. "image/png"). */
   mediaType?: string;
 };
 
-/** Preview length for data-URI references surfaced in the placeholder text. */
 const DATA_URI_PLACEHOLDER_PREVIEW = 96;
-/**
- * Safety cap for non-data-URI references. Storage refs (`/api/media/...`) and
- * `local-media://` URLs are short; http(s) URLs are usually short. Anything
- * longer than this is likely a degenerate case we should truncate.
- */
 const MAX_URL_PLACEHOLDER_LENGTH = 512;
-
-/**
- * Base64-only pattern used to detect when content-extractor has split a data
- * URI into `{ type: "image", image: "<raw-base64>", mediaType: "image/png" }`.
- * Reconstructing the data URI means the model sees a value `describeImage`
- * can actually consume (its `imageToDataUrl` helper accepts `data:image/…`).
- */
 const RAW_BASE64_RE = /^[A-Za-z0-9+/=]+$/;
 
 function extractImageReference(part: {
@@ -426,14 +402,11 @@ function extractImageReference(part: {
   mediaType?: unknown;
   data?: unknown;
   url?: unknown;
-}): DroppedImageReference | null {
+}): ImageReference | null {
   const mediaType = typeof part.mediaType === "string" ? part.mediaType : undefined;
 
   if (part.type === "image" && typeof part.image === "string" && part.image.length > 0) {
     const image = part.image;
-    // content-extractor.makeImagePart() splits `data:image/...;base64,<b64>`
-    // into `{ image: "<b64>", mediaType: "image/..." }` — rebuild the data URI
-    // so the placeholder references something describeImage can consume.
     if (mediaType && RAW_BASE64_RE.test(image) && image.length > 32) {
       return { reference: `data:${mediaType};base64,${image}`, isDataUri: true, mediaType };
     }
@@ -457,29 +430,23 @@ function extractImageReference(part: {
   return null;
 }
 
-function formatDroppedImagePlaceholder(ref: DroppedImageReference | null): string {
-  const prefix =
-    "[image attachment omitted — selected provider does not accept inline images. " +
-    "Call the `describeImage` tool to analyze it using the vision model configured " +
-    "in Settings → Models → Vision. If no vision-capable model is configured, ask " +
-    "the user to set one, or switch to a provider with native vision (Claude, " +
-    "OpenRouter, Gemini) before retrying.";
+function escapeForToolString(value: string): string {
+  return value.replace(/["\\\n\r]/g, (ch) =>
+    ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : `\\${ch}`,
+  );
+}
 
+function formatLazyImageReference(ref: ImageReference | null): string {
+  const prefix = "[Attachment image: ";
   if (!ref) {
-    return `${prefix} No URL could be recovered for this attachment; ask the user to re-attach or switch to a vision-capable provider.]`;
+    return `${prefix}image unavailable - no stable URL could be recovered; ask the user to re-attach or switch to a vision-capable provider.]`;
   }
 
   if (ref.isDataUri) {
-    // Don't dump the whole base64 into context. describeImage accepts data URIs,
-    // but the model can't "type" a megabyte of base64 back. Surface only a
-    // truncated preview plus the media type so the model understands what was
-    // attached and can ask for a re-attach / storage ref if needed.
     const preview = ref.reference.slice(0, DATA_URI_PLACEHOLDER_PREVIEW);
     return (
-      `${prefix} The attachment was inline base64 (${ref.mediaType || "unknown type"}) ` +
-      `preview=\`${preview}…\` — not addressable by URL. ` +
-      `Ask the user to re-attach the image from disk so Selene issues a storage ref, ` +
-      `then call \`describeImage\` with that ref.]`
+      `${prefix}inline base64 (${ref.mediaType || "unknown type"}) preview=\`${preview}...\` - ` +
+      "not addressable by stable URL. Ask the user to re-attach the image if you need to view it again.]"
     );
   }
 
@@ -487,48 +454,46 @@ function formatDroppedImagePlaceholder(ref: DroppedImageReference | null): strin
     ref.reference.length > MAX_URL_PLACEHOLDER_LENGTH
       ? `${ref.reference.slice(0, MAX_URL_PLACEHOLDER_LENGTH - 3)}...`
       : ref.reference;
-  const safeUrl = displayUrl.replace(/["\\\n\r]/g, (ch) =>
-    ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : `\\${ch}`,
-  );
-  return `${prefix} describeImage({ imageUrl: "${safeUrl}" })]`;
+  return `${prefix}to view, call readFile("${escapeForToolString(displayUrl)}")]`;
 }
 
-/**
- * Result of `stripImagesForProvider`. `droppedImageCount` is surfaced so the
- * caller can promote `describeImage` into the initial active tools set when
- * the outbound provider can't view images directly.
- */
-type StripImagesResult = {
+function formatBlindProviderImageReference(ref: ImageReference | null): string {
+  const base =
+    "[image attachment omitted - selected provider cannot view images in Selene. " +
+    "Switch to a vision-capable model to inspect this attachment.";
+  if (!ref || ref.isDataUri) {
+    return `${base}]`;
+  }
+  const displayUrl =
+    ref.reference.length > MAX_URL_PLACEHOLDER_LENGTH
+      ? `${ref.reference.slice(0, MAX_URL_PLACEHOLDER_LENGTH - 3)}...`
+      : ref.reference;
+  return `${base} Attachment ref: ${escapeForToolString(displayUrl)}]`;
+}
+
+type ImageRewriteResult = {
   messages: ModelMessage[];
   droppedImageCount: number;
   droppedReferenceCount: number;
 };
 
-/**
- * Strip `image` / `file` (image-mediaType) content parts from all messages
- * when the outbound provider cannot accept them. Each dropped image becomes a
- * text placeholder carrying the original URL/ref plus an instruction to call
- * the `describeImage` tool so the model can still reason about the attachment.
- *
- * Runs AFTER the splitter and reasoning guarantee so we only have to inspect
- * ModelMessages. Never touches role="tool" messages — tool results may embed
- * generated image URLs that the receiving provider treats as strings.
- */
-function stripImagesForProvider(
+function rewriteImagePartsForProvider(
   messages: ModelMessage[],
   provider: string | undefined,
-): StripImagesResult {
-  if (!providerRejectsInlineImages(provider)) {
-    return { messages, droppedImageCount: 0, droppedReferenceCount: 0 };
-  }
-
+): ImageRewriteResult {
+  const providerRejectsImages = providerRejectsInlineImages(provider);
+  const lastUserIdx = messages.map((m) => m.role).lastIndexOf("user");
   let droppedImageCount = 0;
   let droppedReferenceCount = 0;
   let touchedMessageCount = 0;
 
-  const sanitized = messages.map((msg) => {
+  const rewrittenMessages = messages.map((msg, msgIdx) => {
     if (msg.role === "tool") return msg;
     if (!Array.isArray(msg.content)) return msg;
+
+    const isCurrentUserTurn = msg.role === "user" && msgIdx === lastUserIdx;
+    const shouldKeepInline = isCurrentUserTurn && !providerRejectsImages;
+    if (shouldKeepInline) return msg;
 
     const parts = msg.content as Array<{
       type?: string;
@@ -551,8 +516,10 @@ function stripImagesForProvider(
         changed = true;
         const ref = extractImageReference(part);
         if (ref) droppedReferenceCount += 1;
-        const placeholderText = formatDroppedImagePlaceholder(ref);
-        rewritten.push({ type: "text", text: placeholderText } as typeof part);
+        const text = providerRejectsImages
+          ? formatBlindProviderImageReference(ref)
+          : formatLazyImageReference(ref);
+        rewritten.push({ type: "text", text } as typeof part);
         continue;
       }
 
@@ -561,27 +528,18 @@ function stripImagesForProvider(
 
     if (!changed) return msg;
     touchedMessageCount += 1;
-
-    return {
-      ...msg,
-      content: rewritten as ModelMessage["content"],
-    } as ModelMessage;
+    return { ...msg, content: rewritten as ModelMessage["content"] } as ModelMessage;
   });
 
   if (droppedImageCount > 0) {
     console.log(
-      `[CHAT API] Provider=${provider} rejects image parts: ` +
-        `replaced ${droppedImageCount} image part(s) across ${touchedMessageCount} message(s) ` +
-        `with describeImage-prompting placeholder(s) ` +
-        `(recovered ${droppedReferenceCount}/${droppedImageCount} URL reference(s)).`,
+      `[CHAT API] Rewrote ${droppedImageCount} image part(s) across ${touchedMessageCount} message(s) ` +
+        `for provider=${provider ?? "unknown"} (recovered ${droppedReferenceCount}/${droppedImageCount} ref(s), ` +
+        `providerRejectsImages=${providerRejectsImages}).`,
     );
   }
 
-  return {
-    messages: sanitized,
-    droppedImageCount,
-    droppedReferenceCount,
-  };
+  return { messages: rewrittenMessages, droppedImageCount, droppedReferenceCount };
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -601,11 +559,8 @@ interface MessagePrepResult {
   coreMessages: ModelMessage[];
   enhancedMessages: FrontendMessage[];
   /**
-   * Count of image content parts that were replaced with describeImage-prompting
-   * placeholders because the outbound provider rejects inline image parts.
-   * Callers use this to promote the `describeImage` tool into the initial active
-   * set so the model has a concrete recovery path (see `buildToolsForRequest`).
-   * Always 0 for providers that accept images directly.
+   * Count of image parts rewritten to text because they were stale history
+   * images or the active provider cannot view inline images.
    */
   droppedImagesForProvider: number;
 }
@@ -684,13 +639,20 @@ export async function prepareMessagesForRequest(
     currentProvider,
   );
 
-  // Convert to core format for the AI SDK
+  const lastUserMessageIndex = enhancedMessages.map((msg) => msg.role).lastIndexOf("user");
+
+  // Convert to core format for the AI SDK. Only the current user turn is allowed
+  // to inline pixels; older images stay as stable refs and are rewritten below.
   let coreMessages: ModelMessage[] = await Promise.all(
     enhancedMessages.map(async (msg, idx) => {
+      const shouldInlineUserImages =
+        msg.role === "user" &&
+        idx === lastUserMessageIndex &&
+        !providerRejectsInlineImages(currentProvider);
       const content = await extractContent(
         msg as Parameters<typeof extractContent>[0],
         true, // includeUrlHelpers
-        true, // convertUserImagesToBase64
+        shouldInlineUserImages,
         sessionId
       );
       console.log(
@@ -751,12 +713,10 @@ export async function prepareMessagesForRequest(
   // reasoning after all prior injections.
   coreMessages = ensureReasoningOnAllAssistantMessages(coreMessages, currentProvider);
 
-  // Strip image parts for providers whose OpenAI-compatible chat endpoint
-  // rejects `image_url` content variants (e.g. DeepSeek V4 text/tool-use
-  // endpoint). Each dropped image becomes a text placeholder carrying the
-  // original URL/ref plus a `describeImage(...)` call example so the model
-  // can still analyze the attachment using Selene's vision model.
-  const imageStripResult = stripImagesForProvider(coreMessages, currentProvider);
+  // Current-turn images stay inline for vision-capable providers. All prior
+  // image parts become lazy refs that the model can materialize with readFile.
+  // Blind providers (DeepSeek) get a transparent refusal placeholder instead.
+  const imageStripResult = rewriteImagePartsForProvider(coreMessages, currentProvider);
   coreMessages = imageStripResult.messages;
   const droppedImagesForProvider = imageStripResult.droppedImageCount;
 

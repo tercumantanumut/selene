@@ -136,6 +136,22 @@ function compactCommandOutput(output: unknown): unknown {
   return compact;
 }
 
+function stripEphemeralReadFileImageBytes(output: unknown): unknown {
+  const result = getRecord(output);
+  if (!result || result.kind !== "image") return output;
+
+  const image = getRecord(result.image);
+  if (!image || typeof image.dataUri !== "string") return output;
+
+  return {
+    ...result,
+    image: {
+      ...image,
+      dataUri: "[ephemeral image bytes omitted from persisted history]",
+    },
+  };
+}
+
 function summarizeToolKeys(result: Record<string, unknown>): string {
   const keys = Object.keys(result)
     .filter((key) => !["content", "summary", "error", "status", "metadata"].includes(key))
@@ -170,6 +186,13 @@ function buildToolSummary(toolName: string, input?: unknown, output?: unknown): 
   switch (safeName) {
     case "readFile": {
       const filePath = getString(result.filePath) || getString(result.path) || "file";
+      if (result.kind === "image") {
+        const image = getRecord(result.image);
+        const mediaType = getString(image?.mediaType) || "image";
+        const byteLength = getNumber(image?.byteLength);
+        const sizeText = byteLength ? ` (${Math.round(byteLength / 1024)} KB)` : "";
+        return `Read ${filePath}: image ${mediaType}${sizeText}`;
+      }
       // Binary file soft-redirect: show a descriptive summary instead of "lines ?"
       if (result.isBinary === true) {
         return `${filePath}: binary file (use Read tool)`;
@@ -345,6 +368,9 @@ export function normalizeToolResultOutput(
   // Canonical history must remain lossless. Projection is allowed to compact/limit.
   const mode = options.mode;
   let normalizedOutput = unwrapMcpTextWrappedToolResult(output);
+  if (toolName === "readFile") {
+    normalizedOutput = stripEphemeralReadFileImageBytes(normalizedOutput);
+  }
   if (mode === "projection" && (toolName === "executeCommand" || toolName === "bash")) {
     normalizedOutput = compactCommandOutput(normalizedOutput);
   }

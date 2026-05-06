@@ -305,16 +305,18 @@ function maybePreserveImageReference(
   contentParts: ModelContentPart[],
   imageUrl: string,
   shouldConvert: boolean,
-  includeUrlHelpers: boolean,
+  _includeUrlHelpers: boolean,
 ) {
-  if (!shouldConvert && !includeUrlHelpers) {
+  if (!shouldConvert) {
     // Only preserve references that are actual image data or resolvable URLs.
-    // Raw /api/media/ paths are valid for DB persistence (will be converted on
-    // next load). Reject anything that isn't a known scheme.
+    // The message-prep image rewrite consumes this part before provider send,
+    // turning stale images into readFile refs and blind-provider images into
+    // transparent notices.
     if (
       imageUrl.startsWith("data:") ||
       imageUrl.startsWith("http") ||
-      imageUrl.startsWith("/api/media/")
+      imageUrl.startsWith("/api/media/") ||
+      imageUrl.startsWith("local-media://")
     ) {
       contentParts.push(makeImagePart(imageUrl));
     }

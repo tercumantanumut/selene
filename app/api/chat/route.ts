@@ -112,6 +112,7 @@ import {
 } from "./canonical-content";
 import { buildToolsForRequest } from "./tools-builder";
 import { prepareMessagesForRequest } from "./message-prep";
+import { routeMultimodalReadFileResults } from "./multimodal-tool-result-router";
 import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
 import { buildSystemPromptForRequest } from "./system-prompt-builder";
@@ -1202,12 +1203,12 @@ export async function POST(req: Request) {
           // so the final request has exactly one system message total.
           // Cache control markers are Anthropic-specific anyway, so no loss.
           let finalSystemPrompt: typeof systemPromptValue = systemPromptValue;
-          let finalMessages = cachedMessages;
+          let finalMessages = routeMultimodalReadFileResults(cachedMessages, provider);
           if (provider === "openrouter") {
             if (Array.isArray(systemPromptValue)) {
               const parts = systemPromptValue.map((block) => block.content);
               // Absorb leading system messages from cachedMessages into the prompt
-              const msgs = [...cachedMessages];
+              const msgs = [...finalMessages];
               while (msgs.length > 0 && msgs[0].role === "system") {
                 parts.push(msgs[0].content as string);
                 msgs.shift();
@@ -1217,7 +1218,7 @@ export async function POST(req: Request) {
             } else if (typeof systemPromptValue === "string") {
               // Even when not cached, absorb leading system messages
               const parts = [systemPromptValue];
-              const msgs = [...cachedMessages];
+              const msgs = [...finalMessages];
               while (msgs.length > 0 && msgs[0].role === "system") {
                 parts.push(msgs[0].content as string);
                 msgs.shift();
@@ -1419,7 +1420,10 @@ export async function POST(req: Request) {
 
               return {
                 activeTools: currentActiveTools as string[],
-                messages: [...stepMessages, ...syntheticShim, injectedUserMessage],
+                messages: routeMultimodalReadFileResults(
+                  [...stepMessages, ...syntheticShim, injectedUserMessage],
+                  provider,
+                ),
               };
             }
 
@@ -1507,7 +1511,10 @@ export async function POST(req: Request) {
                   const stillHasRunning = hasRunningDelegationsForSession(characterId, sessionId);
                   const result: Record<string, unknown> = {
                     activeTools: currentActiveTools as string[],
-                    messages: [...stepMessages, ...syntheticShim, injectedUserMessage],
+                    messages: routeMultimodalReadFileResults(
+                      [...stepMessages, ...syntheticShim, injectedUserMessage],
+                      provider,
+                    ),
                   };
                   if (stillHasRunning) {
                     result.toolChoice = "required" as const;
@@ -1539,7 +1546,10 @@ export async function POST(req: Request) {
               };
             }
 
-            return { activeTools: currentActiveTools as (keyof typeof allToolsWithMCP)[] };
+            return {
+              activeTools: currentActiveTools as (keyof typeof allToolsWithMCP)[],
+              messages: routeMultimodalReadFileResults(stepMessages, provider),
+            };
           },
           experimental_repairToolCall: async ({ error, toolCall, tools }) => {
             console.warn(`[CHAT API] Tool call repair triggered for "${toolCall.toolName}": ${error.message}`);
