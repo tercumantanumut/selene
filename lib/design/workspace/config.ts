@@ -30,6 +30,30 @@ export type DesignWorkspaceCompilationIssueType =
   | "runtime"
   | "unknown";
 
+/**
+ * Round-3 M5 — stable error codes for compile-report issues.
+ *
+ * `type` is a coarse bucket the agent uses for routing ("dependency vs
+ * syntax vs runtime"), but two failures with the same `type` can have
+ * very different recovery paths. The Backend reviewer's R2 punch list
+ * called for a stable `code` so consumers (tool envelope, future UI
+ * surfaces, programmatic retries) can branch on the specific failure
+ * class without parsing message text.
+ *
+ * Codes are surfaced when the compiler can confidently classify the
+ * failure (e.g. typed-error unwrap from a containment / preprocessor
+ * plugin, or a structurally identifiable dependency miss). Generic
+ * esbuild errors that haven't been classified leave `code` undefined —
+ * `type` and `message` remain the source of truth in that case.
+ */
+export type DesignWorkspaceCompilationIssueCode =
+  | "CONTAINMENT_VIOLATION"
+  | "PREPROCESSOR_NOT_SUPPORTED"
+  | "MISSING_NPM_PACKAGE"
+  | "UNRESOLVED_RELATIVE_IMPORT"
+  | "UNRESOLVED_PATH_ALIAS"
+  | "UNSHIMMED_FRAMEWORK_PRIMITIVE";
+
 export interface DesignWorkspaceSourceLocation {
   file: string;
   line: number;
@@ -38,6 +62,12 @@ export interface DesignWorkspaceSourceLocation {
 
 export interface DesignWorkspaceCompilationIssue {
   type: DesignWorkspaceCompilationIssueType;
+  /**
+   * Round-3 M5 — stable, machine-readable code for programmatic
+   * routing. Optional because not every esbuild error can be classified
+   * deterministically; `type` and `message` remain the canonical fallback.
+   */
+  code?: DesignWorkspaceCompilationIssueCode;
   message: string;
   location?: DesignWorkspaceSourceLocation;
   suggestion?: string;

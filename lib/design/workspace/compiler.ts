@@ -12,7 +12,19 @@ import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import type { Config } from "tailwindcss";
 import { basename, extname, resolve } from "path";
+// Namespace import used by the source-CSS preprocessor (`preprocessSourceCss`)
+// for `path.resolve` against a per-file base directory and `path.dirname` /
+// `path.normalize` while walking @import + url() references. The named import
+// above is preserved so existing call sites (e.g. `extname(...)` lookups
+// throughout the file) keep their unqualified spelling.
+import * as path from "path";
 import { createHash } from "crypto";
+// Used by the source-CSS plugin (`createSourceCssPlugin`) to read `.css` /
+// `.module.css` files imported by user components and inline them as runtime
+// `<style>` injections. Synced-folder containment was already enforced when
+// the importing TSX file was loaded, so esbuild's resolver landing on these
+// paths is safe to read directly.
+import { promises as fsPromises, existsSync } from "fs";
 import { SANDBOX_DIR, SANDBOX_NODE_MODULES } from "../libraries";
 // Synced-folder reads go through `readSyncedFile()` — never raw
 // `fs.readFile` — per the BA-4 constraint. The helper bundles the
@@ -40,8 +52,16 @@ import {
 } from "./dependencies";
 import {
   createTsconfigPathsPlugin,
+  tsconfigAliasMatches,
   type TsconfigPathsConfig,
 } from "./tsconfig-paths";
+import {
+  ContainmentViolationError,
+  assertContained,
+  buildContainmentConfig,
+  isContained,
+  type ContainmentConfig,
+} from "./containment";
 import {
   type DesignWorkspaceAutoInstallSummary,
   type DesignWorkspaceCompilationIssue,
@@ -599,8 +619,54 @@ export default { router: null, ready(callback) { if (typeof callback === "functi
 const NEXT_GENERIC_STUB_SOURCE = `
 const noop = () => undefined;
 const passthrough = (value) => value;
-const headers = () => new Headers();
-const cookies = () => ({ get: () => undefined, getAll: () => [], has: () => false });
+// Round-2 M4: \`headers()\` and \`cookies()\` need mutator methods. Server
+// Actions and route handlers in App Router routinely call \`cookies().set()\`
+// and \`headers().set()\` — without explicit \`set\` / \`delete\` shims those
+// crash the preview at runtime with "set is not a function". The shims are
+// intentionally noops (the iframe preview has no real request/response
+// lifecycle) so the call site does not throw and the rendered output
+// matches what a server-rendered page would look like before the mutation.
+const headers = () => {
+  const m = new Map();
+  return {
+    get: (name) => m.has(String(name).toLowerCase()) ? m.get(String(name).toLowerCase()) : null,
+    has: (name) => m.has(String(name).toLowerCase()),
+    set: (name, value) => { m.set(String(name).toLowerCase(), String(value)); },
+    append: (name, value) => { m.set(String(name).toLowerCase(), String(value)); },
+    delete: (name) => { m.delete(String(name).toLowerCase()); },
+    forEach: (cb) => { m.forEach((v, k) => cb(v, k)); },
+    entries: () => m.entries(),
+    keys: () => m.keys(),
+    values: () => m.values(),
+    [Symbol.iterator]: () => m.entries(),
+  };
+};
+const cookies = () => {
+  const m = new Map();
+  return {
+    get: (name) => m.has(name) ? { name, value: m.get(name) } : undefined,
+    getAll: () => Array.from(m.entries()).map(([name, value]) => ({ name, value })),
+    has: (name) => m.has(name),
+    set: (name, value) => {
+      // Next.js \`cookies().set\` is overloaded: \`set(name, value, options?)\` OR
+      // \`set({ name, value, ...options })\`. Both forms collapse to a noop
+      // mutation on the in-memory Map for preview purposes.
+      if (typeof name === "object" && name !== null) {
+        m.set(name.name, name.value);
+      } else {
+        m.set(name, value);
+      }
+    },
+    delete: (name) => {
+      if (typeof name === "object" && name !== null) {
+        m.delete(name.name ?? name);
+      } else {
+        m.delete(name);
+      }
+    },
+    [Symbol.iterator]: () => m.entries(),
+  };
+};
 const draftMode = () => ({ isEnabled: false, enable: noop, disable: noop });
 const userAgent = () => ({});
 const NextResponse = { next: () => ({}), json: (body) => body, redirect: (url) => url };
@@ -627,6 +693,34 @@ const generic = new Proxy(noop, {
 module.exports = generic;
 `;
 
+/**
+ * Rev-J3 audit — Next.js stub coverage matrix.
+ *
+ * Explicit per-module stubs (richer surface than the generic Proxy):
+ *   - `next/navigation` → useRouter, usePathname, useSearchParams, useParams,
+ *     useSelectedLayoutSegment(s), redirect, permanentRedirect, notFound,
+ *     RedirectType, ReadonlyURLSearchParams.
+ *   - `next/router` → pages-router useRouter shape.
+ *   - `next/link` → renders an `<a>`.
+ *   - `next/head` → renders children (no real <head> hoist; preview is iframe).
+ *   - `next/image` → renders an `<img>` with the same src/sizes/etc.
+ *   - `next/dynamic` → returns an empty Fragment stub.
+ *   - `next/script` → renders a <script> element.
+ *   - `next/font`, `next/font/*` → callable Proxy returning
+ *     `{ className, style, variable }`.
+ *
+ * Generic Proxy fallback (covers everything else under `next/...`):
+ *   - Default import + namespace import work via Proxy `default`/`__esModule`.
+ *   - Named imports become noops, with explicit higher-fidelity hits for
+ *     `headers`, `cookies`, `draftMode`, `userAgent`, `NextResponse`,
+ *     `ImageResponse`, `NextRequest`, `NextFetchEvent` so the common
+ *     server primitives in `next/server`, `next/headers`, `next/og`, and
+ *     `next/cache` import without runtime crashes.
+ *
+ * Anything not on this list (e.g. esoteric `revalidatePath`, `unstable_*`)
+ * resolves to a `noop` thanks to the Proxy `get` trap. For preview, that's
+ * the right answer: SSR-only side effects are a no-op in an IIFE bundle.
+ */
 function getNextPreviewStub(specifier: string): { source: string; loader: esbuild.Loader } {
   if (specifier === "next/navigation") {
     return { source: NEXT_NAVIGATION_STUB_SOURCE, loader: "tsx" };
@@ -919,6 +1013,43 @@ interface BuildTailwindPreviewOptions {
    * plugin seeds the resolved id on first load of A.
    */
   designImportChainSeed?: readonly string[];
+  /**
+   * Working directory esbuild uses to resolve unqualified imports emitted
+   * by the user's TSX (relative paths, sibling modules, parent-walking
+   * `node_modules` lookups). The `import` action MUST set this to
+   * `dirname(resolvedSourcePath)` from the synced folder so `./coach.css`
+   * and similar specifiers resolve against the file's actual location
+   * instead of `PROJECT_ROOT`.
+   *
+   * `generate` / `edit` / `patch` leave this undefined; the LLM-emitted
+   * source has no on-disk home, so `PROJECT_ROOT` is the correct default.
+   */
+  componentResolveDir?: string;
+  /**
+   * Extra `node_modules` directories to add to esbuild's `nodePaths`
+   * after the sandbox's `node_modules`. The `import` action passes the
+   * synced repo's `node_modules` so the preview re-uses whatever the
+   * user has installed in their target codebase, eliminating most
+   * sandbox-install churn for production-grade Next.js apps.
+   *
+   * Sandbox order is preserved: the curated `selene-workspace`
+   * `node_modules` wins on package collisions.
+   */
+  extraNodePaths?: readonly string[];
+  /**
+   * Round-2 (B1+M5): synced-folder containment config for the `import`
+   * action. When supplied, the compile pipeline enforces an allowlist
+   * of root directories at every onLoad — relative imports (`./foo`),
+   * tsconfig-paths aliases (`@/lib/x`), and bare specifiers that
+   * resolve to a file outside the allowlist are rejected with
+   * `ContainmentViolationError` (mapped to a `containment` issue).
+   *
+   * Pipelines that pre-date the import action (`generate` / `edit` /
+   * `patch`) leave this undefined and operate in the historical
+   * no-containment mode — synced-folder reads in those flows already
+   * funnel through `readSyncedFile()` which has its own check.
+   */
+  containment?: ContainmentConfig;
 }
 
 interface BuildTailwindPreviewResult {
@@ -1008,6 +1139,22 @@ function toDiagnosticLocation(location?: esbuild.Location): DesignWorkspaceDiagn
 
 function inferIssueType(message: string): DesignWorkspaceCompilationIssue["type"] {
   const normalized = message.toLowerCase();
+  // Round-2 M1 — defensive fallback. The source-CSS plugin throws
+  // PreprocessorNotSupportedError up front for `.scss/.sass/.less/.styl`,
+  // so this branch is only reached if a future loader change lets the
+  // raw esbuild "no loader is configured" message slip through. Keep
+  // the dependency classification (suggestion strings stay actionable)
+  // until/unless we add a dedicated `preprocessor` issue type to
+  // DesignWorkspaceCompilationIssue.
+  if (normalized.includes("no loader is configured")) {
+    return "dependency";
+  }
+  // Round-2 (B1+M5) — same defensive fallback for raw containment text
+  // that bypasses the typed-error unwrap path. The actionable
+  // suggestion is built downstream by `buildIssueSuggestion`.
+  if (normalized.includes("outside the synced-folder allowlist")) {
+    return "dependency";
+  }
   if (
     normalized.includes("could not resolve") ||
     normalized.includes("cannot find module") ||
@@ -1032,10 +1179,58 @@ function inferIssueType(message: string): DesignWorkspaceCompilationIssue["type"
   return "unknown";
 }
 
+/**
+ * Resolution-error sub-classification. esbuild's "Could not resolve X" is one
+ * of four very different problems, and pre-Rev-J2 the suggestion always told
+ * the user to install X into `selene-workspace/package.json` — even when X was
+ * `./coach.css` (a sibling file, not an npm package). Each kind has a
+ * distinct recovery path that the agent can act on without reading the raw
+ * error text:
+ *
+ *   - "relative":   `./foo`, `../foo`, `/abs` — sibling/parent file the
+ *                   resolver couldn't locate. Recovery: verify the file
+ *                   exists at the expected path inside the synced folder.
+ *   - "alias":      matches a tsconfig.paths rule but the alias target file
+ *                   is missing. Recovery: check the corresponding paths
+ *                   entry; the alias config is right but the on-disk target
+ *                   doesn't exist.
+ *   - "framework":  Next.js / framework primitive that needs a preview
+ *                   shim. Recovery: out of the agent's hands — the shim is
+ *                   either provided by `createNextPreviewStubsPlugin` or it
+ *                   isn't, and unsupported primitives should be ported via
+ *                   `action: "port"`.
+ *   - "npm":        bare specifier (no leading dot/slash, no alias hit, no
+ *                   framework prefix). Recovery: install into the sandbox
+ *                   manifest, or — for the `import` action — verify the
+ *                   synced repo's `node_modules` actually has the package.
+ */
+type ResolutionErrorKind = "relative" | "alias" | "framework" | "npm";
+
+// Rev-J3 — `tsconfigAliasMatches` was lifted into ./tsconfig-paths so
+// dependencies.ts can use the same pattern test to skip alias-matching
+// specifiers during the missing-package check. The compiler keeps the
+// import + uses the same shared helper.
+
+function classifyResolutionTarget(
+  target: string,
+  tsconfigPaths?: TsconfigPathsConfig,
+): ResolutionErrorKind {
+  if (target.startsWith(".") || target.startsWith("/")) return "relative";
+  // `next` is the bare-package form; `next/...` is a subpath. Both are routed
+  // to `createNextPreviewStubsPlugin`, so reaching the resolution-error path
+  // for them means either the plugin's stub list missed a primitive or the
+  // resolve filter regressed — either way the recovery is "shim or port",
+  // not "install".
+  if (target === "next" || target.startsWith("next/")) return "framework";
+  if (tsconfigPaths && tsconfigAliasMatches(target, tsconfigPaths)) return "alias";
+  return "npm";
+}
+
 function buildIssueSuggestion(
   issueType: DesignWorkspaceCompilationIssue["type"],
   message: string,
   dependencyCheck: DependencyValidationResult,
+  tsconfigPaths?: TsconfigPathsConfig,
 ): string | undefined {
   if (issueType === "dependency") {
     const missingPackages = dependencyCheck.missingPackages;
@@ -1045,7 +1240,41 @@ function buildIssueSuggestion(
 
     const couldResolveMatch = message.match(/["'`](.+?)["'`]/);
     if (couldResolveMatch?.[1]) {
-      return `Verify that ${couldResolveMatch[1]} is installed in ${SANDBOX_DIR_NAME}/package.json.`;
+      const target = couldResolveMatch[1];
+      const kind = classifyResolutionTarget(target, tsconfigPaths);
+      switch (kind) {
+        case "relative":
+          return (
+            `Unresolved relative import "${target}". The pipeline reads sibling ` +
+            `files from the importing source's directory inside the synced ` +
+            `folder. Verify the file exists at the expected path and that the ` +
+            `path is contained in a synced folder.`
+          );
+        case "alias":
+          return (
+            `Path alias "${target}" matched a tsconfig.json paths rule but the ` +
+            `target file was not found on disk. Check the corresponding ` +
+            `compilerOptions.paths entry in the synced folder's tsconfig.json ` +
+            `and verify the file exists.`
+          );
+        case "framework":
+          return (
+            `Framework primitive "${target}" is not currently shimmed for the ` +
+            `design preview. Supported: next/navigation, next/router, next/link, ` +
+            `next/head, next/image, next/dynamic, next/script, next/font/*. ` +
+            `Other next/* paths fall back to a generic noop stub. If the ` +
+            `imported component depends on the real runtime, port it via ` +
+            `action: "port" instead of import.`
+          );
+        case "npm":
+        default:
+          return (
+            `Could not resolve npm package "${target}". For "import": verify ` +
+            `the synced repo's node_modules has it installed (run npm/pnpm/yarn ` +
+            `install in the source repo). For other actions: add it to ` +
+            `${SANDBOX_DIR_NAME}/package.json.`
+          );
+      }
     }
   }
 
@@ -1060,17 +1289,65 @@ function buildIssueSuggestion(
   return undefined;
 }
 
+/**
+ * Round-3 M5 — stable code derivation for compile-report issues.
+ *
+ * Codes are inferred from the same classification we already do for the
+ * suggestion string. This means: if `buildIssueSuggestion` could pick a
+ * specific recovery path (relative / alias / framework / npm), we record
+ * the matching code. If the message text didn't yield a structured
+ * unresolved specifier, `undefined` is returned and the consumer falls
+ * back to `type`. Containment / preprocessor failures ARE NOT routed
+ * through this helper — they go through dedicated typed-error catch
+ * paths in `buildTailwindPreviewWithMetadata`, which build the issue
+ * with `code: "CONTAINMENT_VIOLATION" | "PREPROCESSOR_NOT_SUPPORTED"`
+ * directly.
+ */
+function deriveIssueCode(
+  type: DesignWorkspaceCompilationIssue["type"],
+  message: string,
+  tsconfigPaths?: TsconfigPathsConfig,
+): DesignWorkspaceCompilationIssue["code"] {
+  if (type !== "dependency") return undefined;
+  const normalized = message.toLowerCase();
+  if (normalized.includes("outside the synced-folder allowlist")) {
+    return "CONTAINMENT_VIOLATION";
+  }
+  if (
+    normalized.includes("preprocessed stylesheet") ||
+    (normalized.includes("no loader is configured") &&
+      /\.(scss|sass|less|styl|stylus)\b/.test(normalized))
+  ) {
+    return "PREPROCESSOR_NOT_SUPPORTED";
+  }
+  const couldResolveMatch = message.match(/["'`](.+?)["'`]/);
+  if (!couldResolveMatch?.[1]) return undefined;
+  const target = couldResolveMatch[1];
+  switch (classifyResolutionTarget(target, tsconfigPaths)) {
+    case "relative":
+      return "UNRESOLVED_RELATIVE_IMPORT";
+    case "alias":
+      return "UNRESOLVED_PATH_ALIAS";
+    case "framework":
+      return "UNSHIMMED_FRAMEWORK_PRIMITIVE";
+    case "npm":
+      return "MISSING_NPM_PACKAGE";
+  }
+}
+
 function toCompilationIssue(
   text: string,
   location: DesignWorkspaceDiagnostic["location"],
   dependencyCheck: DependencyValidationResult,
+  tsconfigPaths?: TsconfigPathsConfig,
 ): DesignWorkspaceCompilationIssue {
   const type = inferIssueType(text);
   return {
     type,
+    code: deriveIssueCode(type, text, tsconfigPaths),
     message: text,
     location,
-    suggestion: buildIssueSuggestion(type, text, dependencyCheck),
+    suggestion: buildIssueSuggestion(type, text, dependencyCheck, tsconfigPaths),
   };
 }
 
@@ -1298,7 +1575,26 @@ export function createPreviewEntrySource(renderMany?: readonly RenderManyCell[])
   ].join("\n");
 }
 
-function createComponentPlugin(componentCode: string): esbuild.Plugin {
+/**
+ * Loads the user's TSX as a virtual module. The `resolveDir` we hand back to
+ * esbuild is the working directory from which esbuild will follow any
+ * unqualified imports the source file emits — relative paths (`./coach.css`),
+ * sibling modules, and the synced-repo's `node_modules` if the importer lives
+ * inside a synced folder.
+ *
+ * For `generate` / `edit` / `patch`, the source has no on-disk home, so the
+ * default `PROJECT_ROOT` is correct (it lets the LLM-emitted code use
+ * bare-package imports that resolve through `nodePaths`).
+ *
+ * For `import`, callers MUST pass the directory of the imported source file —
+ * `dirname(resolvedSourcePath)` from the synced folder — so relative imports
+ * resolve against the file's actual location instead of failing with a
+ * misleading "could not resolve" error pointing at PROJECT_ROOT.
+ */
+function createComponentPlugin(
+  componentCode: string,
+  resolveDir: string = PROJECT_ROOT,
+): esbuild.Plugin {
   return {
     name: "selene-preview-component",
     setup(build) {
@@ -1310,8 +1606,530 @@ function createComponentPlugin(componentCode: string): esbuild.Plugin {
       build.onLoad({ filter: /.*/, namespace: VIRTUAL_COMPONENT_NAMESPACE }, () => ({
         contents: componentCode,
         loader: "tsx",
-        resolveDir: PROJECT_ROOT,
+        resolveDir,
       }));
+    },
+  };
+}
+
+/**
+ * Round-2 B1: containment-guard plugin. Registered after plugin-owned
+ * namespace loaders so CSS / tsconfig / design-import handlers can claim
+ * their files first, while default file-namespace loads still pass through
+ * this guard before esbuild's built-in loader reads from disk. The hook
+ * sees relative imports the user's TSX makes against `componentResolveDir`,
+ * sibling component files, and transitive imports of imported modules.
+ *
+ * Behaviour:
+ *   - If the absolute load path is inside ANY allowed root, return
+ *     `undefined` so the next plugin (or esbuild's default loader) takes
+ *     over normally.
+ *   - If outside every allowed root, throw `ContainmentViolationError`.
+ *     esbuild wraps the throw into its `errors[*].detail` field; the
+ *     compile catch-block unwraps it and surfaces a classified
+ *     compile-report issue with code `CONTAINMENT_VIOLATION`.
+ *
+ * Why onLoad instead of onResolve: esbuild's resolver walks the parent
+ * directory chain for bare specifiers and falls back to nodePaths after
+ * — capturing the FINAL resolved absolute path requires hooking after
+ * resolution. onLoad on the file namespace runs once per resolved file,
+ * which is the right place to gate disk reads.
+ *
+ * Plugins that load through their own namespace (`selene-tsconfig-paths`,
+ * `selene-source-css`, `selene-next-preview-stubs`, the design-import
+ * resolver, and the external-url plugin) are NOT covered by this file-
+ * namespace filter — those plugins enforce containment internally where
+ * applicable.
+ */
+function createContainmentGuardPlugin(
+  containment: ContainmentConfig,
+): esbuild.Plugin {
+  return {
+    name: "selene-containment-guard",
+    setup(build) {
+      build.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
+        if (!isContained(args.path, containment)) {
+          throw new ContainmentViolationError(
+            args.path,
+            containment.allowedRoots,
+          );
+        }
+        // Pass-through: returning undefined lets the next plugin or
+        // esbuild's default loader handle the actual content.
+        return undefined;
+      });
+    },
+  };
+}
+
+/**
+ * Round-2 M3: explicit sandbox-wins resolver for bare package specifiers.
+ *
+ * Why this exists: the import action sets `componentResolveDir` to the
+ * source file's actual directory inside the synced folder. esbuild's
+ * default resolver walks parent directories from `resolveDir` looking
+ * for `node_modules` BEFORE consulting the build-level `nodePaths`
+ * fallback. So with a Next.js page at `/synced/repo/app/coach/page.tsx`,
+ * the synced repo's `node_modules` (e.g. `/synced/repo/node_modules`)
+ * wins even when the curated sandbox `selene-workspace/node_modules`
+ * has the same package. That breaks the "sandbox always wins on
+ * collision" guarantee — and worse, it lets a synced repo override
+ * curated package versions silently.
+ *
+ * The plugin runs FIRST in the resolver chain. For each bare
+ * specifier (no leading `.` / `/`, no `next/...`, no `design:...`):
+ *   1. If the package directory exists under `SANDBOX_NODE_MODULES`,
+ *      we delegate back to esbuild via `build.resolve()` with
+ *      `resolveDir: SANDBOX_DIR`. esbuild then walks from SANDBOX_DIR
+ *      and finds the package in its node_modules first. We tag with
+ *      `pluginData` to short-circuit recursion.
+ *   2. Otherwise we return `undefined` so esbuild's default resolver
+ *      runs (which walks from the importer's resolveDir and falls back
+ *      to nodePaths — exactly what we want when the sandbox lacks the
+ *      package).
+ *
+ * Edge cases handled by early-out:
+ *   - The virtual component path (intercepted by createComponentPlugin).
+ *   - `next/...` and bare `next` (handled by next-preview-stubs).
+ *   - `design:<ref>` (handled by the design-import plugin).
+ *   - URLs (`http:`, `https:`, `data:`) and node builtins (`node:fs`).
+ *   - The recursive call's own `pluginData.__sandboxFirst` marker.
+ *   - Round-3 M3 — tsconfig-alias-matching specifiers. A specifier that
+ *     matches a `paths` rule in the synced folder's `tsconfig.json` MUST
+ *     be handled by the tsconfig-paths plugin, not by this sandbox-first
+ *     hijack. Without this guard, monorepo-style aliases like `@repo/ui`
+ *     could be silently captured by the sandbox if a same-named package
+ *     happened to exist there, breaking the user's alias intent.
+ */
+function createSandboxFirstPackagePlugin(
+  tsconfigPaths?: TsconfigPathsConfig,
+): esbuild.Plugin {
+  return {
+    name: "selene-sandbox-first-package",
+    setup(build) {
+      build.onResolve({ filter: /^[^./]/ }, async (args) => {
+        // Recursion guard — when WE call build.resolve below, esbuild
+        // re-enters the resolver chain. The pluginData marker tells us
+        // we're inside that re-entry and should let esbuild handle it.
+        if (
+          (args.pluginData as { __sandboxFirst?: boolean } | undefined)
+            ?.__sandboxFirst
+        ) {
+          return undefined;
+        }
+        const spec = args.path;
+        // Don't intercept paths owned by other plugins. The list mirrors
+        // every other plugin's `filter` so we don't double-resolve.
+        if (
+          spec === VIRTUAL_COMPONENT_PATH ||
+          spec === "next" ||
+          spec.startsWith("next/") ||
+          spec.startsWith("design:") ||
+          spec.startsWith("http:") ||
+          spec.startsWith("https:") ||
+          spec.startsWith("data:") ||
+          spec.startsWith("node:")
+        ) {
+          return undefined;
+        }
+        // Round-3 M3 — alias awareness. If the specifier matches a
+        // tsconfig.json `paths` rule, defer to the tsconfig-paths plugin
+        // (registered later in the chain). This matters for monorepo
+        // aliases that look like packages — e.g. `@repo/ui` resolves via
+        // `paths` to a synced-folder file, NOT to a sandbox package of
+        // the same name. Without this guard the sandbox-first existence
+        // probe could spuriously match an unrelated package and override
+        // the alias intent.
+        if (tsconfigPaths && tsconfigAliasMatches(spec, tsconfigPaths)) {
+          return undefined;
+        }
+        // Extract the package root for the existence probe — `lodash/get`
+        // → `lodash`, `@scope/name/sub` → `@scope/name`. This mirrors
+        // `normalizePackageName` in dependencies.ts but inlined to avoid
+        // pulling that module's filter list (which excludes specifiers
+        // we DO want to handle here).
+        let packageRoot: string;
+        if (spec.startsWith("@")) {
+          const slash = spec.indexOf("/");
+          if (slash === -1) return undefined; // malformed scope-only
+          const second = spec.indexOf("/", slash + 1);
+          packageRoot = second === -1 ? spec : spec.slice(0, second);
+        } else {
+          const slash = spec.indexOf("/");
+          packageRoot = slash === -1 ? spec : spec.slice(0, slash);
+        }
+        // Existence probe: only force sandbox-first when the sandbox
+        // actually has the package. If it doesn't, we fall through to
+        // esbuild's default resolution (which finds it in the synced
+        // repo or via `nodePaths`).
+        if (
+          !existsSync(resolve(SANDBOX_NODE_MODULES, packageRoot, "package.json")) &&
+          !existsSync(resolve(SANDBOX_NODE_MODULES, packageRoot))
+        ) {
+          return undefined;
+        }
+        const result = await build.resolve(spec, {
+          kind: args.kind,
+          // Forcing the resolveDir to SANDBOX_DIR makes esbuild's
+          // parent-walk start at the sandbox, so SANDBOX_NODE_MODULES is
+          // the first node_modules directory it finds.
+          resolveDir: SANDBOX_DIR,
+          pluginData: { __sandboxFirst: true },
+        });
+        if (result.errors.length > 0 || !result.path) {
+          return undefined;
+        }
+        return {
+          path: result.path,
+          namespace: result.namespace,
+          external: result.external,
+          sideEffects: result.sideEffects,
+        };
+      });
+    },
+  };
+}
+
+/**
+ * Plugin error: the source TSX (or a transitive dependency) imports a
+ * preprocessed-CSS file (`.scss`, `.sass`, `.less`, `.styl`) that the
+ * design preview cannot bundle without an external compiler. Surfaced as
+ * a structured compile-report issue (kind=`preprocessor`) so the agent
+ * can recommend porting via `action: "port"` or pre-compiling to plain
+ * CSS, instead of getting esbuild's generic "no loader configured" error.
+ */
+class PreprocessorNotSupportedError extends Error {
+  readonly code = "PREPROCESSOR_NOT_SUPPORTED" as const;
+  constructor(
+    public readonly absPath: string,
+    public readonly extension: string,
+  ) {
+    super(
+      `Preprocessed stylesheet "${absPath}" (${extension}) is not supported ` +
+        `by the design-workspace import preview. The pipeline only handles ` +
+        `plain ".css" and ".module.css" files. Pre-compile to CSS or use ` +
+        `action: "port" to render with the LLM.`,
+    );
+    this.name = "PreprocessorNotSupportedError";
+  }
+}
+
+// Common image / font / asset MIME types used by the CSS preprocessor when
+// inlining `url("./bg.png")` / `url("../fonts/Inter.woff2")` references as
+// `data:` URIs. Anything outside this map falls back to
+// `application/octet-stream` — still valid as a data URI, but with a less
+// helpful Content-Type for the browser. Keeping the table narrow because
+// the alternative (a full mime-types dependency) would pull in ~3 MB.
+const CSS_ASSET_MIME_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  svg: "image/svg+xml",
+  ico: "image/x-icon",
+  woff: "font/woff",
+  woff2: "font/woff2",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  eot: "application/vnd.ms-fontobject",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+};
+
+const PREPROCESSOR_EXTENSIONS = new Set([".scss", ".sass", ".less", ".styl", ".stylus"]);
+
+function isExternalUrl(target: string): boolean {
+  return (
+    target.startsWith("http:") ||
+    target.startsWith("https:") ||
+    target.startsWith("data:") ||
+    target.startsWith("//")
+  );
+}
+
+function isUrlTokenInImport(cssContent: string, urlIndex: number): boolean {
+  const previousBoundary = Math.max(
+    cssContent.lastIndexOf(";", urlIndex),
+    cssContent.lastIndexOf("{", urlIndex),
+    cssContent.lastIndexOf("}", urlIndex),
+  );
+  return /@import\b/i.test(cssContent.slice(previousBoundary + 1, urlIndex));
+}
+
+/**
+ * Recursive CSS preprocessor — walks `@import` directives and `url(...)`
+ * references in plain CSS so the inlined `<style>` text in the iframe
+ * preview behaves like the original file would in a browser.
+ *
+ *   - `@import "./tokens.css"` → file is read, preprocessed itself, and
+ *     concatenated into the parent.
+ *   - `url("./hero.png")` / `url(./bg.svg)` → file is read and emitted as
+ *     a `data:<mime>;base64,...` URI so the asset works without a server.
+ *   - External URLs (`http://`, `https://`, `data:`, `//`) and absolute
+ *     URLs (`/foo.png`) are left untouched.
+ *
+ * Containment is enforced on every read — anything that resolves outside
+ * the synced folder is refused with `ContainmentViolationError`. Read
+ * failures (missing files, permission errors) fall through to leaving
+ * the original `@import` / `url()` text in place; the rendered preview
+ * will produce a 404 in the iframe console, which is the correct signal.
+ *
+ * Cycle protection: `visited` tracks absolute paths already preprocessed
+ * on this branch. A `@import` that re-enters a file already on the stack
+ * is replaced with a comment and skipped, mirroring the way real CSS
+ * loaders break cycles.
+ */
+async function preprocessSourceCss(
+  cssContent: string,
+  cssFilePath: string,
+  containment: ContainmentConfig | undefined,
+  visited: Set<string> = new Set(),
+): Promise<string> {
+  const baseDir = path.dirname(cssFilePath);
+  const normalizedSelf = path.normalize(cssFilePath);
+  if (visited.has(normalizedSelf)) {
+    return `/* @import cycle skipped: ${cssFilePath} */`;
+  }
+  const nextVisited = new Set(visited);
+  nextVisited.add(normalizedSelf);
+
+  // Round-3 M2 — scan the ORIGINAL `cssContent` (not the post-expansion
+  // `processed` text) for both passes. The previous order built `processed`
+  // by expanding @import directives first, then walked `processed` for
+  // url() references — which meant url()s inside imported CSS that we'd
+  // already recursively expanded got re-walked in the parent's pass and
+  // re-resolved against the parent's `baseDir`. For most cases the
+  // recursive call had already converted the url() to a `data:` URI (which
+  // the parent skips via isExternalUrl), so the bug was latent. But when
+  // the inner url() was skipped — missing file, containment violation, or
+  // any read error — the literal `url("./bg.png")` survived into the
+  // expanded text and was then re-resolved against the parent's
+  // directory. That could inline the wrong asset (or worse, hit a
+  // same-named file under the parent) silently.
+  //
+  // The fix is the natural order: process the parent's own url()s
+  // first against `baseDir`, THEN expand @imports (whose recursion has
+  // already used each imported file's own directory). The result is a
+  // single-pass concatenation where every url() was resolved against the
+  // correct base, and stale literals inside expanded imports stay
+  // exactly as the recursion left them.
+  const importRegex = /@import\s+(?:url\(\s*)?["']([^"')]+)["']\s*\)?\s*;?/g;
+  const urlRegex = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+
+  // ----- Pass 1: parent's own url() references (scanned in cssContent) ---
+  const urlReplacements: Array<{ match: string; replacement: string }> = [];
+  for (const match of cssContent.matchAll(urlRegex)) {
+    const [literal, , target] = match;
+    if (
+      match.index !== undefined &&
+      isUrlTokenInImport(cssContent, match.index)
+    ) {
+      continue;
+    }
+    if (isExternalUrl(target) || target.startsWith("/") || target.startsWith("#")) {
+      continue;
+    }
+    const resolved = path.resolve(baseDir, target);
+    try {
+      if (containment) {
+        if (!isContained(resolved, containment)) {
+          // url() containment violations are non-fatal: leaving the raw
+          // path in place produces a 404 instead of leaking out, which
+          // is the safe default. We DO leave the urlRegex match untouched
+          // so the failure remains visible.
+          continue;
+        }
+      }
+      const data = await fsPromises.readFile(resolved);
+      const ext = path.extname(resolved).slice(1).toLowerCase();
+      const mime = CSS_ASSET_MIME_TYPES[ext] || "application/octet-stream";
+      const base64 = data.toString("base64");
+      urlReplacements.push({
+        match: literal,
+        replacement: `url("data:${mime};base64,${base64}")`,
+      });
+    } catch {
+      // Missing asset — leave url() as-is so the iframe console reports
+      // the 404. Hiding it would mask layout issues during preview.
+    }
+  }
+  // Build the `processed` text by applying url() replacements directly to
+  // the original cssContent. After this point any url() that survived (skip
+  // / containment / read-error) remains in its ORIGINAL form, anchored to
+  // this file's directory — never re-resolved against a parent's baseDir.
+  let processed = cssContent;
+  for (const replacement of urlReplacements) {
+    processed = processed.replace(replacement.match, replacement.replacement);
+  }
+
+  // ----- Pass 2: @import directives (scanned in cssContent) ---------------
+  // Recursive expansion. Each imported file is preprocessed in its OWN
+  // baseDir, so url() references inside the imported file resolve against
+  // the imported file's directory. We collect replacements first, then
+  // apply them — this matches our `cssContent`-anchored scan while still
+  // mutating `processed` (which already has parent url()s rewritten).
+  const importTasks: Array<{ match: string; replacement: string }> = [];
+  for (const match of cssContent.matchAll(importRegex)) {
+    const [literal, target] = match;
+    if (isExternalUrl(target)) {
+      // Keep external imports as-is — the preview iframe will fetch
+      // them directly via the runtime <link> injection.
+      continue;
+    }
+    if (target.startsWith("/")) {
+      // Absolute paths point at a webserver root we don't have. Leave
+      // alone; browser will 404, which the iframe console reports.
+      continue;
+    }
+    const resolved = path.resolve(baseDir, target);
+    try {
+      if (containment) {
+        if (!isContained(resolved, containment)) {
+          throw new ContainmentViolationError(resolved, containment.allowedRoots, target);
+        }
+      }
+      const importedSource = await fsPromises.readFile(resolved, "utf8");
+      const expanded = await preprocessSourceCss(
+        importedSource,
+        resolved,
+        containment,
+        nextVisited,
+      );
+      importTasks.push({
+        match: literal,
+        replacement: `/* @import ${JSON.stringify(target)} */\n${expanded}\n/* @end-import */`,
+      });
+    } catch (error) {
+      // Containment violations propagate — they are sandbox-correctness
+      // failures the agent must see. Other read errors leave the
+      // original @import text in place so the iframe's network layer
+      // surfaces them as a normal 404.
+      if (error instanceof ContainmentViolationError) {
+        throw error;
+      }
+    }
+  }
+  for (const task of importTasks) {
+    processed = processed.replace(task.match, task.replacement);
+  }
+
+  return processed;
+}
+
+/**
+ * Loads `.css` and `.module.css` files from the synced repo and converts each
+ * import into a small JS shim that injects a `<style>` block at runtime. This
+ * lets imported components keep their plain-CSS sibling files (`./coach.css`)
+ * and CSS-Modules class declarations, even though the preview ships as an
+ * IIFE bundle (which esbuild's native CSS pipeline cannot inline).
+ *
+ * Round-2 M2: each loaded CSS file is recursively preprocessed via
+ * `preprocessSourceCss` so `@import "./tokens.css"` and `url("./hero.png")`
+ * references resolve against the source CSS file's actual directory and the
+ * resulting `<style>` text is self-contained (assets emitted as data URIs).
+ * Without this, a typical Next.js `globals.css` chain that uses `@import` or
+ * `background-image: url(...)` would 404 in the iframe.
+ *
+ * Round-2 M1: imports of preprocessed stylesheets (`.scss`, `.sass`, `.less`,
+ * `.styl`) throw `PreprocessorNotSupportedError`. esbuild has no built-in
+ * Sass loader, so without this hook the user gets the unhelpful "no loader
+ * configured" error; with the hook, the agent gets a structured signal that
+ * it should pre-compile the file or port via `action: "port"`.
+ *
+ * Round-2 B1: every disk read is gated by the containment guard. CSS files,
+ * `@import` targets, and `url()` assets are all validated against the
+ * synced-folder allowed-roots before being read.
+ *
+ * For CSS Modules the class-name map is implemented as an identity Proxy:
+ * `styles.button` returns the literal string `"button"`. This is intentionally
+ * lossy — it preserves the layout and class hooks the component relies on
+ * without requiring a full CSS Modules compiler. Style scoping is therefore
+ * NOT preserved; the previewed component sees the raw class names. We accept
+ * this trade-off because preview fidelity for class-name layout is more
+ * important than perfect scoping inside an isolated iframe.
+ *
+ * Files we cannot read (permission errors, dangling symlinks) fall through to
+ * esbuild's default resolver, which will surface a "could not resolve" error
+ * with the resolution-error classifier downstream.
+ */
+function createSourceCssPlugin(
+  containment?: ContainmentConfig,
+): esbuild.Plugin {
+  return {
+    name: "selene-source-css",
+    setup(build) {
+      // Round-2 M1: reject preprocessed stylesheets up front. The filter
+      // runs on `args.path` regardless of how the file was resolved, so
+      // we catch both relative imports (`./styles.scss`) and aliased
+      // ones (`@/styles/coach.module.scss`).
+      build.onLoad({ filter: /\.(scss|sass|less|styl|stylus)$/ }, (args) => {
+        throw new PreprocessorNotSupportedError(
+          args.path,
+          path.extname(args.path),
+        );
+      });
+
+      // CSS Modules registered before the generic `.css$` filter — the
+      // more specific filter wins for `*.module.css` because esbuild
+      // dispatches in registration order and stops at the first non-null
+      // result.
+      build.onLoad({ filter: /\.module\.css$/ }, async (args) => {
+        if (containment) {
+          assertContained(args.path, containment);
+        }
+        let css: string;
+        try {
+          css = await fsPromises.readFile(args.path, "utf8");
+        } catch {
+          return null;
+        }
+        const processed = await preprocessSourceCss(css, args.path, containment);
+        return {
+          contents: [
+            "(function () {",
+            '  if (typeof document === "undefined") return;',
+            '  var s = document.createElement("style");',
+            `  s.setAttribute("data-source", ${JSON.stringify(args.path)});`,
+            `  s.textContent = ${JSON.stringify(processed)};`,
+            "  document.head.appendChild(s);",
+            "})();",
+            // Identity proxy — `styles.foo` evaluates to "foo". Preserves the
+            // call-site shape so render code that does `<div className={styles.x}>`
+            // stays valid; class-name *scoping* is not preserved by design.
+            'export default new Proxy({}, { get: function (_t, p) { return typeof p === "string" ? p : undefined; } });',
+          ].join("\n"),
+          loader: "js",
+        };
+      });
+
+      build.onLoad({ filter: /\.css$/ }, async (args) => {
+        if (containment) {
+          assertContained(args.path, containment);
+        }
+        let css: string;
+        try {
+          css = await fsPromises.readFile(args.path, "utf8");
+        } catch {
+          return null;
+        }
+        const processed = await preprocessSourceCss(css, args.path, containment);
+        return {
+          contents: [
+            "(function () {",
+            '  if (typeof document === "undefined") return;',
+            '  var s = document.createElement("style");',
+            `  s.setAttribute("data-source", ${JSON.stringify(args.path)});`,
+            `  s.textContent = ${JSON.stringify(processed)};`,
+            "  document.head.appendChild(s);",
+            "})();",
+          ].join("\n"),
+          loader: "js",
+        };
+      });
     },
   };
 }
@@ -1562,15 +2380,72 @@ async function compileReactComponent(
     seedChain: readonly string[];
     loader: DesignImportLoader;
   },
+  /**
+   * Working directory esbuild uses to resolve unqualified imports emitted by
+   * the user's TSX (e.g. `./coach.css`, sibling component files, `node_modules`
+   * lookups that walk parent directories). Defaults to `PROJECT_ROOT` so the
+   * historical behavior for `generate` / `edit` / `patch` (LLM-emitted source
+   * with no on-disk home) is preserved.
+   *
+   * The `import` action MUST pass `dirname(resolvedSourcePath)` from the
+   * synced folder so relative imports resolve against the file's actual
+   * location instead of `PROJECT_ROOT`. Without this, `import "./foo.css"`
+   * from `/repo/app/coach/page.tsx` resolves to `<project>/foo.css` and
+   * fails with a misleading "Could not resolve" error.
+   */
+  componentResolveDir?: string,
+  /**
+   * Additional `node_modules` directories esbuild searches when a bare
+   * specifier (e.g. `framer-motion`, `@radix-ui/react-slot`) cannot be
+   * resolved through the sandbox. The `import` action passes the synced
+   * repo's `node_modules` so the preview piggy-backs on whatever the user
+   * already has installed in their target codebase, eliminating most
+   * install churn for typical Next.js apps.
+   *
+   * Order matters: esbuild walks `nodePaths` left-to-right after exhausting
+   * the per-importer resolution chain, so the sandbox wins on collisions
+   * (preserving the curated dependency set from `selene-workspace/package.json`).
+   */
+  extraNodePaths?: readonly string[],
+  /**
+   * Round-2 (B1+M5): synced-folder containment config for the `import`
+   * action. When present, every `onLoad` on the default file namespace
+   * runs the path through {@link isContained}; tsconfig-paths and
+   * source-CSS plugins run defense-in-depth `assertContained` after
+   * their own resolves. Pipelines that pre-date the import action
+   * (`generate` / `edit` / `patch`) pass `undefined` and operate in
+   * the historical no-containment mode.
+   */
+  containment?: ContainmentConfig,
 ): Promise<CompileResult> {
   try {
     const plugins: esbuild.Plugin[] = [
+      // Round-2 M3: sandbox-first must run BEFORE any other onResolve so
+      // bare specifiers that exist in the curated sandbox cannot be
+      // shadowed by an arbitrary `node_modules` walk from the synced
+      // repo's resolveDir. The plugin is a no-op for specifiers the
+      // sandbox does not contain (returns undefined), so unrelated bare
+      // imports fall through to esbuild's default resolution.
+      //
+      // Round-3 M3: the plugin now also takes `tsconfigPaths` and skips
+      // any specifier that matches a `paths` rule in the synced folder's
+      // `tsconfig.json`. Without this, a monorepo-style alias like
+      // `@repo/ui` could be incorrectly claimed by the sandbox if a
+      // same-named package exists there, instead of being routed through
+      // the tsconfig-paths plugin to the actual aliased file.
+      createSandboxFirstPackagePlugin(tsconfigPaths),
       createExternalUrlPlugin(),
-      createComponentPlugin(componentCode),
+      createComponentPlugin(componentCode, componentResolveDir),
       createNextPreviewStubsPlugin(),
+      // Source-CSS plugin must run BEFORE the tsconfig-paths plugin, otherwise
+      // an aliased CSS file (e.g. `@/styles/globals.css`) would be claimed by
+      // the alias plugin and loaded with the default `ts` loader. Registration
+      // order = onLoad dispatch order, so the CSS plugin gets the first look at
+      // any `.css` / `.module.css` path regardless of how it was resolved.
+      createSourceCssPlugin(containment),
     ];
     if (tsconfigPaths) {
-      plugins.push(createTsconfigPathsPlugin(tsconfigPaths));
+      plugins.push(createTsconfigPathsPlugin(tsconfigPaths, containment));
     }
     if (designImport) {
       plugins.push(
@@ -1582,6 +2457,17 @@ async function compileReactComponent(
         ),
       );
     }
+    if (containment) {
+      // Containment guard registered LAST and scoped to esbuild's default
+      // `file` namespace. Plugin-owned namespaces (selene-source-css,
+      // selene-tsconfig-paths, selene-next-preview-stubs, design-workspace,
+      // external-url, virtual-component) handle their own reads first, while
+      // disk-backed files that fall through to esbuild's built-in loader pass
+      // through this guard before any filesystem read.
+      plugins.push(createContainmentGuardPlugin(containment));
+    }
+
+    const nodePaths = [SANDBOX_NODE_MODULES, ...(extraNodePaths ?? [])];
 
     const result = await withTimeout(
       esbuild.build({
@@ -1617,8 +2503,22 @@ async function compileReactComponent(
           ".ttf": "dataurl",
           ".otf": "dataurl",
           ".eot": "dataurl",
+          // Inline asset imports — covers `import logo from "./logo.svg"`,
+          // raster image imports, and any other binary the imported component
+          // happens to reference. `dataurl` keeps the IIFE bundle self-contained
+          // (no separate output files) at the cost of larger bundle size; for
+          // preview workloads this trade-off is correct because the component
+          // never ships to production.
+          ".svg": "dataurl",
+          ".png": "dataurl",
+          ".jpg": "dataurl",
+          ".jpeg": "dataurl",
+          ".gif": "dataurl",
+          ".webp": "dataurl",
+          ".avif": "dataurl",
+          ".ico": "dataurl",
         },
-        nodePaths: [SANDBOX_NODE_MODULES],
+        nodePaths,
         plugins,
       }),
       COMPILE_TIMEOUT_MS,
@@ -1664,8 +2564,28 @@ async function compileReactComponent(
       if (detail instanceof DesignWorkspaceImportError) {
         throw detail;
       }
+      // Round-2 (B1+M5): containment guard rejected an onLoad path that
+      // walked outside the synced-folder allowlist. Surface the typed
+      // error so the handler maps it to a `containment` issue with the
+      // offending path + allowedRoots intact.
+      if (detail instanceof ContainmentViolationError) {
+        throw detail;
+      }
+      // Round-2 M1: source-CSS plugin rejected a preprocessed stylesheet
+      // (.scss / .sass / .less / .styl). Surface the typed error so the
+      // handler maps it to a `preprocessor` issue with a port-or-precompile
+      // suggestion instead of esbuild's generic "no loader configured".
+      if (detail instanceof PreprocessorNotSupportedError) {
+        throw detail;
+      }
     }
     if (error instanceof DesignWorkspaceImportError) {
+      throw error;
+    }
+    if (error instanceof ContainmentViolationError) {
+      throw error;
+    }
+    if (error instanceof PreprocessorNotSupportedError) {
       throw error;
     }
 
@@ -1690,6 +2610,7 @@ async function compileReactComponent(
             issue.text,
             toDiagnosticLocation(issue.location ?? undefined),
             dependencyCheck,
+            tsconfigPaths,
           ),
         )
       : [
@@ -1697,6 +2618,7 @@ async function compileReactComponent(
             error instanceof Error ? error.message : "Compilation failed.",
             undefined,
             dependencyCheck,
+            tsconfigPaths,
           ),
         ];
 
@@ -2082,11 +3004,23 @@ export async function buildTailwindPreviewWithMetadata(
   // a throw) so the caller's normal error-envelope path lights up with
   // the `ASSET_ALIAS_NOT_FOUND` code + declared aliases list.
   let rewrittenCode: string;
+  // Rev-J3 — single shared options object so all three callsites stay in
+  // lock-step. The dependency check now mirrors esbuild's `nodePaths` so a
+  // synced-repo `framer-motion` (only installed under the user's repo) is
+  // not falsely flagged as missing, and tsconfig-aliased specifiers are
+  // skipped because the tsconfig-paths plugin will resolve them.
+  const dependencyValidationOptions = {
+    tsconfigPaths: options.tsconfigPaths,
+    extraNodePaths: options.extraNodePaths,
+  };
   try {
     rewrittenCode = rewriteAssetAliases(componentCode, options.assetAliases);
   } catch (error) {
     if (error instanceof AssetAliasNotFoundError) {
-      const dependencyCheck = await validateWorkspaceDependencies(componentCode);
+      const dependencyCheck = await validateWorkspaceDependencies(
+        componentCode,
+        dependencyValidationOptions,
+      );
       const report: DesignWorkspaceCompileReport = {
         warnings: [],
         errors: [
@@ -2106,7 +3040,10 @@ export async function buildTailwindPreviewWithMetadata(
     throw error;
   }
 
-  let dependencyCheck = await validateWorkspaceDependencies(rewrittenCode);
+  let dependencyCheck = await validateWorkspaceDependencies(
+    rewrittenCode,
+    dependencyValidationOptions,
+  );
   let autoInstall: DesignWorkspaceAutoInstallSummary | undefined;
   let recovered = false;
 
@@ -2131,7 +3068,10 @@ export async function buildTailwindPreviewWithMetadata(
 
     if (autoInstall?.success) {
       recovered = true;
-      dependencyCheck = await validateWorkspaceDependencies(rewrittenCode);
+      dependencyCheck = await validateWorkspaceDependencies(
+        rewrittenCode,
+        dependencyValidationOptions,
+      );
     }
   }
 
@@ -2191,6 +3131,9 @@ export async function buildTailwindPreviewWithMetadata(
       options.renderMany,
       options.tsconfigPaths,
       designImport,
+      options.componentResolveDir,
+      options.extraNodePaths,
+      options.containment,
     );
     const tailwindCss = await buildPreviewTailwindCss(rewrittenCode);
     const report: DesignWorkspaceCompileReport = {
@@ -2261,6 +3204,69 @@ export async function buildTailwindPreviewWithMetadata(
       throw error;
     }
 
+    // Round-2 (B1+M5) — wrap a containment violation into a structured
+    // DesignWorkspaceCompileError so the handler surfaces the offending
+    // path + allowedRoots in the report, with an actionable suggestion
+    // explaining how to widen the allowlist or move the file inside it.
+    if (error instanceof ContainmentViolationError) {
+      const report: DesignWorkspaceCompileReport = {
+        warnings: [],
+        errors: [
+          {
+            type: "dependency",
+            // Round-3 M5 — stable code so consumers can branch on the
+            // specific failure class without parsing message text.
+            code: "CONTAINMENT_VIOLATION",
+            message: error.message,
+            suggestion:
+              `Path "${error.absPath}" is outside the synced-folder allowlist. ` +
+              `Allowed roots: ${error.allowedRoots.join(", ")}. ` +
+              `Move the file inside one of those roots, or ensure the ` +
+              `import action's source file lives inside a synced folder.`,
+          },
+        ],
+        dependencyCheck: normalizeDependencySummary(dependencyCheck),
+        autoInstall,
+        recovered,
+        durationMs: Date.now() - startedAt,
+      };
+      const message = buildReportMessage(report);
+      logCompilerFailure(source, report, message);
+      throw new DesignWorkspaceCompileError(message, report);
+    }
+
+    // Round-2 M1 — preprocessed stylesheet rejection. The compiler
+    // doesn't bundle Sass/Less/Stylus; the suggestion points the agent
+    // at the two recoverable paths (pre-compile to plain CSS, or use
+    // `action: "port"` to render via the LLM instead).
+    if (error instanceof PreprocessorNotSupportedError) {
+      const report: DesignWorkspaceCompileReport = {
+        warnings: [],
+        errors: [
+          {
+            type: "dependency",
+            // Round-3 M5 — stable code lets the agent route preprocessed
+            // stylesheet failures to the port-or-precompile recovery
+            // without inspecting the message text.
+            code: "PREPROCESSOR_NOT_SUPPORTED",
+            message: error.message,
+            suggestion:
+              `Preprocessed stylesheets (${error.extension}) are not bundled ` +
+              `by the design preview. Pre-compile "${error.absPath}" to plain ` +
+              `CSS (or .module.css) before importing, or render the component ` +
+              `via action: "port" instead of import.`,
+          },
+        ],
+        dependencyCheck: normalizeDependencySummary(dependencyCheck),
+        autoInstall,
+        recovered,
+        durationMs: Date.now() - startedAt,
+      };
+      const message = buildReportMessage(report);
+      logCompilerFailure(source, report, message);
+      throw new DesignWorkspaceCompileError(message, report);
+    }
+
     const baseReport =
       error instanceof DesignWorkspaceCompileError
         ? error.report
@@ -2271,6 +3277,7 @@ export async function buildTailwindPreviewWithMetadata(
                 error instanceof Error ? error.message : "Compilation failed.",
                 undefined,
                 dependencyCheck,
+                options.tsconfigPaths,
               ),
             ],
             dependencyCheck: normalizeDependencySummary(dependencyCheck),
