@@ -180,13 +180,6 @@ export interface AppSettings {
     vectorSearchRerankingEnabled?: boolean;
     vectorSearchQueryExpansionEnabled?: boolean;
     vectorSearchLlmSynthesisEnabled?: boolean;
-    /**
-     * Sprint 7 W7.1.G — selects the retrieval engine used by `searchWithRouter`.
-     * Defaults to `"lance"`. The `"swift"` value opts into the experimental
-     * Swift sidecar (Phase 1 ship constraint — opt-in only). Falls back to
-     * LanceDB automatically on sidecar failure.
-     */
-    vectorSearchSearchEngine?: "lance" | "swift";
 
     vectorSearchRrfK?: number;
     vectorSearchDenseWeight?: number;
@@ -362,8 +355,6 @@ const DEFAULT_SETTINGS: AppSettings = {
     vectorSearchRerankingEnabled: false,
     vectorSearchQueryExpansionEnabled: true,
     vectorSearchLlmSynthesisEnabled: true,
-    // Phase 1 ship constraint: Swift engine is opt-in only.
-    vectorSearchSearchEngine: "lance",
     vectorSearchRrfK: 50,
     vectorSearchDenseWeight: 1.0,
     vectorSearchLexicalWeight: 2.0,
@@ -716,13 +707,6 @@ function updateEnvFromSettings(settings: AppSettings): void {
     }
     if (settings.vectorSearchLlmSynthesisEnabled !== undefined) {
         process.env.VECTOR_SEARCH_LLM_SYNTHESIS = settings.vectorSearchLlmSynthesisEnabled ? "true" : "false";
-    }
-    if (settings.vectorSearchSearchEngine === "swift" || settings.vectorSearchSearchEngine === "lance") {
-        // Sprint 7 W7.1.G — propagate the Swift opt-in to vector-search config
-        // via the same SEARCH_ENGINE channel honoured by lib/config/vector-search.ts.
-        process.env.SEARCH_ENGINE = settings.vectorSearchSearchEngine;
-    } else {
-        process.env.SEARCH_ENGINE = "lance";
     }
 
     if (settings.vectorSearchRrfK !== undefined) {

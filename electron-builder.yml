@@ -118,34 +118,6 @@ extraResources:
       - "!**/node_modules/**"
       - "!**/.venv/**"
       - "!**/venv/**"
-  # Bundled Swift sidecar binary for Phase 1 selene-engine integration
-  # (Sprint 7 W7.1.B). The Swift CLI is built upstream by
-  # ../swiftapp/scripts/build-swift-engine.sh and copied into
-  # binaries/selene-engine/<platform>/ on the build host. At runtime
-  # lib/swift-engine/sidecar.ts resolves the binary in this order:
-  #   1. explicit override (tests/dev),
-  #   2. process.resourcesPath/binaries/selene-engine/<platform>/selene-engine
-  #      (this entry — packaged builds),
-  #   3. dev-mode .build/release-bundle/<platform>/<arch>/selene-engine.
-  # Layout under <Resources>/binaries/selene-engine after install:
-  #   macos-arm64/selene-engine          (Apple Silicon)
-  #   macos-x64/selene-engine            (Intel)
-  #   macos-universal/selene-engine      (preferred for production .dmg)
-  #   linux-x64/selene-engine            (when ready)
-  #   win32-x64/selene-engine.exe        (when ready)
-  # Platform isolation mirrors the binaries/rtk pattern: only the host
-  # platform's subdirectory is populated at build time, so the filters
-  # below act as a defensive belt-and-suspenders to drop foreign binaries
-  # if they happen to exist locally (e.g., a dev who built both arches).
-  - from: "binaries/selene-engine"
-    to: "binaries/selene-engine"
-    filter:
-      - "**/*"
-      # Keep selene-engine.sha256 and build-manifest.json — the sidecar
-      # supervisor surfaces those via SwiftEngineHealth.manifest.
-      - "!**/.DS_Store"
-      - "!**/__pycache__/**"
-      - "!**/.git/**"
 
 # Compression settings
 asar: true

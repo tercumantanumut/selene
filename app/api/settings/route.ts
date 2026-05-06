@@ -101,12 +101,6 @@ export async function PUT(request: NextRequest) {
       vectorSearchRerankingEnabled: body.vectorSearchRerankingEnabled !== undefined ? body.vectorSearchRerankingEnabled : currentSettings.vectorSearchRerankingEnabled,
       vectorSearchQueryExpansionEnabled: body.vectorSearchQueryExpansionEnabled !== undefined ? body.vectorSearchQueryExpansionEnabled : currentSettings.vectorSearchQueryExpansionEnabled,
       vectorSearchLlmSynthesisEnabled: body.vectorSearchLlmSynthesisEnabled !== undefined ? body.vectorSearchLlmSynthesisEnabled : currentSettings.vectorSearchLlmSynthesisEnabled,
-      // Sprint 7 W7.1.G — Swift engine opt-in. Reject anything other than the
-      // two known values so a malformed PUT can't break the search router.
-      vectorSearchSearchEngine:
-        body.vectorSearchSearchEngine === "swift" || body.vectorSearchSearchEngine === "lance"
-          ? body.vectorSearchSearchEngine
-          : currentSettings.vectorSearchSearchEngine,
 
       vectorSearchRrfK: body.vectorSearchRrfK !== undefined ? body.vectorSearchRrfK : currentSettings.vectorSearchRrfK,
       vectorSearchDenseWeight: body.vectorSearchDenseWeight !== undefined ? body.vectorSearchDenseWeight : currentSettings.vectorSearchDenseWeight,

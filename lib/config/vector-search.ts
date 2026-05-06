@@ -3,27 +3,12 @@
  * Reference: docs/vector-search-v2-analysis.md Section 3.3
  */
 
-/**
- * Selects which engine fulfills `searchWithRouter` calls.
- *
- * - `lance` (default): existing in-process LanceDB / hybrid-search-v2 path.
- * - `swift`: routes through the SwiftEngineSidecar (Phase 1 ship, opt-in).
- *
- * The Phase 1 ship constraint requires this to default to `lance` so the
- * Swift code path is opt-in only until parity gates stay green and sidecar
- * telemetry shows healthy adoption (see `lib/swift-engine/types.ts` header).
- */
-export type SearchEngine = "lance" | "swift";
-
 interface VectorSearchV2Config {
   // Feature flags - all default to false for V1 compatibility
   enableHybridSearch: boolean;
   enableTokenChunking: boolean;
   enableReranking: boolean;
   enableQueryExpansion: boolean;
-
-  // Engine selection (Sprint 7 W7.1.C)
-  searchEngine: SearchEngine;
 
   // Chunking (Section 2.1)
   chunkingStrategy: "character" | "token" | "ast";
@@ -59,9 +44,6 @@ const defaultConfig: VectorSearchV2Config = {
   enableTokenChunking: false,
   enableReranking: false,
   enableQueryExpansion: false,
-
-  // Phase 1 ship is opt-in: default to LanceDB until SEARCH_ENGINE=swift is set.
-  searchEngine: "lance",
 
   chunkingStrategy: "character",
   tokenChunkSize: 96,
@@ -114,20 +96,8 @@ function parseNumber(value?: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function parseSearchEngine(value?: string): SearchEngine | undefined {
-  if (!value) return undefined;
-  const normalized = value.toLowerCase();
-  if (normalized === "swift" || normalized === "lance") return normalized;
-  return undefined;
-}
-
 // Environment variable overrides
 export function loadConfigFromEnv(): void {
-  const searchEngine = parseSearchEngine(process.env.SEARCH_ENGINE);
-  // Default stays `lance` whenever the env var is absent or unrecognized — Phase 1
-  // ship constraint: the Swift engine is opt-in only.
-  currentConfig.searchEngine = searchEngine ?? "lance";
-
   const hybridEnabled = parseOptionalBoolean(process.env.VECTOR_SEARCH_HYBRID);
   if (hybridEnabled !== undefined) {
     currentConfig.enableHybridSearch = hybridEnabled;

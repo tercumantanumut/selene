@@ -15,7 +15,6 @@ import { db } from "@/lib/db/sqlite-client";
 import { agentSyncFolders, agentSyncFiles } from "@/lib/db/sqlite-character-schema";
 import { eq, and } from "drizzle-orm";
 import { indexFileToVectorDB, removeFileFromVectorDB } from "./indexing";
-import { SwiftEngineUnavailableError, type SwiftEngineSidecar } from "@/lib/swift-engine/types";
 import { DEFAULT_IGNORE_PATTERNS, createIgnoreMatcher, createAggressiveIgnore } from "./ignore-patterns";
 import { taskRegistry } from "@/lib/background-tasks/registry";
 import { resolveChunkingOverrides, resolveFolderSyncBehavior, shouldRunForTrigger } from "./sync-mode-resolver";
@@ -374,318 +373,6 @@ function scheduleBatchForFolder(folderId: string, filePath: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Swift engine notifyChange dispatch (W7.1.D)
-//
-// When SEARCH_ENGINE === "swift", every file watcher event is mirrored to the
-// Swift sidecar via index.notifyChange. We coalesce bursts per folderId within
-// a 200ms window so the sidecar gets one batched JSON-RPC call per quiet period
-// instead of one per chokidar event. The Swift dispatch is fire-and-forget
-// (Promise.all alongside the LanceDB pipeline) so Swift errors never block the
-// LanceDB index from staying current.
-//
-// When SEARCH_ENGINE === "lance" (default) every helper here short-circuits at
-// the engine-flag check; the sidecar module is lazy-loaded so the dynamic
-// import never runs and the hot path stays zero-overhead.
-// ---------------------------------------------------------------------------
-
-/** Chokidar-aligned op codes (matches Swift index.notifyChange schema). */
-type SwiftWatcherOp = "add" | "change" | "unlink";
-
-interface SwiftPendingChange {
-  path: string;
-  op: SwiftWatcherOp;
-  /** Original path before a rename (chokidar doesn't surface this; reserved). */
-  oldPath?: string;
-}
-
-/** Coalesce + buffering window. 200ms keeps the Swift index fresher than the
- * 1000ms LanceDB DEBOUNCE_MS while still amortising chokidar bursts. */
-const SWIFT_NOTIFY_DEBOUNCE_MS = 200;
-
-/** Bounded buffer when the sidecar isn't ready yet. Oldest is dropped first. */
-const SWIFT_PENDING_BUFFER_MAX = 1000;
-
-/**
- * Per-folder coalescing state for Swift notifyChange. Latest op for a path
- * wins (e.g. add → change collapses to "change"; add → unlink collapses to
- * "unlink"). The map is keyed by absolute path so renames-as-(unlink+add)
- * still produce the right final op.
- */
-const swiftPendingByFolder = new Map<string, Map<string, SwiftPendingChange>>();
-const swiftFlushTimers = new Map<string, NodeJS.Timeout>();
-
-/** Buffered changes waiting on the sidecar to become ready. */
-const swiftQueuedWhileNotReady = new Map<string, SwiftPendingChange[]>();
-
-/** Fire the SwiftEngineUnavailableError warning at most once per process. */
-let swiftUnavailableLogged = false;
-
-/**
- * Lazy accessor for the sidecar singleton. The dynamic import only fires when
- * SEARCH_ENGINE === "swift"; with the default ("lance") we never touch the
- * sidecar module at all. Result is cached after the first successful resolve.
- */
-let cachedSidecarFactory: (() => SwiftEngineSidecar) | null = null;
-let cachedSidecarFactoryPromise: Promise<(() => SwiftEngineSidecar) | null> | null = null;
-
-async function loadSidecarFactory(): Promise<(() => SwiftEngineSidecar) | null> {
-  if (cachedSidecarFactory) return cachedSidecarFactory;
-  if (cachedSidecarFactoryPromise) return cachedSidecarFactoryPromise;
-  cachedSidecarFactoryPromise = (async () => {
-    try {
-      // The W7.1.E module exports getSwiftEngineSidecar(). Tests bypass this
-      // dynamic import entirely via __setSwiftEngineFactoryForTests so they
-      // don't depend on the file existing on disk. The path is built up at
-      // runtime so tsc doesn't try to statically resolve it before W7.1.E
-      // lands the file.
-      const sidecarPath = "@/lib/swift-engine/sidecar";
-      const mod = await import(/* @vite-ignore */ sidecarPath);
-      const factory = (mod as { getSwiftEngineSidecar?: () => SwiftEngineSidecar })
-        .getSwiftEngineSidecar;
-      if (typeof factory !== "function") {
-        return null;
-      }
-      cachedSidecarFactory = factory;
-      return factory;
-    } catch (err) {
-      // sidecar.ts may not exist on this branch yet (W7.1.E lands separately).
-      // Degrade silently: the LanceDB pipeline is the source of truth.
-      if (!swiftUnavailableLogged) {
-        swiftUnavailableLogged = true;
-        console.warn(
-          `[FileWatcher] Swift sidecar module unavailable, notifyChange disabled: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
-      }
-      return null;
-    }
-  })();
-  return cachedSidecarFactoryPromise;
-}
-
-/**
- * Reset the cached sidecar factory and one-shot warning state. Test-only.
- * Exported below so unit tests can reload the mock between cases.
- */
-export function __resetSwiftEngineCacheForTests(): void {
-  cachedSidecarFactory = null;
-  cachedSidecarFactoryPromise = null;
-  swiftUnavailableLogged = false;
-  for (const t of swiftFlushTimers.values()) clearTimeout(t);
-  swiftFlushTimers.clear();
-  swiftPendingByFolder.clear();
-  swiftQueuedWhileNotReady.clear();
-}
-
-/**
- * Inject a sidecar factory directly. Test-only: lets unit tests bypass the
- * dynamic import of lib/swift-engine/sidecar.ts (which W7.1.E owns and may
- * not yet exist on the branch).
- */
-export function __setSwiftEngineFactoryForTests(
-  factory: (() => SwiftEngineSidecar) | null,
-): void {
-  cachedSidecarFactory = factory;
-  cachedSidecarFactoryPromise = factory ? Promise.resolve(factory) : null;
-}
-
-function isSwiftSearchEngine(): boolean {
-  return (process.env.SEARCH_ENGINE ?? "lance").toLowerCase() === "swift";
-}
-
-/**
- * Append a change to the per-folder coalescing map, then arm the flush timer.
- * No network call yet — that happens after SWIFT_NOTIFY_DEBOUNCE_MS quiet.
- */
-function enqueueSwiftChange(
-  folderId: string,
-  change: SwiftPendingChange,
-): void {
-  let bucket = swiftPendingByFolder.get(folderId);
-  if (!bucket) {
-    bucket = new Map();
-    swiftPendingByFolder.set(folderId, bucket);
-  }
-  // Latest op for a path wins (chokidar's add+change cascade collapses to
-  // "change"; add+unlink collapses to "unlink").
-  bucket.set(change.path, change);
-
-  if (swiftFlushTimers.has(folderId)) {
-    clearTimeout(swiftFlushTimers.get(folderId)!);
-  }
-  const timer = setTimeout(() => {
-    swiftFlushTimers.delete(folderId);
-    void flushSwiftPendingForFolder(folderId);
-  }, SWIFT_NOTIFY_DEBOUNCE_MS);
-  if (typeof timer === "object" && "unref" in timer) {
-    (timer as NodeJS.Timeout).unref();
-  }
-  swiftFlushTimers.set(folderId, timer);
-}
-
-/**
- * Public entry point used by the chokidar handlers. Returns a Promise that
- * resolves once the change has been buffered (always quick); the actual JSON-
- * RPC dispatch happens later. We deliberately do NOT await sidecar.sendRequest
- * here — it must run concurrently with the LanceDB upsert/delete pipeline.
- */
-function notifySwiftEngineOfChange(folderId: string, change: SwiftPendingChange): void {
-  if (!isSwiftSearchEngine()) return;
-  enqueueSwiftChange(folderId, change);
-}
-
-/**
- * Drain the pending buffer for one folder and emit a single index.notifyChange.
- * If the sidecar isn't ready, the changes are queued (bounded) until ready.
- */
-async function flushSwiftPendingForFolder(folderId: string): Promise<void> {
-  const bucket = swiftPendingByFolder.get(folderId);
-  if (!bucket || bucket.size === 0) return;
-  const changes = Array.from(bucket.values());
-  bucket.clear();
-
-  const factory = await loadSidecarFactory();
-  if (!factory) {
-    bufferWhileNotReady(folderId, changes);
-    return;
-  }
-
-  let sidecar: SwiftEngineSidecar;
-  try {
-    sidecar = factory();
-  } catch (err) {
-    handleSwiftDispatchError(err);
-    return;
-  }
-
-  if (!sidecar.isReady()) {
-    bufferWhileNotReady(folderId, changes);
-    // Best-effort retry once the sidecar transitions to ready. We poll cheaply
-    // because the sidecar interface doesn't expose an event emitter.
-    schedulePendingDrain(folderId);
-    return;
-  }
-
-  // Drain any prior buffer first so order is preserved.
-  const queued = swiftQueuedWhileNotReady.get(folderId);
-  let combined = changes;
-  if (queued && queued.length > 0) {
-    combined = [...queued, ...changes];
-    swiftQueuedWhileNotReady.delete(folderId);
-  }
-
-  await dispatchSwiftNotifyChange(sidecar, folderId, combined);
-}
-
-function bufferWhileNotReady(folderId: string, changes: SwiftPendingChange[]): void {
-  let buf = swiftQueuedWhileNotReady.get(folderId);
-  if (!buf) {
-    buf = [];
-    swiftQueuedWhileNotReady.set(folderId, buf);
-  }
-  for (const c of changes) {
-    if (buf.length >= SWIFT_PENDING_BUFFER_MAX) {
-      // Drop oldest with a warning.
-      buf.shift();
-      console.warn(
-        `[FileWatcher] Swift notifyChange buffer overflow for folder ${folderId} ` +
-        `(>${SWIFT_PENDING_BUFFER_MAX} changes); dropping oldest`
-      );
-    }
-    buf.push(c);
-  }
-}
-
-/**
- * Periodically retry sending a buffered batch once the sidecar reports ready.
- * Bounded: stops after 60 attempts (~30s) to avoid leaking timers if the
- * sidecar never comes up; the LanceDB path keeps the system functional.
- */
-function schedulePendingDrain(folderId: string): void {
-  let attempts = 0;
-  const tick = async (): Promise<void> => {
-    attempts++;
-    const buf = swiftQueuedWhileNotReady.get(folderId);
-    if (!buf || buf.length === 0) return;
-
-    const factory = cachedSidecarFactory ?? (await loadSidecarFactory());
-    if (!factory) return;
-
-    let sidecar: SwiftEngineSidecar;
-    try {
-      sidecar = factory();
-    } catch (err) {
-      handleSwiftDispatchError(err);
-      return;
-    }
-
-    if (sidecar.isReady()) {
-      swiftQueuedWhileNotReady.delete(folderId);
-      await dispatchSwiftNotifyChange(sidecar, folderId, buf);
-      return;
-    }
-
-    if (attempts >= 60) return;
-    const t = setTimeout(() => void tick(), 500);
-    if (typeof t === "object" && "unref" in t) (t as NodeJS.Timeout).unref();
-  };
-
-  const t = setTimeout(() => void tick(), 500);
-  if (typeof t === "object" && "unref" in t) (t as NodeJS.Timeout).unref();
-}
-
-async function dispatchSwiftNotifyChange(
-  sidecar: SwiftEngineSidecar,
-  folderId: string,
-  changes: SwiftPendingChange[],
-): Promise<void> {
-  if (changes.length === 0) return;
-  try {
-    // Swift binary requires the standard MCP `tools/call` envelope; raw
-    // method invocation returns "Method not found".
-    const envelope = await sidecar.callTool("index.notifyChange", {
-      folderId,
-      changes: changes.map((c) => {
-        const out: Record<string, unknown> = { path: c.path, op: c.op };
-        if (c.oldPath) out.oldPath = c.oldPath;
-        return out;
-      }),
-    });
-    if (envelope.error) {
-      handleSwiftDispatchError(
-        new Error(
-          `index.notifyChange MCP error (${envelope.error.code}): ${envelope.error.message}`,
-        ),
-      );
-      return;
-    }
-    if (envelope.result?.isError) {
-      const txt = envelope.result.rawTexts[0] ?? "tool reported isError";
-      handleSwiftDispatchError(new Error(txt));
-    }
-  } catch (err) {
-    handleSwiftDispatchError(err);
-  }
-}
-
-function handleSwiftDispatchError(err: unknown): void {
-  if (err instanceof SwiftEngineUnavailableError) {
-    if (!swiftUnavailableLogged) {
-      swiftUnavailableLogged = true;
-      console.warn(`[FileWatcher] Swift sidecar unavailable: ${err.message}`);
-    }
-    return;
-  }
-  // Unknown errors don't break LanceDB — log and move on.
-  console.warn(
-    `[FileWatcher] Swift index.notifyChange dispatch failed: ${
-      err instanceof Error ? err.message : String(err)
-    }`
-  );
-}
-
-// ---------------------------------------------------------------------------
 // startWatching
 // ---------------------------------------------------------------------------
 
@@ -913,7 +600,7 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
   // --- 8. Fan-out event handlers ---
   // These handlers broadcast to ALL subscriber folders for this path.
 
-  const handleFileChange = (filePath: string, op: "add" | "change") => {
+  const handleFileChange = (filePath: string) => {
     // Skip directory-level events (polling mode fires these but they have no extension)
     // Only process actual file paths
     const ext = extname(filePath).slice(1).toLowerCase();
@@ -940,8 +627,6 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
 
       console.error(`[FileWatcher] Scheduling batch for folder ${subFolderId}: ${filePath}`);
       scheduleBatchForFolder(subFolderId, filePath);
-      // Mirror to Swift engine in parallel; no-op when SEARCH_ENGINE !== "swift".
-      notifySwiftEngineOfChange(subFolderId, { path: filePath, op });
     }
   };
 
@@ -950,9 +635,6 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
     for (const subFolderId of subscribers) {
       const sub = folderSubscribers.get(subFolderId);
       if (!sub) continue;
-
-      // Mirror to Swift engine in parallel; no-op when SEARCH_ENGINE !== "swift".
-      notifySwiftEngineOfChange(subFolderId, { path: filePath, op: "unlink" });
 
       try {
         // Remove from pending queue
@@ -1000,8 +682,8 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
   };
 
   watcher
-    .on("add", (p: string) => handleFileChange(p, "add"))
-    .on("change", (p: string) => handleFileChange(p, "change"))
+    .on("add", handleFileChange)
+    .on("change", handleFileChange)
     .on("unlink", handleFileRemove)
     .on("error", async (error: any) => {
       // --- Permission errors (EACCES / EPERM) ---
@@ -1430,12 +1112,6 @@ export async function stopAllWatchers(): Promise<void> {
   emfileRetryCounts.clear();
   pathReadyPromises.clear();
   recursiveWatcherPaths.clear();
-
-  // Clear Swift notifyChange dispatch state (W7.1.D)
-  for (const t of swiftFlushTimers.values()) clearTimeout(t);
-  swiftFlushTimers.clear();
-  swiftPendingByFolder.clear();
-  swiftQueuedWhileNotReady.clear();
 }
 
 /**

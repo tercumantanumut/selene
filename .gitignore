@@ -56,12 +56,6 @@ public/ort-*.wasm
 electron-dist
 dist-electron
 binaries/
-# Sprint 7 W7.1.B: Swift sidecar binary is built by
-# ../swiftapp/scripts/build-swift-engine.sh and copied into
-# binaries/selene-engine/<platform>/ at packaging time. Never commit
-# the platform binary itself — covered by binaries/ above, listed
-# explicitly so the intent is documented.
-binaries/selene-engine/
 
 # Local development data (SQLite, media, settings)
 .local-data/
