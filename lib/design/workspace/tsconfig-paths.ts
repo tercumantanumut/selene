@@ -26,12 +26,52 @@ import { existsSync, readFileSync, statSync } from "fs";
 import { dirname, extname, isAbsolute, normalize, resolve, sep } from "path";
 import * as esbuild from "esbuild";
 import ts from "typescript";
+import {
+  assertContained,
+  type ContainmentConfig,
+} from "./containment";
 
 export interface TsconfigPathsConfig {
   /** Absolute filesystem path the `paths` targets are resolved against. */
   baseUrl: string;
   /** TS-style path alias map, e.g. `{ "@/*": ["./*"] }`. */
   paths: Record<string, string[]>;
+}
+
+/**
+ * Lightweight pattern test for "does this import specifier match a tsconfig
+ * paths rule?". Used by `dependencies.ts` to skip alias-matching specifiers
+ * during the missing-package check (esbuild's tsconfig-paths plugin will
+ * resolve them at bundle time, so we don't want them flagged as missing
+ * npm packages) and by the compiler's resolution-error classifier to give
+ * the agent an alias-aware suggestion when an alias target is missing.
+ *
+ * Mirrors the matching rules `compileRules` uses, but only returns a
+ * boolean — no compiled regex / file probe — because callers either
+ * already know they will rely on the plugin or are reporting an error.
+ */
+export function tsconfigAliasMatches(
+  target: string,
+  tsconfigPaths: TsconfigPathsConfig,
+): boolean {
+  for (const pattern of Object.keys(tsconfigPaths.paths)) {
+    const star = pattern.indexOf("*");
+    if (star === -1) {
+      if (target === pattern) return true;
+      continue;
+    }
+    if (pattern.indexOf("*", star + 1) !== -1) continue; // malformed
+    const head = pattern.slice(0, star);
+    const tail = pattern.slice(star + 1);
+    if (
+      target.startsWith(head) &&
+      target.endsWith(tail) &&
+      target.length >= head.length + tail.length
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // File extension probe order. Mirrors the TS bundler-resolution heuristic:
@@ -225,9 +265,19 @@ function tryResolveCandidate(candidate: string): string | null {
  * plugin returns `null` so esbuild emits its usual "Could not resolve"
  * error. Silently swallowing the failure would mask typos in the user's
  * source (e.g. `@/lib/utlis` instead of `@/lib/utils`).
+ *
+ * Round-2 containment guard: when `containment` is supplied, every
+ * resolved alias target is validated against the allowed-roots snapshot
+ * BEFORE the file is loaded. A `tsconfig.paths` rule with an absolute
+ * target (`["/etc/passwd/*"]`) or a parent-walking target
+ * (`["../../outside/*"]`) that escapes the synced folder is refused with
+ * a `ContainmentViolationError` instead of silently leaking out. Same
+ * guard runs in the namespace onLoad as defense-in-depth in case the
+ * plugin is ever extended to accept paths from another source.
  */
 export function createTsconfigPathsPlugin(
   config: TsconfigPathsConfig,
+  containment?: ContainmentConfig,
 ): esbuild.Plugin {
   const rules = compileRules(config.paths);
   if (rules.length === 0) {
@@ -259,6 +309,15 @@ export function createTsconfigPathsPlugin(
               : resolve(config.baseUrl, concrete);
             const found = tryResolveCandidate(absolute);
             if (found) {
+              // Containment check: refuse to load the alias target if it
+              // resolves outside the synced-folder containment roots. We
+              // throw rather than fall through so the agent sees a
+              // structured `CONTAINMENT_VIOLATION` instead of a generic
+              // "could not resolve" — the misconfigured paths rule is
+              // the actionable cause.
+              if (containment) {
+                assertContained(found, containment, args.path);
+              }
               return { path: found, namespace: "selene-tsconfig-paths" };
             }
           }
@@ -270,6 +329,14 @@ export function createTsconfigPathsPlugin(
       });
 
       build.onLoad({ filter: /.*/, namespace: "selene-tsconfig-paths" }, (args) => {
+        // Defense-in-depth: re-assert containment at load time. The
+        // onResolve hook already validates, but plugins may be extended
+        // later to accept paths from elsewhere; keeping the guard here
+        // means no future change can sneak past containment without
+        // explicitly disabling this check.
+        if (containment) {
+          assertContained(args.path, containment);
+        }
         const extension = extname(args.path).toLowerCase();
         const loader: esbuild.Loader =
           extension === ".tsx" ? "tsx" :

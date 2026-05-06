@@ -14,6 +14,10 @@ import {
   validatePackageSpec,
 } from "../libraries";
 import { getProjectRoot } from "../../utils/project-root";
+import {
+  tsconfigAliasMatches,
+  type TsconfigPathsConfig,
+} from "./tsconfig-paths";
 
 const execFileAsync = promisify(execFile);
 const PROJECT_ROOT = getProjectRoot();
@@ -137,14 +141,55 @@ function canResolvePackage(packageName: string, nodeModulesDirs: string[]): bool
   return false;
 }
 
+/**
+ * Optional context the `import` action threads through so the dependency
+ * check matches the resolver's actual capabilities:
+ *
+ *   - `tsconfigPaths` — when present, any imported specifier matching a
+ *     tsconfig paths rule is treated as resolvable (the compiler installs
+ *     `createTsconfigPathsPlugin` which rewrites those specifiers to
+ *     real on-disk files). Without this, a synced-repo import like
+ *     `@/lib/utils` would surface as a missing npm package because
+ *     `normalizePackageName` only filters the literal `@/` prefix and a
+ *     repo using `~/` or any other custom alias would slip through.
+ *
+ *   - `extraNodePaths` — additional `node_modules` roots esbuild's
+ *     `nodePaths` falls back to. The `import` action passes the synced
+ *     repo's `node_modules` so packages installed only there (e.g.
+ *     `framer-motion` in a customer app) count as resolved without
+ *     forcing a sandbox install. Sandbox order is preserved for
+ *     classification — these are AFTER `SANDBOX_NODE_MODULES`.
+ *
+ * Both are intentionally optional. `generate` / `edit` / `patch` keep the
+ * historical behavior because they don't have a real on-disk source file
+ * (the LLM emits TSX) and leaning on synced-repo node_modules would make
+ * those flows non-deterministic.
+ */
+export interface ValidateWorkspaceDependenciesOptions {
+  tsconfigPaths?: TsconfigPathsConfig;
+  extraNodePaths?: readonly string[];
+}
+
 export async function validateWorkspaceDependencies(
   componentCode: string,
+  options: ValidateWorkspaceDependenciesOptions = {},
 ): Promise<DependencyValidationResult> {
   const manifestPackages = await readSandboxManifestPackages();
   const importedPackages = extractImportedPackages(componentCode);
   const knownWorkspacePackages = new Set(DESIGN_LIBRARIES.map((library) => library.package));
 
   const PROJECT_NODE_MODULES = join(PROJECT_ROOT, "node_modules");
+  // Search list mirrors the esbuild build option — sandbox first so the
+  // curated copy wins on collisions, then synced-repo `node_modules`
+  // (only set for the `import` action), then the host project's own
+  // node_modules as the universal fallback. Duplicates from the caller
+  // are filtered so nodePaths surface noise (`/path` passed twice) does
+  // not double the per-package stat cost.
+  const importResolutionDirs = uniqueStrings([
+    SANDBOX_NODE_MODULES,
+    ...(options.extraNodePaths ?? []),
+    PROJECT_NODE_MODULES,
+  ]);
 
   const missingManifestPackages = manifestPackages.filter(
     (packageName) => !canResolvePackage(packageName, [SANDBOX_NODE_MODULES]),
@@ -154,13 +199,22 @@ export async function validateWorkspaceDependencies(
   // manifest OR the known design-library registry.  No hardcoded package names
   // — the LLM decides what to install; this layer only validates resolution.
   const manifestSet = new Set(manifestPackages);
-  const importedWorkspacePackages = importedPackages.filter(
-    (packageName) =>
-      manifestSet.has(packageName) || knownWorkspacePackages.has(packageName),
-  );
+  const importedWorkspacePackages = importedPackages.filter((packageName) => {
+    // Rev-J3 — when a tsconfig paths rule covers the specifier, esbuild
+    // will resolve it via `createTsconfigPathsPlugin` and never consult
+    // the workspace dependency list, so flagging it as a workspace
+    // package would just produce a false-positive missing-package error.
+    if (
+      options.tsconfigPaths &&
+      tsconfigAliasMatches(packageName, options.tsconfigPaths)
+    ) {
+      return false;
+    }
+    return manifestSet.has(packageName) || knownWorkspacePackages.has(packageName);
+  });
 
   const missingImportedPackages = importedWorkspacePackages.filter(
-    (packageName) => !canResolvePackage(packageName, [SANDBOX_NODE_MODULES, PROJECT_NODE_MODULES]),
+    (packageName) => !canResolvePackage(packageName, importResolutionDirs),
   );
 
   const missingPackages = uniqueStrings([

@@ -16,8 +16,10 @@ import type { AssetContext } from "../../design/types";
 import {
   detectAvailableLibraries,
   getAvailableLibrariesPrompt,
+  SANDBOX_DIR,
   type DesignLibrary,
 } from "../../design/libraries";
+import { getProjectRoot } from "../../utils/project-root";
 import {
   buildDesignPreviewErrorHtml,
 } from "../../design/workspace/preview";
@@ -98,6 +100,15 @@ import {
   loadTsconfigPaths,
   type TsconfigPathsConfig,
 } from "../../design/workspace/tsconfig-paths";
+// Round-2 (B1+M5): synced-folder containment for the `import` action.
+// `buildContainmentConfig` is called from `handleImport` with the
+// owning synced folder + sandbox node_modules + project root + any
+// extra node paths; the resulting config is threaded through the
+// compiler so onLoad rejects paths outside the allowlist.
+import {
+  buildContainmentConfig,
+  type ContainmentConfig,
+} from "../../design/workspace/containment";
 // Direct source imports (no barrel) per W2.2 hard constraint.
 import { resolveSyncedPath, resolveWorkspaceAwarePaths } from "../filesystem/path-utils";
 import { atomicWriteFile } from "../filesystem/write-utils";
@@ -1781,6 +1792,36 @@ async function compilePreviewForTool(
     /** Project-local TS path aliases loaded by the import action. */
     tsconfigPaths?: TsconfigPathsConfig;
     /**
+     * Working directory esbuild uses to resolve unqualified imports emitted
+     * by the imported source TSX. The `import` action passes
+     * `dirname(resolvedSourcePath)` so relative imports like `./coach.css`
+     * resolve against the source file's actual directory in the synced
+     * folder, instead of falling back to `PROJECT_ROOT` (which produced
+     * the misleading "install in selene-workspace/package.json" suggestion
+     * for sibling files).
+     *
+     * Other actions (`generate` / `edit` / `patch`) leave this undefined —
+     * their source has no on-disk home, so `PROJECT_ROOT` is correct.
+     */
+    componentResolveDir?: string;
+    /**
+     * Extra `node_modules` directories to add to esbuild's resolution
+     * chain after the sandbox's own `node_modules`. The `import` action
+     * passes the synced repo's `node_modules` so the preview piggy-backs
+     * on whatever the user has already installed in their target codebase
+     * — eliminating most install churn for production-grade Next.js apps
+     * while preserving sandbox precedence on package collisions.
+     */
+    extraNodePaths?: readonly string[];
+    /**
+     * Round-2 (B1+M5): synced-folder containment config for the `import`
+     * action. Built in `handleImport` from `[owningSyncedFolder,
+     * SANDBOX_NODE_MODULES, PROJECT_ROOT, ...extraNodePaths]` and threaded
+     * through the compiler so onLoad rejects any path outside the
+     * allowlist. Other actions leave it undefined.
+     */
+    containment?: ContainmentConfig;
+    /**
      * Sprint 1 theme-threading regression fix (Sprint 3 Rev-F1).
      *
      * Forward the effective `previewTheme` ("dark" | "light" | "system")
@@ -1812,6 +1853,18 @@ async function compilePreviewForTool(
       referenceImageUrl: options.referenceImageUrl,
       renderMany: options.renderMany,
       tsconfigPaths: options.tsconfigPaths,
+      // Rev-J2 — `import` action threads these so esbuild resolves
+      // relative imports (`./coach.css`, sibling components) against the
+      // source file's directory in the synced folder, and falls back to
+      // the synced repo's `node_modules` for bare imports the sandbox
+      // doesn't already have. Other actions leave them undefined so the
+      // historical PROJECT_ROOT + sandbox-only behavior is preserved.
+      componentResolveDir: options.componentResolveDir,
+      extraNodePaths: options.extraNodePaths,
+      // Round-2 (B1+M5): synced-folder containment config — only set by
+      // the `import` action. Compiler treats undefined as historical
+      // no-containment mode, so generate/edit/patch are unaffected.
+      containment: options.containment,
       // Sprint 3 Rev-F1: forward the effective theme so the preview HTML
       // matches the user's active workspace theme. Callers layer the
       // LLM's `input.previewTheme` over `options.defaultPreviewTheme` so
@@ -2694,6 +2747,14 @@ export function createDesignWorkspaceTool(options: DesignWorkspaceToolOptions = 
 - "close": Close the design workspace panel.
 - "port": Write a workspace component back to a synced-folder path. Requires \`componentId\` and \`targetPath\` (synced-folder-relative). Defaults to \`dryRun: true\` — set it to false to actually write. If the target file exists AND differs, you must also pass \`overwrite: true\`. Always returns a unified diff so the user can approve before you apply.
 - "import": Import an existing TSX file from a synced folder into the workspace. Provide \`sourcePath\` (synced-folder-relative or absolute). The file is compiled via the same pipeline as "generate"; on compile failure no row is written and the error envelope carries the compile report. On success a DesignComponentRow is persisted with \`metadata.sourcePath\` + \`metadata.importedAt\`, and \`tags\` (plus an automatic \`"imported"\` tag). Repeated imports of the same file update the existing row in place rather than creating duplicates.
+  Supported imports inside the imported file:
+  - **Relative imports** ("./Foo", "../utils/bar") — resolved against the source file's actual directory inside the synced folder, so sibling components, hooks, and asset modules bundle transitively.
+  - **TypeScript path aliases** ("@/lib/utils", "~/components/Button") — resolved via the synced folder's \`tsconfig.json\` (\`compilerOptions.paths\` + \`baseUrl\`). Aliased files are then bundled like any other source file.
+  - **CSS imports** — only plain (\`./coach.css\`) and CSS Modules (\`./Foo.module.css\`) are bundled. Plain CSS is injected as a runtime <style> block at component mount; CSS Modules expose an identity Proxy (\`styles.button === "button"\`), which preserves class-name shape without scoping. \`@import\` and \`url(...)\` references inside imported CSS are recursively inlined (assets become \`data:\` URLs). **Preprocessed stylesheets (.scss / .sass / .less / .styl) are NOT supported** — pre-compile to plain CSS before importing, or render the component via \`action: "port"\` instead.
+  - **Static asset imports** — \`.svg\`, \`.png\`, \`.jpg\`, \`.jpeg\`, \`.gif\`, \`.webp\`, \`.avif\`, \`.ico\` are inlined as \`data:\` URLs.
+  - **Next.js framework primitives** — \`next/navigation\`, \`next/router\`, \`next/link\`, \`next/head\`, \`next/image\`, \`next/dynamic\`, \`next/script\`, \`next/font\`, \`next/font/*\` ship richer preview shims; everything else under \`next/...\` (incl. \`next/server\`, \`next/headers\`, \`next/cache\`, \`next/og\`) falls back to a generic noop Proxy that satisfies imports without crashing.
+  - **Bare npm packages** — resolved against (1) the curated \`selene-workspace/node_modules\` first, (2) the synced repo's own \`node_modules\` next, (3) the host project's \`node_modules\` as a final fallback. Packages installed only in the synced repo (e.g. \`framer-motion\` in a customer app) are usable without re-installing.
+  Imports that fail to resolve surface a structured \`compileReport\` with a 4-way classified suggestion (relative / alias / framework / npm), so the agent can fix the source rather than blindly install packages.
 - "snapshot.save": Persist an iteration of a design component as a durable \`design_snapshots\` row (separate from the transient Zustand undo history). Provide \`componentId\`. Optional: \`sourceCode\` (defaults to the component's current source), \`name\` (<=200 chars), \`isPinned\` (defaults to false).
 - "snapshot.pin": Pin / unpin a persisted snapshot. Provide \`snapshotId\` and \`isPinned\`. Returns the updated row.
 - "snapshot.rename": Rename a persisted snapshot (or clear the name by passing \`name: null\`). Provide \`snapshotId\`. Max 200 chars on \`name\`.
@@ -4817,6 +4878,38 @@ async function handleImport(
 
   // --- 4. Compile through the same pipeline `generate` uses. ---------------
   const componentName = deriveImportedComponentName(sourcePath);
+  // Rev-J3 — `import` is the only action that pulls a real source file from
+  // the synced repo, so it's the only action that needs the esbuild bundler
+  // to resolve relative imports (`./coach.css`, sibling components) against
+  // the source file's own directory and to fall back to the synced repo's
+  // `node_modules` for bare imports the sandbox doesn't already curate.
+  // `componentResolveDir` is the absolute parent directory of the resolved
+  // source file; `extraNodePaths` is appended after the sandbox node_modules
+  // so the curated sandbox version always wins on collision.
+  const componentResolveDir = path.dirname(resolvedSourcePath);
+  const extraNodePaths = owningSyncedFolder
+    ? [path.resolve(owningSyncedFolder, "node_modules")]
+    : undefined;
+  // Round-2 (B1+M5): build the containment allowlist from the roots
+  // esbuild is allowed to read at onLoad time:
+  //   - The owning synced folder (covers source + its node_modules).
+  //     Required — without it relative imports + tsconfig-paths cannot
+  //     resolve to anything inside the synced repo.
+  //   - The curated sandbox dir (covers SANDBOX_NODE_MODULES too) so the
+  //     sandbox-first plugin's resolutions land in an allowed root.
+  //   - The host project's `node_modules` so the React/JSX-runtime
+  //     aliases configured at the build level (`react`, `react-dom`,
+  //     `react/jsx-runtime`, `react/jsx-dev-runtime`) can still load.
+  //
+  // The synced repo's `node_modules` is implicitly covered because it
+  // lives inside `owningSyncedFolder`; we still pass `extraNodePaths` to
+  // keep the allowlist explicit if a future caller separates them.
+  const containment = buildContainmentConfig([
+    owningSyncedFolder ?? undefined,
+    SANDBOX_DIR,
+    path.resolve(getProjectRoot(), "node_modules"),
+    ...(extraNodePaths ?? []),
+  ]);
   const previewResult = await compilePreviewForTool(
     code,
     componentName,
@@ -4826,6 +4919,9 @@ async function handleImport(
       characterId,
       sessionId,
       tsconfigPaths: tsconfigPaths ?? undefined,
+      componentResolveDir,
+      extraNodePaths,
+      containment,
     },
   );
 
