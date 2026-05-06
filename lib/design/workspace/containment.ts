@@ -17,8 +17,8 @@
  * `ContainmentViolationError`. The error is unwrapped from esbuild's error
  * envelope by the compile catch block (same pattern as
  * DesignWorkspaceImportError) and surfaced as a classified compile-report
- * issue (kind=`containment`) so the agent gets an actionable hint instead
- * of a raw resolution failure.
+ * issue so the agent gets an actionable hint instead of a raw resolution
+ * failure.
  *
  * Allowed roots for an `import` compile:
  *   - The owning synced folder — every transitive source / CSS read.
@@ -33,7 +33,20 @@
  * to escape from. The guard is then a no-op.
  */
 
+import { realpathSync } from "fs";
 import { isAbsolute, normalize, resolve, sep } from "path";
+
+function safeRealpath(p: string): string | null {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    try {
+      return realpathSync(p);
+    } catch {
+      return null;
+    }
+  }
+}
 
 /**
  * Plugin error code thrown when a file load lands outside every allowed
@@ -52,10 +65,11 @@ export class ContainmentViolationError extends Error {
     public readonly specifier?: string,
   ) {
     super(
-      `Path "${absPath}" is outside the design-import containment roots ` +
+      `Path "${absPath}" is outside the synced-folder allowlist ` +
         `(${allowedRoots.join(", ")}). The design-workspace import pipeline ` +
         `restricts reads to the owning synced folder and curated node_modules ` +
-        `roots; relative or aliased paths that escape those roots are refused.`,
+        `roots; relative, aliased, or symlinked paths that escape those roots ` +
+        `are refused.`,
     );
     this.name = "ContainmentViolationError";
   }
@@ -74,9 +88,7 @@ export interface ContainmentConfig {
 
 function ensureNormalizedAbsolute(p: string): string {
   if (!isAbsolute(p)) {
-    // The caller passed a relative path. Resolve against cwd as a defense
-    // against silent containment bypass — a relative root would otherwise
-    // turn into an unbounded prefix match against `args.path`.
+    // A relative root would otherwise turn into an unbounded prefix match.
     return normalize(resolve(p));
   }
   return normalize(p);
@@ -87,24 +99,28 @@ function ensureNormalizedAbsolute(p: string): string {
  * empty / duplicate values, normalizes each entry, and returns a frozen
  * snapshot. Pass through `null` / `undefined` entries (callers may have
  * conditional roots like the synced repo's `node_modules`).
+ *
+ * Both lexical and realpath root forms are included so a synced folder that
+ * is itself a symlink can match files addressed through either spelling.
  */
 export function buildContainmentConfig(
   candidateRoots: readonly (string | null | undefined)[],
 ): ContainmentConfig {
-  const allowedRoots = Array.from(
-    new Set(
-      candidateRoots
-        .filter((root): root is string => typeof root === "string" && root.length > 0)
-        .map(ensureNormalizedAbsolute),
-    ),
-  );
-  return { allowedRoots: Object.freeze(allowedRoots) };
+  const set = new Set<string>();
+  for (const root of candidateRoots) {
+    if (typeof root !== "string" || root.length === 0) continue;
+    const lexical = ensureNormalizedAbsolute(root);
+    set.add(lexical);
+    const real = safeRealpath(lexical);
+    if (real) {
+      set.add(normalize(real));
+    }
+  }
+  const allowedRoots = Object.freeze(Array.from(set));
+  return Object.freeze({ allowedRoots });
 }
 
 function isUnderRoot(absPath: string, root: string): boolean {
-  // Both inputs are already normalized — `normalize()` is idempotent so an
-  // extra call is cheap defensive insurance against unnormalized roots
-  // sneaking in through future callers.
   const normPath = normalize(absPath);
   const normRoot = normalize(root);
   if (normPath === normRoot) return true;
@@ -112,13 +128,29 @@ function isUnderRoot(absPath: string, root: string): boolean {
   return normPath.startsWith(withSep);
 }
 
-/** Pure predicate — useful for plugins that prefer to fall through (return
- *  `undefined` from onResolve) rather than throw on a containment miss. */
+/**
+ * Pure predicate — useful for plugins that prefer to fall through (return
+ * `undefined` from onResolve) rather than throw on a containment miss.
+ *
+ * A lexical path must be under an allowed root, and if the path exists, its
+ * realpath target must also be under an allowed root. That closes symlink
+ * escapes while preserving normal missing-file behavior for resolver probes.
+ */
 export function isContained(
   absPath: string,
   config: ContainmentConfig,
 ): boolean {
-  return config.allowedRoots.some((root) => isUnderRoot(absPath, root));
+  const lexicalContained = config.allowedRoots.some((root) =>
+    isUnderRoot(absPath, root),
+  );
+  if (!lexicalContained) return false;
+
+  const realpathTarget = safeRealpath(absPath);
+  if (realpathTarget === null) {
+    return true;
+  }
+  const normReal = normalize(realpathTarget);
+  return config.allowedRoots.some((root) => isUnderRoot(normReal, root));
 }
 
 /**
