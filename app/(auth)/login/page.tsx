@@ -8,6 +8,7 @@ import { useTranslations } from "next-intl";
 import { useAuthRedirect } from "@/hooks/use-auth-redirect";
 import { useAuth } from "@/components/auth/auth-provider";
 import { AuthFormCard } from "@/components/auth/auth-form-card";
+import { readAuthResponseError } from "@/components/auth/auth-error";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -33,18 +34,26 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await res.json();
-
       if (!res.ok) {
-        setError(data.error || t("error"));
+        const responseError = await readAuthResponseError(res);
+        console.error("[Auth] Login failed", {
+          status: res.status,
+          statusText: res.statusText,
+          error: responseError,
+        });
+        setError(responseError || t("error"));
         setLoading(false);
         return;
       }
 
+      await res.json();
+
       await refreshAuth();
       router.push("/");
-    } catch {
-      setError(tc("error"));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : tc("error");
+      console.error("[Auth] Login request failed", err);
+      setError(message);
       setLoading(false);
     }
   };

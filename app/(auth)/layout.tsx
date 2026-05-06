@@ -6,6 +6,7 @@ import { ZLUTTY_EASINGS, ZLUTTY_DURATIONS } from "@/lib/animations/utils";
 import { useReducedMotion } from "@/lib/animations/hooks";
 import { useTranslations } from "next-intl";
 import { WindowsTitleBar } from "@/components/layout/windows-titlebar";
+import { DevLogsViewer } from "@/components/dev/dev-logs-viewer";
 
 export default function AuthLayout({
   children,
@@ -77,6 +78,7 @@ export default function AuthLayout({
           </div>
         </div>
       </div>
+      <DevLogsViewer />
     </div>
   );
 }

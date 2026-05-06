@@ -669,7 +669,7 @@ export async function POST(req: Request) {
     }
 
     console.debug(`[CHAT API] Using HYBRID approach: ${requestMessages.length} frontend messages`);
-    const { coreMessages, enhancedMessages, droppedImagesForProvider } = await prepareMessagesForRequest({
+    const { coreMessages, enhancedMessages } = await prepareMessagesForRequest({
       messages: requestMessages,
       sessionId,
       userId: dbUser.id,
@@ -767,7 +767,6 @@ export async function POST(req: Request) {
       allowedPluginNames,
       workflowPromptContextInput,
       provider: currentProvider,
-      droppedImagesForProvider,
       designPreviewTheme,
     });
 
