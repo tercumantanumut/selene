@@ -90,15 +90,6 @@ interface ToolsBuildContext {
   /** LLM provider name — used to register SDK agent passthrough tools for claudecode */
   provider?: string;
   /**
-   * Count of image content parts that `prepareMessagesForRequest` replaced
-   * with describeImage-prompting placeholders because the outbound provider
-   * rejects inline images. When > 0 we promote `describeImage` into the
-   * initial active tool set so the model can immediately invoke it instead
-   * of having to rediscover it via `searchTools` (which a thinking-mode
-   * request with no vision support would otherwise need to do mid-turn).
-   */
-  droppedImagesForProvider?: number;
-  /**
    * Client-forwarded active design workspace preview theme (from the Zustand
    * `useDesignWorkspaceStore`). Forwarded to `createDesignWorkspaceTool`
    * as the `defaultPreviewTheme` option so mutating tool calls capture
@@ -166,19 +157,6 @@ export async function buildToolsForRequest(
       )
     : undefined;
 
-  // If the outbound provider rejected inline images, message-prep replaced each
-  // one with a placeholder that names `describeImage` as the recovery path.
-  // Auto-authorize the tool for this request even if the agent's enabledTools
-  // list (or the default character template) doesn't include it — otherwise
-  // the placeholder instructions dead-end at "tool not available". This is
-  // scoped to the single request: describeImage is NOT persisted to the
-  // agent's enabledTools, it's only added to the in-memory filter set.
-  const droppedImagesTriggersDescribeImage =
-    (ctx.droppedImagesForProvider ?? 0) > 0;
-  if (droppedImagesTriggersDescribeImage && agentEnabledTools) {
-    agentEnabledTools.add("describeImage");
-  }
-
   const registry = ToolRegistry.getInstance();
 
   // First, get non-deferred tools to build the initial active set.
@@ -223,42 +201,6 @@ export async function buildToolsForRequest(
     initialActiveTools.add("executeCommand");
     console.log(
       "[CHAT API] Companion-tool enforcement: promoted executeCommand to always-loaded because bash is loaded"
-    );
-  }
-
-  // describeImage promotion: when the outbound provider rejected inline
-  // images, message-prep replaced each one with a placeholder that names
-  // `describeImage` as the recovery path.  Promote the tool into the
-  // initial active set so the model can call it on the same turn without
-  // a searchTools round-trip — otherwise DeepSeek-in-thinking-mode would
-  // have to emit a discovery tool call just to invoke the tool the
-  // placeholder already told it to use.
-  //
-  // Note: `agentEnabledTools` was already widened above to include
-  // `describeImage` when this trigger fires, so `allTools.describeImage`
-  // is populated even for agents whose default template (or persisted
-  // enabledTools) omits it.
-  const droppedImagesForProvider = ctx.droppedImagesForProvider ?? 0;
-  if (
-    droppedImagesForProvider > 0 &&
-    allTools.describeImage &&
-    !initialActiveTools.has("describeImage")
-  ) {
-    initialActiveTools.add("describeImage");
-    const autoAuthorized =
-      droppedImagesTriggersDescribeImage &&
-      !enabledTools?.includes("describeImage");
-    console.log(
-      `[CHAT API] Companion-tool enforcement: promoted describeImage to always-loaded ` +
-        `because provider=${ctx.provider ?? "unknown"} rejected ${droppedImagesForProvider} image part(s)` +
-        `${autoAuthorized ? " (auto-authorized for this request — not in agent enabledTools)" : ""}`
-    );
-  } else if (droppedImagesForProvider > 0 && !allTools.describeImage) {
-    // Tool is disabled by env var or factory failure — log loudly so we can
-    // diagnose. Without the tool, the placeholder's instruction dead-ends.
-    console.warn(
-      `[CHAT API] describeImage is NOT available despite ${droppedImagesForProvider} dropped image(s); ` +
-        `placeholder instructions will dead-end. Check that the tool is not disabled by env.`
     );
   }
 

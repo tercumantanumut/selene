@@ -498,13 +498,11 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
     expect(reasoningTexts(assistants[0].content)).toEqual(["Recovered from DB content."]);
   });
 
-  it("strips user image parts for DeepSeek and replaces each with a describeImage-prompting placeholder", async () => {
-    // DeepSeek's `/chat/completions` rejects `image_url` content variants with
-    // "unknown variant `image_url`". The pipeline must drop image parts before
-    // serialization and replace each with a placeholder that (a) tells the model
-    // the attachment was omitted, (b) names the `describeImage` tool as the
-    // recovery path, and (c) when possible, surfaces the original reference so
-    // the model can pass it straight to `describeImage`.
+  it("strips user image parts for DeepSeek and replaces each with a transparent vision-provider notice", async () => {
+    // DeepSeek's `/chat/completions` rejects image content variants. The
+    // pipeline must drop image parts before serialization and replace each with
+    // a transparent notice instead of silently proxying vision through another
+    // model or the legacy describeImage path.
     // Use base64 payloads long enough to clear the RAW_BASE64 guard (>32 chars)
     // so extractImageReference's data-URI reconstruction branch actually fires.
     const longB64One = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA";
@@ -543,7 +541,6 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
       currentProvider: "deepseek",
     });
 
-    // The count must be surfaced so the route can promote describeImage.
     expect(droppedImagesForProvider).toBe(2);
 
     const userMsg = coreMessages.find((m) => m.role === "user");
@@ -556,8 +553,7 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
     expect(imageParts).toHaveLength(0);
 
     // Each dropped image should have been replaced by a text placeholder that
-    // names describeImage, the Settings path to the vision model, and (for
-    // data URIs) explains why the raw base64 isn't echoed back.
+    // explains the selected provider cannot view images.
     const textParts = partList.filter((p) => p.type === "text");
     const placeholders = textParts.filter((p) =>
       typeof p.text === "string" && (p.text as string).includes("image attachment omitted"),
@@ -565,21 +561,17 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
     expect(placeholders).toHaveLength(2);
     for (const p of placeholders) {
       const text = p.text as string;
-      expect(text).toContain("describeImage");
-      expect(text).toContain("Settings");
-      expect(text).toContain("Vision");
-      // Data URI branch: mentions inline base64 and re-attach path.
-      expect(text.toLowerCase()).toContain("base64");
-      expect(text).toContain("re-attach");
+      expect(text).toContain("selected provider cannot view images in Selene");
+      expect(text).toContain("Switch to a vision-capable model");
+      expect(text).not.toContain("describeImage");
+      expect(text).not.toContain("readFile");
     }
   });
 
-  it("surfaces the original URL in the describeImage call example for non-data-URI refs", async () => {
-    // When the frontend attaches an image by URL (e.g. storage ref), the
-    // placeholder must carry that exact URL in a `describeImage({ imageUrl })`
-    // call example so the model has a concrete argument to invoke the tool
-    // with. Use a URL shape that makeImagePart won't rewrite into base64
-    // (absolute http URL) so it survives extractContent as `{type, image}`.
+  it("surfaces the original URL in the blind-provider notice for non-data-URI refs", async () => {
+    // When the frontend attaches an image by URL, the transparent notice should
+    // carry that exact URL for user-visible traceability without suggesting a
+    // hidden fallback model.
     const imageUrl = "https://example.com/storage/screenshot-42.png";
     const frontend: FrontendMessage[] = [
       {
@@ -617,13 +609,12 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
     );
     expect(placeholder).toBeDefined();
     const text = placeholder!.text as string;
-    // The exact imageUrl must appear in a describeImage call example so the
-    // model can paste it straight through.
-    expect(text).toContain("describeImage");
-    expect(text).toContain(`imageUrl: "${imageUrl}"`);
+    expect(text).toContain("selected provider cannot view images in Selene");
+    expect(text).toContain(`Attachment ref: ${imageUrl}`);
+    expect(text).not.toContain("describeImage");
   });
 
-  it("leaves images untouched for non-deepseek providers", async () => {
+  it("keeps current-turn images inline for vision-capable providers", async () => {
     const frontend: FrontendMessage[] = [
       {
         id: "u-image",
@@ -650,8 +641,7 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
       currentProvider: "anthropic",
     });
 
-    // Non-DeepSeek providers receive images unchanged and report no drops,
-    // which guarantees the route does NOT promote describeImage for them.
+    // Vision-capable providers receive the current user-turn image unchanged.
     expect(droppedImagesForProvider).toBe(0);
 
     const userMsg = coreMessages.find((m) => m.role === "user");
@@ -659,5 +649,54 @@ describe("prepareMessagesForRequest — reasoning round-trip", () => {
     const partList = userMsg!.content as Array<{ type: string }>;
     const imageParts = partList.filter((p) => p.type === "image");
     expect(imageParts.length).toBeGreaterThan(0);
+  });
+
+  it("rewrites prior-turn images into lazy readFile refs for vision-capable providers", async () => {
+    const imageUrl = "/api/media/uploads/prior-shot.png";
+    const frontend: FrontendMessage[] = [
+      {
+        id: "u-old-image",
+        role: "user",
+        parts: [
+          { type: "text", text: "older screenshot" },
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: imageUrl,
+            filename: "prior-shot.png",
+          },
+        ],
+      } as FrontendMessage,
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [{ type: "text", text: "I saw the screenshot." }],
+      } as FrontendMessage,
+      {
+        id: "u-current",
+        role: "user",
+        parts: [{ type: "text", text: "look at the old screenshot again" }],
+      } as FrontendMessage,
+    ];
+
+    const { coreMessages, droppedImagesForProvider } = await prepareMessagesForRequest({
+      messages: frontend,
+      sessionId: "sess-prior-img",
+      userId: "user-1",
+      characterId: null,
+      sessionMetadata: {},
+      currentModelId: "claude-sonnet-4-6",
+      currentProvider: "anthropic",
+    });
+
+    expect(droppedImagesForProvider).toBe(1);
+
+    const userMessages = coreMessages.filter((m) => m.role === "user");
+    expect(userMessages).toHaveLength(2);
+    const priorParts = userMessages[0].content as Array<{ type: string; image?: unknown; text?: unknown }>;
+    expect(priorParts.some((p) => p.type === "image")).toBe(false);
+    expect(priorParts.some((p) => typeof p.text === "string" && p.text.includes(`readFile(\"${imageUrl}\")`))).toBe(true);
+
+    expect(userMessages[1].content).toContain("look at the old screenshot again");
   });
 });

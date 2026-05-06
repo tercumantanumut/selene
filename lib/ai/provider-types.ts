@@ -21,29 +21,13 @@ export type LLMProvider =
   | "deepseek"
   | "vllm";
 
-/**
- * Providers whose OpenAI-compatible `/chat/completions` endpoint does NOT
- * accept `image_url` content parts. Sending a user message with an image part
- * to one of these providers returns:
- *
- *   "Failed to deserialize the JSON body into the target type:
- *    messages[1]: unknown variant `image_url`"
- *
- * When the active provider is in this set:
- *  - `app/api/chat/message-prep.ts` strips inline images from outgoing
- *    requests and replaces them with a `describeImage(...)` placeholder.
- *  - `app/api/chat/tools-builder.ts` auto-promotes `describeImage` for the
- *    single turn so the placeholder's instruction actually lands on an
- *    available tool.
- *  - The chat composer surfaces a warning badge to the user BEFORE they
- *    send, so they know Selene will route their image through the vision
- *    tool path instead of the chat model.
- *
- * Keep this set as the single source of truth; both server-side prep logic
- * and client-side composer UX read from the same helper.
- */
+/** Providers whose chat endpoint does not accept user-message image parts. */
 export const PROVIDERS_REJECTING_INLINE_IMAGES: ReadonlySet<LLMProvider> =
   new Set<LLMProvider>(["deepseek"]);
+
+/** Providers that can receive image blocks directly inside tool-result content. */
+export const PROVIDERS_SUPPORTING_IMAGE_TOOL_RESULTS: ReadonlySet<LLMProvider> =
+  new Set<LLMProvider>(["anthropic", "claudecode"]);
 
 /**
  * Returns true when the outbound chat-completions endpoint of `provider`
@@ -60,4 +44,30 @@ export function providerRejectsInlineImages(
 ): boolean {
   if (!provider) return false;
   return PROVIDERS_REJECTING_INLINE_IMAGES.has(provider as LLMProvider);
+}
+
+export function providerSupportsUserImageParts(
+  provider: string | null | undefined,
+): boolean {
+  return !providerRejectsInlineImages(provider);
+}
+
+export function providerSupportsImageToolResults(
+  provider: string | null | undefined,
+): boolean {
+  if (!provider) return false;
+  return PROVIDERS_SUPPORTING_IMAGE_TOOL_RESULTS.has(provider as LLMProvider);
+}
+
+export function providerRequiresTextOnlyImageReads(
+  provider: string | null | undefined,
+): boolean {
+  return providerRejectsInlineImages(provider);
+}
+
+export function getReadFileImageUnsupportedMessage(
+  provider: string | null | undefined,
+): string {
+  const label = provider || "the selected provider";
+  return `${label} cannot view images in Selene. Switch to a vision-capable model to inspect this file.`;
 }
