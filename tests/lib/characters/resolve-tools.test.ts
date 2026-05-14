@@ -56,11 +56,11 @@ describe("resolveSeleneTemplateTools", () => {
   // Core tools — always enabled regardless of settings
   // =========================================================================
   describe("always-enabled core tools", () => {
-    it("should always include localGrep, readFile, editFile, writeFile, bash", () => {
+    it("should always include localGrep, readFile, editFile, writeFile, executeCommand", () => {
       const settings = buildSettings(); // No API keys, no vector DB
       const result = resolveSeleneTemplateTools(settings);
 
-      const coreTools = ["localGrep", "readFile", "editFile", "writeFile", "bash"];
+      const coreTools = ["localGrep", "readFile", "editFile", "writeFile", "executeCommand"];
       for (const tool of coreTools) {
         expect(result.enabledTools).toContain(tool);
       }
@@ -72,7 +72,7 @@ describe("resolveSeleneTemplateTools", () => {
         "readFile",
         "editFile",
         "writeFile",
-        "bash",
+        "executeCommand",
       ]);
     });
   });
@@ -417,7 +417,7 @@ describe("isToolAvailableForSelene", () => {
     const settings = buildSettings();
     expect(isToolAvailableForSelene("readFile", settings)).toBe(true);
     expect(isToolAvailableForSelene("editFile", settings)).toBe(true);
-    expect(isToolAvailableForSelene("bash", settings)).toBe(true);
+    expect(isToolAvailableForSelene("executeCommand", settings)).toBe(true);
   });
 
   it("should return false for vectorSearch when vectorDB is disabled", () => {

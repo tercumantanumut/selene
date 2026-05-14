@@ -22,6 +22,10 @@ export interface DesignComponent {
    * rendering a preview or displaying the code panel.
    */
   codeStripped?: boolean;
+  /** Absolute source file path for imported components.
+   *  The browser preview recompile endpoint uses this to reload the owning
+   *  project's tsconfig aliases after the initial import tool call. */
+  resolvedSourcePath?: string;
 }
 
 export interface DesignSnapshot {
@@ -210,6 +214,7 @@ export interface DesignWorkspaceSessionState {
 
 export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   sessionId: string | null;
+  characterId: string | null;
   open: () => void;
   close: () => void;
   setStatus: (status: DesignWorkspaceStatus) => void;
@@ -236,7 +241,7 @@ export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   setLastValidation: (validation: DesignWorkspaceValidationResult | null) => void;
   setLastCompileReport: (report: DesignWorkspaceCompileReport | null) => void;
   setHistory: (history: DesignWorkspaceHistory | null) => void;
-  setActiveSession: (sessionId: string) => void;
+  setActiveSession: (sessionId: string, characterId?: string | null) => void;
   reset: () => void;
   setActiveTool: (tool: ActiveTool) => void;
   addMeasurement: (m: Measurement) => void;

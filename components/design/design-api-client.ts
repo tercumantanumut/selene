@@ -30,6 +30,7 @@ export interface WorkspaceDesignRecord {
   isFavorite: boolean;
   createdAt: string;
   updatedAt: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 /**
@@ -55,6 +56,7 @@ export interface WorkspaceDesignSummary {
   isFavorite: boolean;
   createdAt: string;
   updatedAt: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export type GalleryComponent = WorkspaceDesignRecord;

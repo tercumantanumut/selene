@@ -509,6 +509,7 @@ function upsertComponentFromData(
     prompt: detail.prompt ?? "",
     createdAt: meta?.createdAt ?? now,
     updatedAt: meta?.updatedAt ?? now,
+    resolvedSourcePath: typeof detail.resolvedSourcePath === "string" ? detail.resolvedSourcePath : undefined,
   });
   if (code && detail.previewHtml) {
     store.setPreviewHtml(detail.previewHtml);
@@ -595,6 +596,9 @@ export async function rehydrateComponentCode(
       name: record.name ?? existing?.name,
       prompt: record.prompt ?? existing?.prompt,
       style: (record.style as "apple-glass" | "default") ?? existing?.style,
+      resolvedSourcePath: typeof record.metadata?.resolvedSourcePath === "string"
+        ? record.metadata.resolvedSourcePath
+        : existing?.resolvedSourcePath,
     });
   } else {
     // Component got removed from the store while we were fetching — insert
@@ -608,6 +612,9 @@ export async function rehydrateComponentCode(
       prompt: record.prompt ?? "",
       createdAt: record.createdAt ?? new Date().toISOString(),
       updatedAt: record.updatedAt ?? new Date().toISOString(),
+      resolvedSourcePath: typeof record.metadata?.resolvedSourcePath === "string"
+        ? record.metadata.resolvedSourcePath
+        : undefined,
     });
   }
   return true;
@@ -980,9 +987,11 @@ export function dispatchDesignToolResult(detail: DesignToolEvent): void {
 interface DesignWorkspaceBridgeProps {
   /** Current chat session ID — only events matching this session are processed */
   sessionId?: string;
+  /** Current agent/character ID — used by preview recompiles to resolve synced folders. */
+  characterId?: string;
 }
 
-export function DesignWorkspaceBridge({ sessionId }: DesignWorkspaceBridgeProps) {
+export function DesignWorkspaceBridge({ sessionId, characterId }: DesignWorkspaceBridgeProps) {
   // Start as null (not sessionId!) so the first mount ALWAYS triggers a session switch.
   // This prevents stale isOpen:true from leaking when the component remounts
   // (e.g., parent key change, route navigation) — the ref would otherwise
@@ -1040,7 +1049,7 @@ export function DesignWorkspaceBridge({ sessionId }: DesignWorkspaceBridgeProps)
       liveSelectionMadeRef.current = false;
 
       if (sessionId) {
-        useDesignWorkspaceStore.getState().setActiveSession(sessionId);
+        useDesignWorkspaceStore.getState().setActiveSession(sessionId, characterId);
 
         // Rehydrate the persisted "last active component" pointer. The
         // GET returns null for never-set and stale pointers alike (the

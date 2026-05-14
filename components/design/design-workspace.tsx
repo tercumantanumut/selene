@@ -8,15 +8,17 @@ import { DesignWorkspaceBridge } from "./design-workspace-bridge";
 interface DesignWorkspaceProps {
   /** Current chat session ID — isolates workspace state per conversation */
   sessionId?: string;
+  /** Current agent/character ID — used to resolve synced project paths. */
+  characterId?: string;
 }
 
-export function DesignWorkspace({ sessionId }: DesignWorkspaceProps) {
+export function DesignWorkspace({ sessionId, characterId }: DesignWorkspaceProps) {
   const isOpen = useDesignWorkspaceStore((s) => s.isOpen);
 
   return (
     <>
       {/* Bridge must always be mounted to listen for "open" events */}
-      <DesignWorkspaceBridge sessionId={sessionId} />
+      <DesignWorkspaceBridge sessionId={sessionId} characterId={characterId} />
       {!isOpen ? null : (
         <div className="flex h-full w-full overflow-hidden bg-background">
           {/* Preview — `min-w-0` lets the flex-1 column actually shrink below

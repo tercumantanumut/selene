@@ -234,6 +234,7 @@ const initialSessionState: DesignWorkspaceSessionState = {
 const initialState = {
   ...initialSessionState,
   sessionId: null as string | null,
+  characterId: null as string | null,
 };
 
 export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) => ({
@@ -559,7 +560,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     set({ history });
   },
 
-  setActiveSession: (sessionId: string) => {
+  setActiveSession: (sessionId: string, characterId?: string | null) => {
     const current = get();
 
     // Save current session state to cache (if we have a session)
@@ -575,7 +576,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     if (cached) {
       // Move to newest position in cache
       sessionCache.delete(sessionId);
-      set({ ...cached, sessionId });
+      set({ ...cached, sessionId, characterId: characterId ?? current.characterId });
       // Rebuild hydration tracker from the restored component list so
       // eviction accounting matches the visible state.
       const order: string[] = [];
@@ -588,6 +589,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         ...initialSessionState,
         selectedBreakpoint: { ...DESIGN_BREAKPOINTS[0] },
         sessionId,
+        characterId: characterId ?? current.characterId,
       });
       hydrationOrderBySession.set(sessionId, []);
     }

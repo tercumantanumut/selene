@@ -482,7 +482,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
       if (!command) {
         return {
           status: "error",
-          error: 'Missing or invalid command. Use: bash({ command: "git status" })',
+          error: 'Missing or invalid command. Use: executeCommand({ command: "git status" })',
         };
       }
 

@@ -186,7 +186,13 @@ function useCompileTailwindPreview() {
     fetch("/api/design/compile-preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: requestCode, name: component.name }),
+      body: JSON.stringify({
+        code: requestCode,
+        name: component.name,
+        characterId: useDesignWorkspaceStore.getState().characterId,
+        sessionId: useDesignWorkspaceStore.getState().sessionId,
+        resolvedSourcePath: component.resolvedSourcePath,
+      }),
       signal: controller.signal,
     })
       .then(async (res) => {

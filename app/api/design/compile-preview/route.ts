@@ -6,9 +6,18 @@
  * that needs server-side compilation (esbuild).
  */
 
+import path from "path";
 import { NextResponse } from "next/server";
-import { buildTailwindPreviewAsync } from "@/lib/design/workspace/compiler";
+import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem/path-utils";
 import { requireAuth } from "@/lib/auth/local-auth";
+import { SANDBOX_DIR } from "@/lib/design/libraries";
+import { buildTailwindPreviewAsync } from "@/lib/design/workspace/compiler";
+import { buildContainmentConfig } from "@/lib/design/workspace/containment";
+import {
+  findOwningSyncedFolder,
+  loadTsconfigPaths,
+} from "@/lib/design/workspace/tsconfig-paths";
+import { getProjectRoot } from "@/lib/utils/project-root";
 
 const MAX_PAYLOAD_BYTES = 500 * 1024; // 500KB
 const COMPILE_TIMEOUT_MS = 15_000; // 15 seconds
@@ -16,6 +25,9 @@ const COMPILE_TIMEOUT_MS = 15_000; // 15 seconds
 interface CompilePreviewBody {
   code: string;
   name?: string;
+  characterId?: string;
+  sessionId?: string;
+  resolvedSourcePath?: string;
 }
 
 export async function POST(request: Request) {
@@ -62,9 +74,38 @@ export async function POST(request: Request) {
   }
 
   try {
+    let sourceResolutionOptions: Parameters<typeof buildTailwindPreviewAsync>[2] = {};
+    const resolvedSourcePath = body.resolvedSourcePath?.trim();
+    if (resolvedSourcePath && body.characterId && body.sessionId) {
+      const syncedFolders = await resolveWorkspaceAwarePaths(
+        body.characterId,
+        body.sessionId,
+      );
+      const owningSyncedFolder = findOwningSyncedFolder(
+        resolvedSourcePath,
+        syncedFolders,
+      );
+
+      if (owningSyncedFolder) {
+        const extraNodePaths = [path.resolve(owningSyncedFolder, "node_modules")];
+        sourceResolutionOptions = {
+          tsconfigPaths: loadTsconfigPaths(owningSyncedFolder) ?? undefined,
+          componentResolveDir: path.dirname(resolvedSourcePath),
+          extraNodePaths,
+          containment: buildContainmentConfig([
+            owningSyncedFolder,
+            SANDBOX_DIR,
+            path.resolve(getProjectRoot(), "node_modules"),
+            ...extraNodePaths,
+          ]),
+        };
+      }
+    }
+
     const compileTask = buildTailwindPreviewAsync(
       code,
-      body.name || "Design Component"
+      body.name || "Design Component",
+      sourceResolutionOptions,
     );
 
     const timeoutTask = new Promise<never>((_, reject) =>

@@ -3302,12 +3302,23 @@ export async function buildTailwindPreviewWithMetadata(
 export async function buildTailwindPreviewAsync(
   componentCode: string,
   title: string,
-  options: Pick<BuildTailwindPreviewOptions, "assetAliases"> = {},
+  options: Pick<
+    BuildTailwindPreviewOptions,
+    | "assetAliases"
+    | "tsconfigPaths"
+    | "componentResolveDir"
+    | "extraNodePaths"
+    | "containment"
+  > = {},
 ): Promise<string> {
   const { html } = await buildTailwindPreviewWithMetadata(componentCode, title, {
     autoInstallMissingDependencies: true,
     source: "design-workspace-preview",
     assetAliases: options.assetAliases,
+    tsconfigPaths: options.tsconfigPaths,
+    componentResolveDir: options.componentResolveDir,
+    extraNodePaths: options.extraNodePaths,
+    containment: options.containment,
   });
   return html;
 }

@@ -60,7 +60,7 @@ Run shell commands with a single shell string.
 - Commands default to synced folders/worktrees
 - \`SELENE_UNSAFE_AGENT_PERMISSIONS=true\` allows broader local filesystem access
 - Prefer dedicated file/search tools when they are a better fit`,
-      loading: { alwaysLoad: true },
+      loading: { deferLoading: true },
       requiresSession: true,
     } satisfies ToolMetadata,
     ({ sessionId, userId, characterId, onExecuteCommandProgress }) =>
@@ -111,7 +111,7 @@ Run shell commands in synced folders by default. \`SELENE_UNSAFE_AGENT_PERMISSIO
 - If using shell listings, always self-limit output (e.g., \`head\`, \`Select-Object -First\`)
 - Python inline: \`{ command: "python", args: ["-c", "print('hello')"] }\`
 - 30s default timeout (max 5min)`,
-      loading: { deferLoading: true },
+      loading: { alwaysLoad: true },
       requiresSession: true,
     } satisfies ToolMetadata,
     ({ sessionId, userId, characterId, onExecuteCommandProgress }) =>
