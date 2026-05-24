@@ -10,6 +10,10 @@ export function runDataMigrations(sqlite: Database.Database): void {
   try {
     const toolRenameMap: Record<string, string> = {
       "editRoomImage": "editImage",
+      // OpenRouter model renames (May 2026 — Gemini 2.5 Flash → 3.1 Flash)
+      "generateImageGemini25Flash": "generateImageGemini31Flash",
+      "editImageGemini25Flash": "editImageGemini31Flash",
+      "referenceImageGemini25Flash": "referenceImageGemini31Flash",
       // Add more renames here as needed
     };
     const toolsToRemove = ["batchEditRoomImage"];

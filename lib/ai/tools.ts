@@ -37,11 +37,47 @@ export {
   createOpenRouterGpt5ImageGenerate,
   createOpenRouterGpt5ImageEdit,
   createOpenRouterGpt5ImageReference,
-  createOpenRouterGemini25FlashImageGenerate,
-  createOpenRouterGemini25FlashImageEdit,
-  createOpenRouterGemini25FlashImageReference,
+  createOpenRouterGemini31FlashImageGenerate,
+  createOpenRouterGemini31FlashImageEdit,
+  createOpenRouterGemini31FlashImageReference,
   createOpenRouterGemini3ProImageGenerate,
   createOpenRouterGemini3ProImageEdit,
   createOpenRouterGemini3ProImageReference,
+  createOpenRouterFlux2ProGenerate,
+  createOpenRouterFlux2ProEdit,
+  createOpenRouterFlux2ProReference,
+  createOpenRouterFlux2MaxGenerate,
+  createOpenRouterFlux2MaxEdit,
+  createOpenRouterFlux2MaxReference,
+  createOpenRouterFlux2Klein4BGenerate,
+  createOpenRouterFlux2Klein4BEdit,
+  createOpenRouterFlux2Klein4BReference,
+  createOpenRouterGpt54Image2Generate,
+  createOpenRouterGpt54Image2Edit,
+  createOpenRouterGpt54Image2Reference,
+  createOpenRouterGrokImagineGenerate,
+  createOpenRouterGrokImagineEdit,
+  createOpenRouterGrokImagineReference,
+  createOpenRouterSeedream45Generate,
+  createOpenRouterSeedream45Edit,
+  createOpenRouterSeedream45Reference,
+  createOpenRouterImageTool,
 } from "@/lib/ai/tools/openrouter-image-tools";
+
+// Codex gpt-image-2 (via the CLIProxyAPI sidecar) — generate / edit / reference.
+export {
+  createGenerateCodexImageTool,
+  createEditCodexImageTool,
+  createReferenceCodexImageTool,
+  createCodexImageTool,
+} from "@/lib/ai/tools/codex-image-tools";
+
+// Runway and Vertex AI video tools
+export { createRunwayVideoTool } from "@/lib/ai/tools/runway-video-tool";
+export { createVertexAIVideoTool } from "@/lib/ai/tools/vertex-ai-video-tool";
+
+// OpenRouter video tool (Phase 3 — 10 models, async polling via /api/v1/videos)
+export {
+  createOpenRouterVideoTool,
+} from "@/lib/ai/tools/openrouter-video-tools";
 

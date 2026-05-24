@@ -31,6 +31,8 @@ export const CODEX_CONFIG = {
     originator: "codex_cli_rs",
   } as const,
   JWT_CLAIM_PATH: "https://api.openai.com/auth",
+  /** OpenAI namespaces profile claims (email, name) under this URI. */
+  JWT_PROFILE_CLAIM_PATH: "https://api.openai.com/profile",
 } as const;
 
 let cachedAuthState: CodexAuthState | null = null;
@@ -42,14 +44,27 @@ function decodeBase64Url(input: string): string {
   return Buffer.from(padded, "base64").toString("utf8");
 }
 
-export function decodeCodexJWT(token: string): { accountId?: string; email?: string } | null {
+export function decodeCodexJWT(
+  token: string,
+): { accountId?: string; email?: string; planType?: string } | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
     const payload = JSON.parse(decodeBase64Url(parts[1]));
+    const auth = payload?.[CODEX_CONFIG.JWT_CLAIM_PATH] ?? {};
+    const profile = payload?.[CODEX_CONFIG.JWT_PROFILE_CLAIM_PATH] ?? {};
+    // OpenAI puts email under the namespaced profile claim; tolerate the
+    // top-level `email` field too for older issuer behaviour.
+    const email =
+      typeof profile?.email === "string"
+        ? profile.email
+        : typeof payload?.email === "string"
+          ? payload.email
+          : undefined;
     return {
-      accountId: payload?.[CODEX_CONFIG.JWT_CLAIM_PATH]?.chatgpt_account_id,
-      email: payload?.email,
+      accountId: typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : undefined,
+      email,
+      planType: typeof auth?.chatgpt_plan_type === "string" ? auth.chatgpt_plan_type : undefined,
     };
   } catch {
     return null;
