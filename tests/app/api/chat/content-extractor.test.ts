@@ -277,7 +277,14 @@ describe("extractContent attachment persistence", () => {
       false,
     );
 
-    expect(result).toBe("[Attachment: mockup.png | filePath: /tmp/sessions/sess-1/uploads/mockup.png]");
+    // Extractor keeps both the helper text (path reference for path-aware
+    // models) and the image part (so the downstream image-rewrite pipeline
+    // can drop or inline it per-provider). The image part is rewritten or
+    // dropped in `message-prep.ts`, not here.
+    expect(result).toEqual([
+      { type: "text", text: "[Attachment: mockup.png | filePath: /tmp/sessions/sess-1/uploads/mockup.png]" },
+      { type: "image", image: "/api/media/sessions/sess-1/uploads/mockup.png" },
+    ]);
   });
 
   it("uses metadata filePath in helper text when part only has URL", async () => {
@@ -317,6 +324,7 @@ describe("extractContent attachment persistence", () => {
     expect(result).toEqual([
       { type: "text", text: "this?" },
       { type: "text", text: "[Attachment: mockup.png | filePath: /tmp/sessions/sess-1/uploads/mockup.png]" },
+      { type: "image", image: "/api/media/sessions/sess-1/uploads/mockup.png" },
     ]);
   });
 
@@ -337,7 +345,10 @@ describe("extractContent attachment persistence", () => {
       false,
     );
 
-    expect(localPathOnly).toBe("[Attachment: local-only.png | localPath: sessions/sess-1/uploads/local-only.png]");
+    expect(localPathOnly).toEqual([
+      { type: "text", text: "[Attachment: local-only.png | localPath: sessions/sess-1/uploads/local-only.png]" },
+      { type: "image", image: "/api/media/sessions/sess-1/uploads/local-only.png" },
+    ]);
 
     const urlOnly = await extractContent(
       {
@@ -354,7 +365,10 @@ describe("extractContent attachment persistence", () => {
       false,
     );
 
-    expect(urlOnly).toBe("[Attachment: url-only.png | url: /api/media/sessions/sess-1/uploads/url-only.png]");
+    expect(urlOnly).toEqual([
+      { type: "text", text: "[Attachment: url-only.png | url: /api/media/sessions/sess-1/uploads/url-only.png]" },
+      { type: "image", image: "/api/media/sessions/sess-1/uploads/url-only.png" },
+    ]);
   });
 
   it("extracts DOCX attachments into chat-ready text", async () => {

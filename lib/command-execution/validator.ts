@@ -12,6 +12,17 @@ import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-perm
 
 const NETWORK_COMMANDS: string[] = [];
 
+// rm targeting root / home / wildcard scopes — these are the canonical
+// "you almost certainly did not mean this" footguns and we refuse them at the
+// validator level. Narrower removals (e.g. `rm -rf ./build`) are allowed.
+const DESTRUCTIVE_RM_TARGETS = new Set<string>(["/", "~", "*", "."]);
+function isDestructiveRm(command: string, args: string[]): boolean {
+    if (getBaseCommand(command) !== "rm") return false;
+    const hasRecursiveForce = args.some((a) => /^-[-a-z]*r/i.test(a) || a === "--recursive");
+    if (!hasRecursiveForce) return false;
+    return args.some((a) => DESTRUCTIVE_RM_TARGETS.has(a));
+}
+
 /**
  * Validate that a directory is within allowed synced folders
  */
@@ -103,6 +114,13 @@ export function validateCommand(
         return {
             valid: false,
             error: `Network command '${command}' is blocked. Enable network commands in settings if needed.`,
+        };
+    }
+
+    if (isDestructiveRm(command, args)) {
+        return {
+            valid: false,
+            error: `Refusing to run a recursive 'rm' against ${args.join(" ")} — this scope is blocked at the validator.`,
         };
     }
 

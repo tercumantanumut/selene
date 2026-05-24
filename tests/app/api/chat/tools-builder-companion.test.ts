@@ -31,24 +31,26 @@ describe("companion-tool enforcement — bash → executeCommand", () => {
     ToolRegistry.reset();
   });
 
-  it("bash is registered as alwaysLoad and executeCommand as deferLoading", () => {
+  it("executeCommand is registered as alwaysLoad and bash as deferLoading", () => {
+    // After the bash→executeCommand default-tool swap, executeCommand is the
+    // always-loaded shell tool and bash is opt-in (deferLoading).
     const bashMeta = registry.get("bash")?.metadata;
     const execMeta = registry.get("executeCommand")?.metadata;
 
-    expect(bashMeta?.loading.alwaysLoad).toBe(true);
-    expect(execMeta?.loading.deferLoading).toBe(true);
+    expect(bashMeta?.loading.deferLoading).toBe(true);
+    expect(execMeta?.loading.alwaysLoad).toBe(true);
   });
 
-  it("non-deferred tools include bash but NOT executeCommand (before enforcement)", () => {
+  it("non-deferred tools include executeCommand but NOT bash (before opt-in)", () => {
     const nonDeferred = registry.getTools({
       sessionId: "test-session",
       userId: "test-user",
       includeDeferredTools: false,
     });
 
-    expect(nonDeferred.bash).toBeDefined();
-    // executeCommand is deferLoading, so it should NOT be in non-deferred
-    expect(nonDeferred.executeCommand).toBeUndefined();
+    expect(nonDeferred.executeCommand).toBeDefined();
+    // bash is deferLoading now, so it must not appear without explicit opt-in.
+    expect(nonDeferred.bash).toBeUndefined();
   });
 
   it("all tools include both bash and executeCommand when deferred are included", () => {
@@ -62,28 +64,25 @@ describe("companion-tool enforcement — bash → executeCommand", () => {
     expect(allTools.executeCommand).toBeDefined();
   });
 
-  it("enforcement logic: if bash is in initialActiveTools and executeCommand is in allTools, promote it", () => {
-    // Simulate what buildToolsForRequest does after building nonDeferredTools
-    const nonDeferred = registry.getTools({
-      sessionId: "test-session",
-      userId: "test-user",
-      includeDeferredTools: false,
-      agentEnabledTools: new Set(["bash", "executeCommand"]),
-    });
-    const initialActiveTools = new Set(Object.keys(nonDeferred));
-
+  it("enforcement logic: if bash is enabled but executeCommand isn't, promote executeCommand", () => {
+    // Realistic scenario after the loading swap: an agent template explicitly
+    // enables `bash` only. Bash produces logId-bearing stubs whose retrieval
+    // path lives behind `executeCommand`'s readLog sub-command, so the
+    // companion rule still needs to kick in.
     const allTools = registry.getTools({
       sessionId: "test-session",
       userId: "test-user",
       includeDeferredTools: true,
-      agentEnabledTools: new Set(["bash", "executeCommand"]),
+      agentEnabledTools: new Set(["bash"]),
     });
 
-    // Pre-enforcement: bash is in, executeCommand is out
+    const initialActiveTools = new Set<string>(["bash"]);
+
+    // Pre-enforcement: only bash is loaded.
     expect(initialActiveTools.has("bash")).toBe(true);
     expect(initialActiveTools.has("executeCommand")).toBe(false);
 
-    // Apply the companion enforcement logic (same as in tools-builder.ts)
+    // Apply the companion enforcement logic (mirrors tools-builder.ts:197-204).
     if (
       initialActiveTools.has("bash") &&
       !initialActiveTools.has("executeCommand") &&
@@ -92,7 +91,7 @@ describe("companion-tool enforcement — bash → executeCommand", () => {
       initialActiveTools.add("executeCommand");
     }
 
-    // Post-enforcement: both are in
+    // Post-enforcement: both are in.
     expect(initialActiveTools.has("bash")).toBe(true);
     expect(initialActiveTools.has("executeCommand")).toBe(true);
   });

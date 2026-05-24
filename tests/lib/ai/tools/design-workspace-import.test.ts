@@ -38,6 +38,7 @@ const fsMocks = vi.hoisted(() => ({
 
 const pathMocks = vi.hoisted(() => ({
   resolveSyncedPath: vi.fn(),
+  resolveWorkspaceAwarePaths: vi.fn(),
 }));
 
 const compilerMocks = vi.hoisted(() => ({
@@ -88,6 +89,7 @@ vi.mock("fs/promises", () => ({
 
 vi.mock("@/lib/ai/filesystem/path-utils", () => ({
   resolveSyncedPath: pathMocks.resolveSyncedPath,
+  resolveWorkspaceAwarePaths: pathMocks.resolveWorkspaceAwarePaths,
 }));
 
 vi.mock("@/lib/design/workspace/compiler", () => ({
@@ -221,6 +223,8 @@ beforeEach(() => {
     validPath: "/abs/sandbox/char-1/components/hero.tsx",
     syncedFolders: ["/abs/sandbox/char-1"],
   });
+
+  pathMocks.resolveWorkspaceAwarePaths.mockResolvedValue(["/abs/sandbox/char-1"]);
 
   fsMocks.stat.mockResolvedValue({
     isFile: () => true,

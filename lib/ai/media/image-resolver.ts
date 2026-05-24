@@ -127,7 +127,7 @@ export async function imageToDataUrl(imageSource: string): Promise<string> {
   // Reject helper-text remnants that occasionally leak into LLM tool input.
   if (ATTACHMENT_HELPER_TEXT_RE.test(imageSource)) {
     throw new Error(
-      `Unsupported image source: ${imageSource.substring(0, 120)}. ${SOURCE_HINT}`,
+      `Unsupported image source for describeImage: ${imageSource.substring(0, 120)}. ${SOURCE_HINT}`,
     );
   }
 
@@ -164,7 +164,7 @@ export async function imageToDataUrl(imageSource: string): Promise<string> {
   }
 
   throw new Error(
-    `Unsupported image source: ${imageSource.substring(0, 120)}. ${SOURCE_HINT}`,
+    `Unsupported image source for describeImage: ${imageSource.substring(0, 120)}. ${SOURCE_HINT}`,
   );
 }
 

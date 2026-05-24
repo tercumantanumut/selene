@@ -481,7 +481,7 @@ describe("Command validation in executor", () => {
         characterId: "test",
       });
 
-      expect(result.error).not.toContain("requires explicit confirmation");
+      expect(result.error ?? "").not.toContain("requires explicit confirmation");
     });
 
     it("should not fail validation just because command contains shell characters", async () => {
