@@ -341,6 +341,7 @@ export default function SettingsPage() {
       // Already authenticated — short-circuit success.
       if (authData.authenticated) {
         await loadCodexAuth({ forceRefresh: true });
+        setFormState(prev => ({ ...prev, llmProvider: "codex" }));
         setCodexLoading(false);
         return;
       }
@@ -361,10 +362,19 @@ export default function SettingsPage() {
       // writes the credential file when done. We just poll until the file
       // shows up (or timeout). No postMessage / no localhost:1455 chrome.
       const deadline = Date.now() + 5 * 60 * 1000;
+      let authenticated = false;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        const authenticated = await loadCodexAuth({ forceRefresh: true });
+        authenticated = await loadCodexAuth({ forceRefresh: true });
         if (authenticated) break;
+      }
+
+      // Mirror the pre-refactor behavior of saveCodexToken(token, true):
+      // a successful Codex login also makes Codex the active LLM provider
+      // so the user lands on it immediately instead of having to flip the
+      // model selector by hand.
+      if (authenticated) {
+        setFormState(prev => ({ ...prev, llmProvider: "codex" }));
       }
 
       setCodexLoading(false);
