@@ -43,6 +43,10 @@ extraResources:
       - "!**/binaries/**"
       - "!**/.local-data"
       - "!**/dist-electron"
+      # Historical dist drops at repo root — Next.js tracing now skips these
+      # but keep a second guard here so a regression can't sneak into builds.
+      - "!**/v_*_dist"
+      - "!**/v_*_dist/**"
       - "!**/.git"
       - "!**/.env*"
       - "!**/drizzle"

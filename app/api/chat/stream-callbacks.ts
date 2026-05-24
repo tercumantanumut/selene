@@ -165,7 +165,6 @@ interface StreamCallbackContext {
   runFinalized: { value: boolean };
   provider: string;
   streamAbortSignal: AbortSignal;
-  disposeSdkToolResultBridge?: () => void;
   rawMode?: boolean;
   /** Getter for the current assistant message UUID (may be rotated on retry). */
   getAssistantMessageId?: () => string | undefined;
@@ -193,7 +192,6 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
   }) => {
     if (ctx.runFinalized.value) return;
     ctx.runFinalized.value = true;
-    ctx.disposeSdkToolResultBridge?.();
 
     if (ctx.hasStopHooks) {
       try {
@@ -524,7 +522,6 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
   return async ({ steps }: { steps: StepLike[] }) => {
     if (ctx.runFinalized.value) return;
     ctx.runFinalized.value = true;
-    ctx.disposeSdkToolResultBridge?.();
 
     if (ctx.hasStopHooks) {
       try {

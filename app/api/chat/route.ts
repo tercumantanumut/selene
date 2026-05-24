@@ -118,7 +118,6 @@ import { createSyncStreamingMessage } from "./streaming-progress";
 import { buildSystemPromptForRequest } from "./system-prompt-builder";
 import { createVisibleAssistantChunkSanitizer } from "./ui-stream-sanitizer";
 import { mcpContextStore, type SeleneMcpContext } from "@/lib/ai/providers/mcp-context-store";
-import { createSdkToolResultBridge } from "./sdk-tool-result-bridge";
 import {
   disableToolForSchemaRecovery,
   parseInvalidToolSchemaError,
@@ -176,7 +175,6 @@ export async function POST(req: Request) {
   let sessionId = "";
   let runId = "";
   let latestUserPromptText = "";
-  let sdkToolResultBridge: ReturnType<typeof createSdkToolResultBridge> | null = null;
   let streamAbortSignal: AbortSignal = req.signal;
   let clientDisconnected = false;
   try {
@@ -810,12 +808,6 @@ export async function POST(req: Request) {
       .map((p) => p.cachePath)
       .filter((p): p is string => Boolean(p));
 
-    // Claude Agent SDK tool-result bridge:
-    // - Provider adapter publishes SDK `tool_use_result` payloads keyed by tool_use_id
-    // - Passthrough tool executors await the keyed payload and return it to AI SDK
-    // This preserves real tool output in streaming + DB instead of placeholder stubs.
-    sdkToolResultBridge = createSdkToolResultBridge();
-
     // Mutable ref wiring mid-stream injection (fired from `prepareStep` on
     // the non-CC path and `onQueueMessages` on the Claude Code path) to the
     // outer UIMessageChunk controller, which is created later inside the
@@ -860,7 +852,6 @@ export async function POST(req: Request) {
         };
       })(),
       onExecuteCommandProgress: handleExecuteCommandProgress,
-      sdkToolResultBridge,
       onQueueMessages: (() => {
         const _state = streamingState;
         const _sync = syncStreamingMessage;
@@ -1162,7 +1153,6 @@ export async function POST(req: Request) {
       runFinalized,
       provider,
       streamAbortSignal,
-      disposeSdkToolResultBridge: sdkToolResultBridge.dispose,
       latestUserPromptText,
       persistedUserMessageId,
     };
@@ -1622,12 +1612,6 @@ export async function POST(req: Request) {
                 forceExpireKimiToken();
               } catch { /* non-fatal */ }
             }
-            // Claude Code SDK agents self-correct after tool validation failures —
-            // the stream stays open and onFinish will finalize the run properly.
-            if (provider === "claudecode" && isNonFatalToolError(error)) {
-              console.warn(`[CHAT API] Non-fatal tool error in Claude Code run (skipping finalization): ${errorMessage}`);
-              return;
-            }
             // Let the UI stream wrapper decide whether this is eligible for
             // pre-commit recovery. It will finalize the run if recovery is not possible.
           },
@@ -1671,8 +1655,7 @@ export async function POST(req: Request) {
                 const existingPart = streamingState.toolCallParts.get(chunk.toolCallId);
                 if (existingPart?.argsText && existingPart.argsText.length > 0) {
                   const newArgsText = JSON.stringify(chunk.input ?? {});
-                  // ExitPlanMode uses synthetic argsText (plan approval data) — skip conflict warning
-                  if (chunk.toolName !== "ExitPlanMode" && !newArgsText.startsWith(existingPart.argsText)) {
+                  if (!newArgsText.startsWith(existingPart.argsText)) {
                     console.warn(
                       `[CHAT API] argsText conflict for ${chunk.toolName} (${chunk.toolCallId}): ` +
                         `streaming argsText (${existingPart.argsText.length} chars) replaced by structured input. ` +
@@ -1680,28 +1663,19 @@ export async function POST(req: Request) {
                     );
                   }
                 }
-                if (provider === "claudecode" && chunk.toolName && isDelegatedToolName(chunk.toolName)) {
+                if (chunk.toolName && isDelegatedToolName(chunk.toolName)) {
                   streamingState.provenance = {
                     ...(streamingState.provenance ?? {}),
                     contextScope: "delegated",
                     provenanceVersion: 1,
                   };
                 }
-                // For ExitPlanMode, preserve the synthetic plan approval data
-                // that was injected during streaming. The SDK's raw input ({})
-                // would overwrite the plan content needed by the approval UI.
-                let effectiveInput = chunk.input;
-                if (chunk.toolName === "ExitPlanMode" && existingPart?.argsText && existingPart.argsText.length > 10) {
-                  try {
-                    effectiveInput = JSON.parse(existingPart.argsText);
-                  } catch { /* fall through to original input */ }
-                }
-                changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, effectiveInput) || changed;
+                changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, chunk.input) || changed;
               } else if (chunk.type === "tool-result") {
                 toolInputStallWatchdog.disarm(chunk.toolCallId);
                 changed = recordToolResultChunk(streamingState, chunk.toolCallId, chunk.toolName, chunk.output, chunk.preliminary) || changed;
                 changed = tagIntermediateDelegationParts(streamingState, chunk.toolCallId) || changed;
-                if (provider === "claudecode" && chunk.toolName && isDelegatedToolName(chunk.toolName)) {
+                if (chunk.toolName && isDelegatedToolName(chunk.toolName)) {
                   streamingState.provenance = {
                     ...(streamingState.provenance ?? {}),
                     contextScope: "main",
@@ -2066,9 +2040,6 @@ export async function POST(req: Request) {
       headers: response.headers,
     });
   } catch (error) {
-    if (sdkToolResultBridge) {
-      sdkToolResultBridge.dispose?.();
-    }
     console.error("[CHAT API] Unhandled error in POST handler:", {
       message: error instanceof Error ? error.message : String(error),
       type: error?.constructor?.name,

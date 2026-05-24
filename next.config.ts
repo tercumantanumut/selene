@@ -94,6 +94,11 @@ const nextConfig: NextConfig = {
       "**/.local-data/**",
       "node_modules/.cache/**",
       "**/node_modules/.cache/**",
+      // Historical dist drops (1+ GB) that sit at the repo root and have no
+      // runtime relevance. Exclude both the canonical name and the wildcard
+      // form so future v_X_dist/ snapshots don't silently bloat builds.
+      "v_*_dist/**",
+      "**/v_*_dist/**",
     ],
   },
   experimental: {
@@ -109,9 +114,6 @@ const nextConfig: NextConfig = {
     // (FSEvents on macOS, inotify on Linux). Bundling via Turbopack can break
     // fs.watch() behavior. Keeping it external ensures reliable file watching.
     "chokidar",
-    // Claude Agent SDK resolves cli.js via import.meta.url at runtime —
-    // bundling it breaks that path resolution, causing auth to fail in production.
-    "@anthropic-ai/claude-agent-sdk",
     "esbuild",
     "@esbuild/darwin-arm64",
     "@esbuild/darwin-x64",

@@ -18,8 +18,6 @@ export async function GET(request: Request) {
     const forceRefresh = url.searchParams.get("refresh") === "1";
 
     if (forceRefresh) {
-      // Explicitly refresh from Agent SDK only when requested to avoid
-      // expensive status checks on every settings page render.
       const status = await getClaudeCodeAuthStatus();
       return NextResponse.json({
         success: true,
@@ -60,7 +58,7 @@ export async function POST() {
     {
       success: false,
       error:
-        "Manual token submission is disabled. Use Claude Agent SDK authentication via /api/auth/claudecode/authorize.",
+        "Manual token submission is disabled. Start OAuth via /api/auth/claudecode/authorize.",
     },
     { status: 410 },
   );
@@ -68,7 +66,7 @@ export async function POST() {
 
 export async function DELETE() {
   try {
-    clearClaudeCodeAuth();
+    await clearClaudeCodeAuth();
     invalidateProviderCacheFor("claudecode");
     return NextResponse.json({
       success: true,

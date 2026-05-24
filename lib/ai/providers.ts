@@ -46,7 +46,7 @@ import { CLAUDECODE_MODEL_IDS } from "@/lib/auth/claudecode-models";
 import { ANTIGRAVITY_CONFIG } from "@/lib/auth/antigravity-auth";
 import { createAntigravityProvider } from "@/lib/ai/providers/antigravity-provider";
 import { createCodexProvider } from "@/lib/ai/providers/codex-provider";
-import { createClaudeCodeProvider } from "@/lib/ai/providers/claudecode-provider";
+import { createClaudeCodeProvider } from "@/lib/ai/providers/claudecode-client";
 import {
   isModelCompatibleWithProvider as isModelCompatible,
 } from "@/lib/ai/model-validation";

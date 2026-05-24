@@ -60,7 +60,6 @@ await esbuild.build({
     "gpt-tokenizer",
     "pdf-parse",
     "pdfjs-dist",
-    "@anthropic-ai/claude-agent-sdk",
   ],
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',

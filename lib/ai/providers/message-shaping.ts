@@ -1,11 +1,10 @@
 /**
  * Mid-Stream Injection — Message-Shaping Helpers
  *
- * Narrow helpers shared between the non-Claude-Code route handler
- * (`app/api/chat/route.ts` `prepareStep`) and the Claude Code provider
- * (`lib/ai/providers/claudecode-provider.ts`) for the edge case where a user
- * message is injected WHILE an assistant message still has in-flight tool
- * calls that will never get a natural tool_result.
+ * Narrow helpers shared by both the non-Claude-Code and Claude Code
+ * injection paths in `app/api/chat/route.ts` for the edge case where a
+ * user message is injected WHILE an assistant message still has in-flight
+ * tool calls that will never get a natural tool_result.
  *
  * Two concerns live here:
  *

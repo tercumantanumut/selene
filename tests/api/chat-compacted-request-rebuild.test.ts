@@ -171,9 +171,6 @@ vi.mock("@/app/api/chat/canonical-content", () => ({ shouldTreatStreamErrorAsCan
 vi.mock("@/app/api/chat/stream-callbacks", () => ({ createOnFinishCallback: vi.fn(() => vi.fn()), createOnAbortCallback: vi.fn(() => vi.fn()), handleUndrainedQueueMessages: vi.fn() }));
 vi.mock("@/app/api/chat/streaming-progress", () => ({ createSyncStreamingMessage: vi.fn(() => vi.fn(async () => undefined)) }));
 vi.mock("@/lib/ai/providers/mcp-context-store", () => ({ mcpContextStore: { run: vi.fn((_ctx, fn) => fn()) } }));
-vi.mock("@/app/api/chat/sdk-tool-result-bridge", () => ({
-  createSdkToolResultBridge: vi.fn(() => ({ dispose: vi.fn() })),
-}));
 vi.mock("@/app/api/chat/tool-schema-recovery", () => ({ disableToolForSchemaRecovery: vi.fn(), parseInvalidToolSchemaError: vi.fn(() => null) }));
 vi.mock("@/app/api/chat/delegation-scope-tagging", () => ({ tagIntermediateDelegationParts: vi.fn((parts) => parts) }));
 vi.mock("@/app/api/chat/delegation-waiting", () => ({ shouldStopTurn: vi.fn(() => false), hasRunningDelegationsForSession: vi.fn(() => false), hasRunningBackgroundTasksForSession: vi.fn(() => false), hasActiveAsyncWork: vi.fn(() => false) }));

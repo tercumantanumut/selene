@@ -191,22 +191,12 @@ export function shouldStopTurn(input: {
     return true;
   }
 
-  // Claude Code Agent SDK handles tool execution internally — its SSE
-  // response includes tool_use blocks (Read, Edit, Bash, etc.) from those
-  // internal executions. The AI SDK sees them, can't match them to Selene
-  // tools, and would continue to a second step — triggering another Claude
-  // Code SDK query that produces a duplicate response.
-  //
-  // Stop after the initial step UNLESS there's active async work
-  // (delegations or background tasks) that needs the turn alive.
-  // Delegations block in prepareStep waiting for results; background
-  // tasks need follow-up steps to check status.
-  if (input.provider === "claudecode" && input.stepCount > 0) {
-    return !hasActiveAsyncWork(input.characterId, input.initiatorSessionId);
-  }
-
-  // For other providers, never force-stop. The AI SDK loop ends naturally
-  // when the model stops making tool calls (outputs text-only response).
-  // prepareStep sets toolChoice="required" while async work is in-flight.
+  // No provider-specific stop gate. The Claude Code provider used to be the
+  // Agent SDK, which streamed back tool_use blocks for internally-executed
+  // tools (Read, Edit, Bash, …) the AI SDK couldn't match — we force-stopped
+  // after step 1 to avoid a duplicate query. With the CLIProxyAPI bridge the
+  // Claude Code provider is a plain Anthropic Messages API consumer; it
+  // emits the same tool_use shape every other provider does and the AI SDK
+  // loop ends naturally when the model returns a text-only response.
   return false;
 }

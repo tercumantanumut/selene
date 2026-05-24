@@ -43,17 +43,6 @@ const checks: Check[] = [
     ],
   },
   {
-    id: "sdk-uses-shared-policy",
-    description: "Claude SDK env construction goes through the shared target builder instead of ad hoc cleanup",
-    filePath: "lib/auth/claude-agent-sdk-auth.ts",
-    requiredSnippets: [
-      "import { buildEnvironmentForTarget } from \"@/lib/process-env/policy\";",
-      "target: \"claude-sdk\"",
-      "const isProduction = isElectronProduction();",
-      "const { env, source } = buildEnvironmentForTarget({",
-    ],
-  },
-  {
     id: "electron-bootstrap-uses-explicit-init",
     description: "Electron main initializes process env via an explicit bootstrap call instead of inline ad hoc mutation",
     filePath: "electron/main.ts",

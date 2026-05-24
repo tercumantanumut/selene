@@ -1,31 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const settingsMocks = vi.hoisted(() => {
-  const state = { settings: {} as Record<string, any> };
-  return {
-    state,
-    loadSettings: vi.fn(() => state.settings),
-    saveSettings: vi.fn((settings: Record<string, any>) => {
-      state.settings = settings;
-    }),
-  };
-});
-
-const sdkMocks = vi.hoisted(() => {
-  return {
-    readClaudeAgentSdkAuthStatus: vi.fn(),
-    attemptClaudeAgentSdkLogout: vi.fn().mockResolvedValue(true),
-  };
-});
+const settingsStore = { current: {} as Record<string, unknown> };
 
 vi.mock("@/lib/settings/settings-manager", () => ({
-  loadSettings: settingsMocks.loadSettings,
-  saveSettings: settingsMocks.saveSettings,
+  loadSettings: vi.fn(() => settingsStore.current),
+  saveSettings: vi.fn((s: Record<string, unknown>) => {
+    settingsStore.current = s;
+  }),
 }));
 
-vi.mock("@/lib/auth/claude-agent-sdk-auth", () => ({
-  readClaudeAgentSdkAuthStatus: sdkMocks.readClaudeAgentSdkAuthStatus,
-  attemptClaudeAgentSdkLogout: sdkMocks.attemptClaudeAgentSdkLogout,
+vi.mock("@/lib/ai/providers/cliproxy/login", () => ({
+  getLoginState: vi.fn(() => null),
 }));
 
 import {
@@ -36,149 +24,61 @@ import {
   isClaudeCodeAuthenticated,
 } from "@/lib/auth/claudecode-auth";
 
-describe("claudecode-auth Agent SDK integration", () => {
+describe("claudecode-auth (CLIProxyAPI-backed)", () => {
+  let authDir: string;
+  let prev: string | undefined;
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    settingsMocks.state.settings = {};
+    settingsStore.current = {};
     invalidateClaudeCodeAuthCache();
+    authDir = mkdtempSync(join(tmpdir(), "selene-ccauth-"));
+    prev = process.env.SELENE_CLIPROXY_AUTH_DIR;
+    process.env.SELENE_CLIPROXY_AUTH_DIR = authDir;
   });
 
-  it("persists SDK auth status and clears legacy token fields", async () => {
-    settingsMocks.state.settings = {
-      llmProvider: "anthropic",
-      claudecodeToken: {
-        type: "oauth",
-        access_token: "legacy",
-        refresh_token: "legacy-refresh",
-        expires_at: Date.now() + 1000,
-      },
-      pendingClaudeCodeOAuth: {
-        state: "x",
-        verifier: "y",
-        origin: "z",
-        createdAt: Date.now(),
-      },
-    };
+  afterEach(() => {
+    rmSync(authDir, { recursive: true, force: true });
+    if (prev === undefined) delete process.env.SELENE_CLIPROXY_AUTH_DIR;
+    else process.env.SELENE_CLIPROXY_AUTH_DIR = prev;
+  });
 
-    sdkMocks.readClaudeAgentSdkAuthStatus.mockResolvedValue({
-      authenticated: true,
-      isAuthenticating: false,
-      output: ["already logged in"],
-      email: "user@example.com",
-      tokenSource: "oauth_personal",
-      apiKeySource: undefined,
-      authUrl: undefined,
-      error: undefined,
-    });
-
+  it("reports unauthenticated when no credential file is present", async () => {
     const status = await getClaudeCodeAuthStatus();
-
-    expect(status.authenticated).toBe(true);
-    expect(settingsMocks.state.settings.claudecodeAuth?.isAuthenticated).toBe(true);
-    expect(settingsMocks.state.settings.claudecodeAuth?.email).toBe("user@example.com");
-    expect(settingsMocks.state.settings.claudecodeToken).toBeUndefined();
-    expect(settingsMocks.state.settings.pendingClaudeCodeOAuth).toBeUndefined();
-  });
-
-  it("isClaudeCodeAuthenticated reflects SDK status", async () => {
-    sdkMocks.readClaudeAgentSdkAuthStatus.mockResolvedValue({
-      authenticated: false,
-      isAuthenticating: false,
-      output: ["login required"],
-      email: undefined,
-      tokenSource: undefined,
-      apiKeySource: undefined,
-      authUrl: "https://example.com/auth",
-      error: "authentication_failed",
-    });
-
-    const authenticated = await isClaudeCodeAuthenticated();
-
-    expect(authenticated).toBe(false);
-    const state = getClaudeCodeAuthState();
-    expect(state.isAuthenticated).toBe(false);
-    expect(state.authUrl).toBe("https://example.com/auth");
-  });
-
-  it("treats spawn errors as authoritative failures (no anti-flapping)", async () => {
-    // Simulate previous authenticated state
-    settingsMocks.state.settings = {
-      claudecodeAuth: {
-        isAuthenticated: true,
-        email: "user@example.com",
-      },
-    };
-
-    // SDK returns unauthenticated with a spawn error (e.g. wrong binary)
-    sdkMocks.readClaudeAgentSdkAuthStatus.mockResolvedValue({
-      authenticated: false,
-      isAuthenticating: false,
-      output: [],
-      email: undefined,
-      tokenSource: undefined,
-      apiKeySource: undefined,
-      authUrl: undefined,
-      error: "spawn ENOENT",
-    });
-
-    const status = await getClaudeCodeAuthStatus();
-
     expect(status.authenticated).toBe(false);
-    // Anti-flapping should NOT preserve the stale "authenticated" state
-    expect(settingsMocks.state.settings.claudecodeAuth?.isAuthenticated).toBe(false);
+    expect(status.email).toBeUndefined();
+    expect(status.tokenSource).toBe("cliproxyapi-oauth");
   });
 
-  it("preserves auth state on transient non-spawn errors (anti-flapping)", async () => {
-    settingsMocks.state.settings = {
-      claudecodeAuth: {
-        isAuthenticated: true,
-        email: "user@example.com",
-      },
-    };
+  it("returns authenticated with email when a claude-*.json exists", async () => {
+    writeFileSync(join(authDir, "claude-umut@rltm.ai.json"), "{}");
 
-    // SDK returns unauthenticated with a generic timeout error
-    sdkMocks.readClaudeAgentSdkAuthStatus.mockResolvedValue({
-      authenticated: false,
-      isAuthenticating: false,
-      output: [],
-      email: undefined,
-      tokenSource: undefined,
-      apiKeySource: undefined,
-      authUrl: undefined,
-      error: "The operation was aborted",
-    });
+    const status = await getClaudeCodeAuthStatus();
+    expect(status.authenticated).toBe(true);
+    expect(status.email).toBe("umut@rltm.ai");
+    expect(status.account).toBe("umut@rltm.ai");
 
+    expect(await isClaudeCodeAuthenticated()).toBe(true);
+  });
+
+  it("persists the snapshot so a sync read after refresh matches", async () => {
+    writeFileSync(join(authDir, "claude-foo@bar.com.json"), "{}");
     await getClaudeCodeAuthStatus();
 
-    // Anti-flapping SHOULD preserve the previous authenticated state
-    expect(settingsMocks.state.settings.claudecodeAuth?.isAuthenticated).toBe(true);
+    const state = getClaudeCodeAuthState();
+    expect(state.isAuthenticated).toBe(true);
+    expect(state.email).toBe("foo@bar.com");
+    expect(state.tokenSource).toBe("cliproxyapi-oauth");
   });
 
-  it("clearClaudeCodeAuth resets local state and triggers best-effort SDK logout", () => {
-    settingsMocks.state.settings = {
-      claudecodeAuth: {
-        isAuthenticated: true,
-        email: "user@example.com",
-      },
-      claudecodeToken: {
-        type: "oauth",
-        access_token: "legacy",
-        refresh_token: "legacy-refresh",
-        expires_at: Date.now() + 1000,
-      },
-      pendingClaudeCodeOAuth: {
-        state: "x",
-        verifier: "y",
-        origin: "z",
-        createdAt: Date.now(),
-      },
-    };
+  it("clearClaudeCodeAuth deletes credentials and resets the snapshot", async () => {
+    writeFileSync(join(authDir, "claude-x@y.com.json"), "{}");
+    await getClaudeCodeAuthStatus(); // populate cache
+    expect((await getClaudeCodeAuthStatus()).authenticated).toBe(true);
 
-    clearClaudeCodeAuth();
+    await clearClaudeCodeAuth();
 
-    expect(settingsMocks.state.settings.claudecodeAuth?.isAuthenticated).toBe(false);
-    expect(settingsMocks.state.settings.claudecodeToken).toBeUndefined();
-    expect(settingsMocks.state.settings.pendingClaudeCodeOAuth).toBeUndefined();
-    expect(sdkMocks.attemptClaudeAgentSdkLogout).toHaveBeenCalledTimes(1);
+    expect((await getClaudeCodeAuthStatus()).authenticated).toBe(false);
+    const state = getClaudeCodeAuthState();
+    expect(state.isAuthenticated).toBe(false);
   });
 });
