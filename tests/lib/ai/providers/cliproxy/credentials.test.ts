@@ -5,8 +5,11 @@ import { join } from "node:path";
 
 import {
   deleteAllClaudeCredentials,
+  deleteAllCodexCredentials,
   hasClaudeCredential,
+  hasCodexCredential,
   listClaudeCredentials,
+  listCodexCredentials,
 } from "@/lib/ai/providers/cliproxy/credentials";
 
 describe("cliproxy/credentials", () => {
@@ -61,5 +64,58 @@ describe("cliproxy/credentials", () => {
     // Non-claude credentials are untouched.
     const remaining = await listClaudeCredentials();
     expect(remaining).toEqual([]);
+    // Codex credentials survive — different provider scope.
+    expect(await hasCodexCredential()).toBe(true);
+  });
+
+  // ── Codex variant ────────────────────────────────────────────────────────
+
+  it("returns an empty list when no codex credentials exist", async () => {
+    expect(await listCodexCredentials()).toEqual([]);
+    expect(await hasCodexCredential()).toBe(false);
+  });
+
+  it("parses codex-<email>.json (no plan) and codex-<email>-<plan>.json (with plan)", async () => {
+    writeFileSync(join(authDir, "codex-noplan@example.com.json"), "{}");
+    writeFileSync(join(authDir, "codex-pro@example.com-pro.json"), "{}");
+    writeFileSync(join(authDir, "codex-prolite@example.com-prolite.json"), "{}");
+    writeFileSync(join(authDir, "ignored-non-codex.json"), "{}");
+
+    // Force ordering: prolite newest, noplan middle, pro oldest.
+    utimesSync(join(authDir, "codex-pro@example.com-pro.json"), 1700000000, 1700000000);
+    utimesSync(join(authDir, "codex-noplan@example.com.json"), 1750000000, 1750000000);
+    utimesSync(join(authDir, "codex-prolite@example.com-prolite.json"), 1800000000, 1800000000);
+
+    const creds = await listCodexCredentials();
+    expect(creds).toHaveLength(3);
+    expect(creds.map((c) => ({ email: c.email, plan: c.plan }))).toEqual([
+      { email: "prolite@example.com", plan: "prolite" },
+      { email: "noplan@example.com", plan: undefined },
+      { email: "pro@example.com", plan: "pro" },
+    ]);
+    expect(await hasCodexCredential()).toBe(true);
+  });
+
+  it("ignores claude-*.json when listing codex (cross-provider isolation)", async () => {
+    writeFileSync(join(authDir, "claude-x@y.com.json"), "{}");
+    writeFileSync(join(authDir, "codex-x@y.com.json"), "{}");
+
+    const codex = await listCodexCredentials();
+    expect(codex.map((c) => c.provider)).toEqual(["codex"]);
+    expect(codex.map((c) => c.email)).toEqual(["x@y.com"]);
+
+    const claude = await listClaudeCredentials();
+    expect(claude.map((c) => c.provider)).toEqual(["claude"]);
+  });
+
+  it("deletes every codex-*.json on logout, leaving claude credentials intact", async () => {
+    writeFileSync(join(authDir, "codex-x@y.com.json"), "{}");
+    writeFileSync(join(authDir, "codex-y@z.com-prolite.json"), "{}");
+    writeFileSync(join(authDir, "claude-keep@me.com.json"), "{}");
+
+    await deleteAllCodexCredentials();
+
+    expect(await hasCodexCredential()).toBe(false);
+    expect(await hasClaudeCredential()).toBe(true);
   });
 });
