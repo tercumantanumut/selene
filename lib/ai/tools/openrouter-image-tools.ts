@@ -214,527 +214,198 @@ async function executeOpenRouterImage(
 }
 
 // ==========================================================================
-// Flux.2 Flex Tools (black-forest-labs/flux.2-flex)
+// ==========================================================================
+// Per-Model Tool Descriptors + Generic Factory (replaces 33 hand-written functions)
 // ==========================================================================
 
-export function createOpenRouterFlux2FlexGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageFlux2Flex",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_FLEX, "generate", args)
-  );
+interface ModelToolConfig {
+  suffix: string;
+  model: string;
+  gen:   { toolName: string; desc: string };
+  edit:  { toolName: string; desc: string };
+  ref:   { toolName: string; desc: string };
+}
+
+const MODEL_DESCRIPTORS: ModelToolConfig[] = [
+  { suffix: "Flux2Flex", model: OPENROUTER_MODELS.FLUX2_FLEX,
+    gen:   { toolName: "generateImageFlux2Flex", desc: "Generate images from text using Flux.2 Flex via OpenRouter. High-quality, versatile image generation." },
+    edit:  { toolName: "editImageFlux2Flex", desc: "Edit one or more images using Flux.2 Flex via OpenRouter. Supports multiple source images for batch editing, transformation, or enhancement." },
+    ref:   { toolName: "referenceImageFlux2Flex", desc: "Generate images guided by one or more reference images using Flux.2 Flex via OpenRouter. Supports multiple references for style transfer and content-guided generation." },
+  },
+  { suffix: "Gpt5ImageMini", model: OPENROUTER_MODELS.GPT5_IMAGE_MINI,
+    gen:   { toolName: "generateImageGpt5Mini", desc: "Generate images from text using GPT-5 Image Mini via OpenRouter. Fast, efficient image generation." },
+    edit:  { toolName: "editImageGpt5Mini", desc: "Edit one or more images using GPT-5 Image Mini via OpenRouter. Supports multiple source images for quick batch modifications." },
+    ref:   { toolName: "referenceImageGpt5Mini", desc: "Generate images guided by one or more reference images using GPT-5 Image Mini via OpenRouter. Supports multiple references." },
+  },
+  { suffix: "Gpt5Image", model: OPENROUTER_MODELS.GPT5_IMAGE,
+    gen:   { toolName: "generateImageGpt5", desc: "Generate images from text using GPT-5 Image via OpenRouter. Premium quality image generation." },
+    edit:  { toolName: "editImageGpt5", desc: "Edit one or more images using GPT-5 Image via OpenRouter. Supports multiple source images for premium batch editing." },
+    ref:   { toolName: "referenceImageGpt5", desc: "Generate images guided by one or more reference images using GPT-5 Image via OpenRouter. Supports multiple references for premium style transfer." },
+  },
+  { suffix: "Gemini31FlashImage", model: OPENROUTER_MODELS.GEMINI_31_FLASH_IMAGE,
+    gen:   { toolName: "generateImageGemini31Flash", desc: "Generate images from text using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Pro-level visual quality at Flash speed — Google's latest and most-used image model." },
+    edit:  { toolName: "editImageGemini31Flash", desc: "Edit one or more images using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Fast, high-quality batch editing with advanced contextual understanding." },
+    ref:   { toolName: "referenceImageGemini31Flash", desc: "Generate images guided by one or more reference images using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Supports multiple references for style transfer." },
+  },
+  { suffix: "Gemini3ProImage", model: OPENROUTER_MODELS.GEMINI_3_PRO_IMAGE,
+    gen:   { toolName: "generateImageGemini3Pro", desc: "Generate images from text using Gemini 3 Pro Image via OpenRouter. Latest Gemini image generation." },
+    edit:  { toolName: "editImageGemini3Pro", desc: "Edit one or more images using Gemini 3 Pro Image via OpenRouter. Supports multiple source images for advanced batch editing." },
+    ref:   { toolName: "referenceImageGemini3Pro", desc: "Generate images guided by one or more reference images using Gemini 3 Pro Image via OpenRouter. Supports multiple references for advanced style transfer." },
+  },
+  { suffix: "Flux2Pro", model: OPENROUTER_MODELS.FLUX2_PRO,
+    gen:   { toolName: "generateImageFlux2Pro", desc: "Generate images from text using Flux.2 Pro via OpenRouter. Frontier-level visual quality with strong prompt adherence, stable lighting, and sharp textures. Supports up to 4MP resolution." },
+    edit:  { toolName: "editImageFlux2Pro", desc: "Edit images using Flux.2 Pro via OpenRouter. Production-grade editing with consistent character/style reproduction across multi-reference inputs." },
+    ref:   { toolName: "referenceImageFlux2Pro", desc: "Generate images guided by reference images using Flux.2 Pro via OpenRouter. Consistent character/style reproduction across multiple references." },
+  },
+  { suffix: "Flux2Max", model: OPENROUTER_MODELS.FLUX2_MAX,
+    gen:   { toolName: "generateImageFlux2Max", desc: "Generate images from text using Flux.2 Max via OpenRouter. Top-tier image quality — highest level of prompt understanding and editing consistency in the Flux.2 family." },
+    edit:  { toolName: "editImageFlux2Max", desc: "Edit images using Flux.2 Max via OpenRouter. Best-in-class editing with unmatched prompt understanding and consistency." },
+    ref:   { toolName: "referenceImageFlux2Max", desc: "Generate images guided by reference images using Flux.2 Max via OpenRouter. Maximum quality style transfer and reference-guided generation." },
+  },
+  { suffix: "Flux2Klein4B", model: OPENROUTER_MODELS.FLUX2_KLEIN_4B,
+    gen:   { toolName: "generateImageFlux2Klein4B", desc: "Generate images from text using Flux.2 Klein 4B via OpenRouter. Fastest and most cost-effective Flux.2 model — optimized for high-throughput use cases." },
+    edit:  { toolName: "editImageFlux2Klein4B", desc: "Edit images using Flux.2 Klein 4B via OpenRouter. Fast, cost-effective editing for high-throughput workflows." },
+    ref:   { toolName: "referenceImageFlux2Klein4B", desc: "Generate images guided by reference images using Flux.2 Klein 4B via OpenRouter. Fast, cost-effective reference-guided generation." },
+  },
+  { suffix: "Gpt54Image2", model: OPENROUTER_MODELS.GPT54_IMAGE_2,
+    gen:   { toolName: "generateImageGpt54Image2", desc: "Generate images from text using GPT-5.4 Image 2 via OpenRouter. Combines GPT-5.4 reasoning with GPT Image 2 state-of-the-art generation — seamless multimodal workflows." },
+    edit:  { toolName: "editImageGpt54Image2", desc: "Edit images using GPT-5.4 Image 2 via OpenRouter. Advanced editing with GPT-5.4's reasoning capabilities." },
+    ref:   { toolName: "referenceImageGpt54Image2", desc: "Generate images guided by reference images using GPT-5.4 Image 2 via OpenRouter. Reference-guided generation with GPT-5.4's reasoning." },
+  },
+  { suffix: "GrokImagine", model: OPENROUTER_MODELS.GROK_IMAGINE,
+    gen:   { toolName: "generateImageGrokImagine", desc: "Generate images from text using Grok Imagine via OpenRouter. xAI's fast, high-fidelity generation — photorealistic outputs at 1K/2K with strong named-entity rendering and clean multilingual text in images." },
+    edit:  { toolName: "editImageGrokImagine", desc: "Edit images using Grok Imagine via OpenRouter. Photorealistic editing with identity and structure preservation for product placement, brand-aligned variations, and character continuity." },
+    ref:   { toolName: "referenceImageGrokImagine", desc: "Generate images guided by reference images using Grok Imagine via OpenRouter. Reference-guided generation with identity preservation for posters, packaging, ads, and social graphics." },
+  },
+  { suffix: "Seedream45", model: OPENROUTER_MODELS.SEEDREAM_45,
+    gen:   { toolName: "generateImageSeedream45", desc: "Generate images from text using Seedream 4.5 via OpenRouter. ByteDance's latest — strong editing consistency, portrait refinement, small-text rendering, and multi-image composition." },
+    edit:  { toolName: "editImageSeedream45", desc: "Edit images using Seedream 4.5 via OpenRouter. Excellent editing consistency with subject detail, lighting, and color tone preservation." },
+    ref:   { toolName: "referenceImageSeedream45", desc: "Generate images guided by reference images using Seedream 4.5 via OpenRouter. Reference-guided generation with strong multi-image composition capabilities." },
+  },
+];
+
+function createModelTool(
+  sessionId: string,
+  config: ModelToolConfig,
+  operation: "generate" | "edit" | "reference",
+  toolName: string,
+  description: string,
+) {
+  const schema = operation === "generate"
+    ? openRouterGenerateSchema
+    : operation === "edit"
+    ? openRouterEditSchema
+    : openRouterReferenceSchema;
 
   return tool({
-    description: "Generate images from text using Flux.2 Flex via OpenRouter. High-quality, versatile image generation.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
+    description,
+    inputSchema: schema,
+    execute: withToolLogging(toolName, sessionId,
+      (args) => executeOpenRouterImage(sessionId, config.model, operation, args)
+    ),
   });
 }
 
-export function createOpenRouterFlux2FlexEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageFlux2Flex",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_FLEX, "edit", args)
-  );
+// ── Thin exports (33 functions, auto-generated from MODEL_DESCRIPTORS) ──
+export const createOpenRouterFlux2FlexGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[0], "generate", "generateImageFlux2Flex", "Generate images from text using Flux.2 Flex via OpenRouter. High-quality, versatile image generation.");
 
-  return tool({
-    description: "Edit one or more images using Flux.2 Flex via OpenRouter. Supports multiple source images for batch editing, transformation, or enhancement.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterFlux2FlexEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[0], "edit", "editImageFlux2Flex", "Edit one or more images using Flux.2 Flex via OpenRouter. Supports multiple source images for batch editing, transformation, or enhancement.");
 
-export function createOpenRouterFlux2FlexReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageFlux2Flex",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_FLEX, "reference", args)
-  );
+export const createOpenRouterFlux2FlexReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[0], "reference", "referenceImageFlux2Flex", "Generate images guided by one or more reference images using Flux.2 Flex via OpenRouter. Supports multiple references for style transfer and content-guided generation.");
 
-  return tool({
-    description: "Generate images guided by one or more reference images using Flux.2 Flex via OpenRouter. Supports multiple references for style transfer and content-guided generation.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGpt5ImageMiniGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[1], "generate", "generateImageGpt5Mini", "Generate images from text using GPT-5 Image Mini via OpenRouter. Fast, efficient image generation.");
 
-// ==========================================================================
-// GPT-5 Image Mini Tools (openai/gpt-5-image-mini)
-// ==========================================================================
+export const createOpenRouterGpt5ImageMiniEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[1], "edit", "editImageGpt5Mini", "Edit one or more images using GPT-5 Image Mini via OpenRouter. Supports multiple source images for quick batch modifications.");
 
-export function createOpenRouterGpt5ImageMiniGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageGpt5Mini",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT5_IMAGE_MINI, "generate", args)
-  );
+export const createOpenRouterGpt5ImageMiniReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[1], "reference", "referenceImageGpt5Mini", "Generate images guided by one or more reference images using GPT-5 Image Mini via OpenRouter. Supports multiple references.");
 
-  return tool({
-    description: "Generate images from text using GPT-5 Image Mini via OpenRouter. Fast, efficient image generation.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGpt5ImageGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[2], "generate", "generateImageGpt5", "Generate images from text using GPT-5 Image via OpenRouter. Premium quality image generation.");
 
-export function createOpenRouterGpt5ImageMiniEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageGpt5Mini",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT5_IMAGE_MINI, "edit", args)
-  );
+export const createOpenRouterGpt5ImageEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[2], "edit", "editImageGpt5", "Edit one or more images using GPT-5 Image via OpenRouter. Supports multiple source images for premium batch editing.");
 
-  return tool({
-    description: "Edit one or more images using GPT-5 Image Mini via OpenRouter. Supports multiple source images for quick batch modifications.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGpt5ImageReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[2], "reference", "referenceImageGpt5", "Generate images guided by one or more reference images using GPT-5 Image via OpenRouter. Supports multiple references for premium style transfer.");
 
-export function createOpenRouterGpt5ImageMiniReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageGpt5Mini",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT5_IMAGE_MINI, "reference", args)
-  );
+export const createOpenRouterGemini31FlashImageGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[3], "generate", "generateImageGemini31Flash", "Generate images from text using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Pro-level visual quality at Flash speed — Google's latest and most-used image model.");
 
-  return tool({
-    description: "Generate images guided by one or more reference images using GPT-5 Image Mini via OpenRouter. Supports multiple references.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGemini31FlashImageEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[3], "edit", "editImageGemini31Flash", "Edit one or more images using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Fast, high-quality batch editing with advanced contextual understanding.");
 
-// ==========================================================================
-// GPT-5 Image Tools (openai/gpt-5-image)
-// ==========================================================================
+export const createOpenRouterGemini31FlashImageReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[3], "reference", "referenceImageGemini31Flash", "Generate images guided by one or more reference images using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Supports multiple references for style transfer.");
 
-export function createOpenRouterGpt5ImageGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageGpt5",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT5_IMAGE, "generate", args)
-  );
+export const createOpenRouterGemini3ProImageGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[4], "generate", "generateImageGemini3Pro", "Generate images from text using Gemini 3 Pro Image via OpenRouter. Latest Gemini image generation.");
 
-  return tool({
-    description: "Generate images from text using GPT-5 Image via OpenRouter. Premium quality image generation.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGemini3ProImageEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[4], "edit", "editImageGemini3Pro", "Edit one or more images using Gemini 3 Pro Image via OpenRouter. Supports multiple source images for advanced batch editing.");
 
-export function createOpenRouterGpt5ImageEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageGpt5",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT5_IMAGE, "edit", args)
-  );
+export const createOpenRouterGemini3ProImageReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[4], "reference", "referenceImageGemini3Pro", "Generate images guided by one or more reference images using Gemini 3 Pro Image via OpenRouter. Supports multiple references for advanced style transfer.");
 
-  return tool({
-    description: "Edit one or more images using GPT-5 Image via OpenRouter. Supports multiple source images for premium batch editing.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterFlux2ProGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[5], "generate", "generateImageFlux2Pro", "Generate images from text using Flux.2 Pro via OpenRouter. Frontier-level visual quality with strong prompt adherence, stable lighting, and sharp textures. Supports up to 4MP resolution.");
 
-export function createOpenRouterGpt5ImageReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageGpt5",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT5_IMAGE, "reference", args)
-  );
+export const createOpenRouterFlux2ProEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[5], "edit", "editImageFlux2Pro", "Edit images using Flux.2 Pro via OpenRouter. Production-grade editing with consistent character/style reproduction across multi-reference inputs.");
 
-  return tool({
-    description: "Generate images guided by one or more reference images using GPT-5 Image via OpenRouter. Supports multiple references for premium style transfer.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterFlux2ProReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[5], "reference", "referenceImageFlux2Pro", "Generate images guided by reference images using Flux.2 Pro via OpenRouter. Consistent character/style reproduction across multiple references.");
 
-// ==========================================================================
-// Gemini 3.1 Flash Image Tools (google/gemini-3.1-flash-image-preview) — "Nano Banana 2"
-// ==========================================================================
+export const createOpenRouterFlux2MaxGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[6], "generate", "generateImageFlux2Max", "Generate images from text using Flux.2 Max via OpenRouter. Top-tier image quality — highest level of prompt understanding and editing consistency in the Flux.2 family.");
 
-export function createOpenRouterGemini31FlashImageGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageGemini31Flash",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GEMINI_31_FLASH_IMAGE, "generate", args)
-  );
+export const createOpenRouterFlux2MaxEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[6], "edit", "editImageFlux2Max", "Edit images using Flux.2 Max via OpenRouter. Best-in-class editing with unmatched prompt understanding and consistency.");
 
-  return tool({
-    description: "Generate images from text using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Pro-level visual quality at Flash speed — Google's latest and most-used image model.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterFlux2MaxReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[6], "reference", "referenceImageFlux2Max", "Generate images guided by reference images using Flux.2 Max via OpenRouter. Maximum quality style transfer and reference-guided generation.");
 
-export function createOpenRouterGemini31FlashImageEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageGemini31Flash",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GEMINI_31_FLASH_IMAGE, "edit", args)
-  );
+export const createOpenRouterFlux2Klein4BGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[7], "generate", "generateImageFlux2Klein4B", "Generate images from text using Flux.2 Klein 4B via OpenRouter. Fastest and most cost-effective Flux.2 model — optimized for high-throughput use cases.");
 
-  return tool({
-    description: "Edit one or more images using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Fast, high-quality batch editing with advanced contextual understanding.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterFlux2Klein4BEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[7], "edit", "editImageFlux2Klein4B", "Edit images using Flux.2 Klein 4B via OpenRouter. Fast, cost-effective editing for high-throughput workflows.");
 
-export function createOpenRouterGemini31FlashImageReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageGemini31Flash",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GEMINI_31_FLASH_IMAGE, "reference", args)
-  );
+export const createOpenRouterFlux2Klein4BReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[7], "reference", "referenceImageFlux2Klein4B", "Generate images guided by reference images using Flux.2 Klein 4B via OpenRouter. Fast, cost-effective reference-guided generation.");
 
-  return tool({
-    description: "Generate images guided by one or more reference images using Gemini 3.1 Flash Image (Nano Banana 2) via OpenRouter. Supports multiple references for style transfer.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGpt54Image2Generate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[8], "generate", "generateImageGpt54Image2", "Generate images from text using GPT-5.4 Image 2 via OpenRouter. Combines GPT-5.4 reasoning with GPT Image 2 state-of-the-art generation — seamless multimodal workflows.");
 
-// ==========================================================================
-// Gemini 3 Pro Image Tools (google/gemini-3-pro-image-preview)
-// ==========================================================================
+export const createOpenRouterGpt54Image2Edit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[8], "edit", "editImageGpt54Image2", "Edit images using GPT-5.4 Image 2 via OpenRouter. Advanced editing with GPT-5.4's reasoning capabilities.");
 
-export function createOpenRouterGemini3ProImageGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageGemini3Pro",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GEMINI_3_PRO_IMAGE, "generate", args)
-  );
+export const createOpenRouterGpt54Image2Reference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[8], "reference", "referenceImageGpt54Image2", "Generate images guided by reference images using GPT-5.4 Image 2 via OpenRouter. Reference-guided generation with GPT-5.4's reasoning.");
 
-  return tool({
-    description: "Generate images from text using Gemini 3 Pro Image via OpenRouter. Latest Gemini image generation.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGrokImagineGenerate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[9], "generate", "generateImageGrokImagine", "Generate images from text using Grok Imagine via OpenRouter. xAI's fast, high-fidelity generation — photorealistic outputs at 1K/2K with strong named-entity rendering and clean multilingual text in images.");
 
-export function createOpenRouterGemini3ProImageEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageGemini3Pro",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GEMINI_3_PRO_IMAGE, "edit", args)
-  );
+export const createOpenRouterGrokImagineEdit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[9], "edit", "editImageGrokImagine", "Edit images using Grok Imagine via OpenRouter. Photorealistic editing with identity and structure preservation for product placement, brand-aligned variations, and character continuity.");
 
-  return tool({
-    description: "Edit one or more images using Gemini 3 Pro Image via OpenRouter. Supports multiple source images for advanced batch editing.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterGrokImagineReference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[9], "reference", "referenceImageGrokImagine", "Generate images guided by reference images using Grok Imagine via OpenRouter. Reference-guided generation with identity preservation for posters, packaging, ads, and social graphics.");
 
-export function createOpenRouterGemini3ProImageReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageGemini3Pro",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GEMINI_3_PRO_IMAGE, "reference", args)
-  );
+export const createOpenRouterSeedream45Generate = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[10], "generate", "generateImageSeedream45", "Generate images from text using Seedream 4.5 via OpenRouter. ByteDance's latest — strong editing consistency, portrait refinement, small-text rendering, and multi-image composition.");
 
-  return tool({
-    description: "Generate images guided by one or more reference images using Gemini 3 Pro Image via OpenRouter. Supports multiple references for advanced style transfer.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
+export const createOpenRouterSeedream45Edit = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[10], "edit", "editImageSeedream45", "Edit images using Seedream 4.5 via OpenRouter. Excellent editing consistency with subject detail, lighting, and color tone preservation.");
 
-// ==========================================================================
-// Flux.2 Pro Tools (black-forest-labs/flux.2-pro)
-// ==========================================================================
+export const createOpenRouterSeedream45Reference = (sessionId: string) =>
+  createModelTool(sessionId, MODEL_DESCRIPTORS[10], "reference", "referenceImageSeedream45", "Generate images guided by reference images using Seedream 4.5 via OpenRouter. Reference-guided generation with strong multi-image composition capabilities.");
 
-export function createOpenRouterFlux2ProGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageFlux2Pro",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_PRO, "generate", args)
-  );
-  return tool({
-    description: "Generate images from text using Flux.2 Pro via OpenRouter. Frontier-level visual quality with strong prompt adherence, stable lighting, and sharp textures. Supports up to 4MP resolution.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterFlux2ProEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageFlux2Pro",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_PRO, "edit", args)
-  );
-  return tool({
-    description: "Edit images using Flux.2 Pro via OpenRouter. Production-grade editing with consistent character/style reproduction across multi-reference inputs.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterFlux2ProReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageFlux2Pro",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_PRO, "reference", args)
-  );
-  return tool({
-    description: "Generate images guided by reference images using Flux.2 Pro via OpenRouter. Consistent character/style reproduction across multiple references.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
-
-// ==========================================================================
-// Flux.2 Max Tools (black-forest-labs/flux.2-max)
-// ==========================================================================
-
-export function createOpenRouterFlux2MaxGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageFlux2Max",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_MAX, "generate", args)
-  );
-  return tool({
-    description: "Generate images from text using Flux.2 Max via OpenRouter. Top-tier image quality — highest level of prompt understanding and editing consistency in the Flux.2 family.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterFlux2MaxEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageFlux2Max",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_MAX, "edit", args)
-  );
-  return tool({
-    description: "Edit images using Flux.2 Max via OpenRouter. Best-in-class editing with unmatched prompt understanding and consistency.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterFlux2MaxReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageFlux2Max",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_MAX, "reference", args)
-  );
-  return tool({
-    description: "Generate images guided by reference images using Flux.2 Max via OpenRouter. Maximum quality style transfer and reference-guided generation.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
-
-// ==========================================================================
-// Flux.2 Klein 4B Tools (black-forest-labs/flux.2-klein-4b)
-// ==========================================================================
-
-export function createOpenRouterFlux2Klein4BGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageFlux2Klein4B",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_KLEIN_4B, "generate", args)
-  );
-  return tool({
-    description: "Generate images from text using Flux.2 Klein 4B via OpenRouter. Fastest and most cost-effective Flux.2 model — optimized for high-throughput use cases.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterFlux2Klein4BEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageFlux2Klein4B",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_KLEIN_4B, "edit", args)
-  );
-  return tool({
-    description: "Edit images using Flux.2 Klein 4B via OpenRouter. Fast, cost-effective editing for high-throughput workflows.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterFlux2Klein4BReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageFlux2Klein4B",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.FLUX2_KLEIN_4B, "reference", args)
-  );
-  return tool({
-    description: "Generate images guided by reference images using Flux.2 Klein 4B via OpenRouter. Fast, cost-effective reference-guided generation.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
-
-// ==========================================================================
-// GPT-5.4 Image 2 Tools (openai/gpt-5.4-image-2)
-// ==========================================================================
-
-export function createOpenRouterGpt54Image2Generate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageGpt54Image2",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT54_IMAGE_2, "generate", args)
-  );
-  return tool({
-    description: "Generate images from text using GPT-5.4 Image 2 via OpenRouter. Combines GPT-5.4 reasoning with GPT Image 2 state-of-the-art generation — seamless multimodal workflows.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterGpt54Image2Edit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageGpt54Image2",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT54_IMAGE_2, "edit", args)
-  );
-  return tool({
-    description: "Edit images using GPT-5.4 Image 2 via OpenRouter. Advanced editing with GPT-5.4's reasoning capabilities.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterGpt54Image2Reference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageGpt54Image2",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GPT54_IMAGE_2, "reference", args)
-  );
-  return tool({
-    description: "Generate images guided by reference images using GPT-5.4 Image 2 via OpenRouter. Reference-guided generation with GPT-5.4's reasoning.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
-
-// ==========================================================================
-// Grok Imagine Image Quality Tools (x-ai/grok-imagine-image-quality)
-// ==========================================================================
-
-export function createOpenRouterGrokImagineGenerate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageGrokImagine",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GROK_IMAGINE, "generate", args)
-  );
-  return tool({
-    description: "Generate images from text using Grok Imagine via OpenRouter. xAI's fast, high-fidelity generation — photorealistic outputs at 1K/2K with strong named-entity rendering and clean multilingual text in images.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterGrokImagineEdit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageGrokImagine",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GROK_IMAGINE, "edit", args)
-  );
-  return tool({
-    description: "Edit images using Grok Imagine via OpenRouter. Photorealistic editing with identity and structure preservation for product placement, brand-aligned variations, and character continuity.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterGrokImagineReference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageGrokImagine",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.GROK_IMAGINE, "reference", args)
-  );
-  return tool({
-    description: "Generate images guided by reference images using Grok Imagine via OpenRouter. Reference-guided generation with identity preservation for posters, packaging, ads, and social graphics.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
-
-// ==========================================================================
-// Seedream 4.5 Tools (bytedance-seed/seedream-4.5)
-// ==========================================================================
-
-export function createOpenRouterSeedream45Generate(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "generateImageSeedream45",
-    sessionId,
-    (args: OpenRouterImageGenerationArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.SEEDREAM_45, "generate", args)
-  );
-  return tool({
-    description: "Generate images from text using Seedream 4.5 via OpenRouter. ByteDance's latest — strong editing consistency, portrait refinement, small-text rendering, and multi-image composition.",
-    inputSchema: openRouterGenerateSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterSeedream45Edit(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "editImageSeedream45",
-    sessionId,
-    (args: OpenRouterImageEditingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.SEEDREAM_45, "edit", args)
-  );
-  return tool({
-    description: "Edit images using Seedream 4.5 via OpenRouter. Excellent editing consistency with subject detail, lighting, and color tone preservation.",
-    inputSchema: openRouterEditSchema,
-    execute: executeWithLogging,
-  });
-}
-
-export function createOpenRouterSeedream45Reference(sessionId: string) {
-  const executeWithLogging = withToolLogging(
-    "referenceImageSeedream45",
-    sessionId,
-    (args: OpenRouterImageReferencingArgs) =>
-      executeOpenRouterImage(sessionId, OPENROUTER_MODELS.SEEDREAM_45, "reference", args)
-  );
-  return tool({
-    description: "Generate images guided by reference images using Seedream 4.5 via OpenRouter. Reference-guided generation with strong multi-image composition capabilities.",
-    inputSchema: openRouterReferenceSchema,
-    execute: executeWithLogging,
-  });
-}
-
-// ==========================================================================
 // UNIFIED OPENROUTER IMAGE TOOL (Phase 1 consolidation)
 // Single multi-action tool replacing per-model generate/edit/reference tools.
 // ==========================================================================

@@ -32,22 +32,25 @@ export function runDataMigrations(sqlite: Database.Database): void {
         }
 
         let modified = false;
-        const newEnabledTools: string[] = [];
+        const toolSet = new Set<string>();
+        const removedTools = new Set(toolsToRemove);
 
         for (const tool of metadata.enabledTools) {
           // Skip tools that should be removed
-          if (toolsToRemove.includes(tool)) {
+          if (removedTools.has(tool)) {
             modified = true;
             continue;
           }
           // Rename tools that need renaming
-          if (toolRenameMap[tool]) {
-            newEnabledTools.push(toolRenameMap[tool]);
+          const renamed = toolRenameMap[tool];
+          if (renamed) {
+            toolSet.add(renamed);
             modified = true;
           } else {
-            newEnabledTools.push(tool);
+            toolSet.add(tool);
           }
         }
+        const newEnabledTools = Array.from(toolSet);
 
         if (modified) {
           metadata.enabledTools = newEnabledTools;
