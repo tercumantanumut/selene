@@ -1231,6 +1231,17 @@ export async function POST(req: Request) {
             model: resolvedModel,
             ...(injectContext && { system: finalSystemPrompt }),
           messages: finalMessages,
+          // Codex (OpenAI Responses API) defaults `store: true` in the AI SDK,
+          // which causes assistant tool-call parts carrying providerMetadata.openai.itemId
+          // to be serialized as `{ type: "item_reference", id }` instead of full
+          // `function_call` items. Those references are then stripped by the Codex
+          // pipeline (Codex CLI never persisted them server-side), leaving orphan
+          // `function_call_output` items whose names get synthesized as phantoms
+          // like `functions.tool`. Forcing `store: false` at the LanguageModel level
+          // makes the AI SDK emit complete `function_call` items with real names.
+          ...(provider === "codex"
+            ? { providerOptions: { openai: { store: false } } }
+            : {}),
           ...(providerSupportsFeature("tools", provider) ? {
             tools: allToolsWithMCP,
             activeTools: initialActiveToolNames as (keyof typeof allToolsWithMCP)[],
