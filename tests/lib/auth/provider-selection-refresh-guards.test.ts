@@ -22,18 +22,15 @@ import {
   saveAntigravityToken,
   type AntigravityOAuthToken,
 } from "@/lib/auth/antigravity-auth";
-import {
-  invalidateCodexAuthCache,
-  refreshCodexToken,
-  saveCodexToken,
-  type CodexOAuthToken,
-} from "@/lib/auth/codex-auth";
+
+// Codex no longer has selene-side refresh/save — the CLIProxyAPI sidecar
+// owns the Codex OAuth lifecycle, so the codex guards moved to
+// tests/lib/ai/providers/cliproxy/codex-bridge.test.ts.
 
 describe("Auth Refresh Provider Selection Guards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     invalidateAntigravityAuthCache();
-    invalidateCodexAuthCache();
     settingsMocks.state.settings = {};
   });
 
@@ -81,51 +78,5 @@ describe("Auth Refresh Provider Selection Guards", () => {
     saveAntigravityToken(token, "user@example.com", true);
 
     expect(settingsMocks.state.settings.llmProvider).toBe("antigravity");
-  });
-
-  it("does not switch to codex on token refresh", async () => {
-    settingsMocks.state.settings = {
-      llmProvider: "antigravity",
-      codexAuth: { isAuthenticated: true, email: "user@example.com", accountId: "acc_123" },
-      codexToken: {
-        type: "oauth",
-        access_token: "old-codex-token",
-        refresh_token: "codex-refresh-token",
-        expires_at: Date.now() - 1_000,
-      } satisfies CodexOAuthToken,
-    };
-
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        access_token: "new-codex-token",
-        refresh_token: "new-codex-refresh",
-        expires_in: 3600,
-      }),
-    } as Response);
-
-    const refreshed = await refreshCodexToken();
-
-    expect(refreshed).toBe(true);
-    expect(settingsMocks.state.settings.llmProvider).toBe("antigravity");
-    expect(settingsMocks.state.settings.codexToken.access_token).toBe("new-codex-token");
-  });
-
-  it("switches to codex only on explicit save", () => {
-    settingsMocks.state.settings = {
-      llmProvider: "antigravity",
-      codexAuth: { isAuthenticated: false },
-    };
-
-    const token: CodexOAuthToken = {
-      type: "oauth",
-      access_token: "explicit-codex-token",
-      refresh_token: "explicit-codex-refresh",
-      expires_at: Date.now() + 3600_000,
-    };
-
-    saveCodexToken(token, "user@example.com", "acc_123", true);
-
-    expect(settingsMocks.state.settings.llmProvider).toBe("codex");
   });
 });

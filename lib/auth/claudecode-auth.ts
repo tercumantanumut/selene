@@ -13,7 +13,7 @@ import {
   deleteAllClaudeCredentials,
   listClaudeCredentials,
 } from "@/lib/ai/providers/cliproxy/credentials";
-import { getLoginState } from "@/lib/ai/providers/cliproxy/login";
+import { getClaudeLoginState } from "@/lib/ai/providers/cliproxy/login";
 
 const TOKEN_SOURCE = "cliproxyapi-oauth";
 
@@ -111,7 +111,7 @@ export async function getClaudeCodeAuthStatus(): Promise<ClaudeCodeAuthStatus> {
     return status;
   }
 
-  const loginState = getLoginState();
+  const loginState = getClaudeLoginState();
 
   if (creds.length === 0) {
     const status: ClaudeCodeAuthStatus = {

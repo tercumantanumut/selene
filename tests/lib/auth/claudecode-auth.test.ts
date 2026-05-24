@@ -13,7 +13,7 @@ vi.mock("@/lib/settings/settings-manager", () => ({
 }));
 
 vi.mock("@/lib/ai/providers/cliproxy/login", () => ({
-  getLoginState: vi.fn(() => null),
+  getClaudeLoginState: vi.fn(() => null),
 }));
 
 import {

@@ -17,15 +17,29 @@ export {
   listClaudeCredentials,
   hasClaudeCredential,
   deleteAllClaudeCredentials,
+  listCodexCredentials,
+  hasCodexCredential,
+  deleteAllCodexCredentials,
   type ClaudeCredential,
+  type CodexCredential,
+  type SidecarCredential,
 } from "./credentials";
 
 export {
   startClaudeLogin,
-  awaitLoginCompletion,
-  getLoginState,
+  awaitClaudeLoginCompletion,
+  getClaudeLoginState,
   killClaudeLogin,
+  startCodexLogin,
+  awaitCodexLoginCompletion,
+  getCodexLoginState,
+  killCodexLogin,
   type LoginStart,
   type LoginState,
   type LoginStatus,
 } from "./login";
+
+export {
+  ensureCodexCredentialBridged,
+  type BridgedCodexCredential,
+} from "./codex-bridge";

@@ -1,9 +1,11 @@
 /**
- * Drives `cliproxyapi -claude-login` from selene's auth route.
+ * Drives `cliproxyapi -<provider>-login` flows from selene's auth routes.
  *
  * The sidecar prints the OAuth URL to stdout and exits on completion or
  * timeout. We capture the URL, expose a stream of `outputLines` for
- * diagnostics, and let the UI poll `getLoginState()` for completion.
+ * diagnostics, and let the UI poll for completion. Two parallel flows
+ * (`claude` and `codex`) are supported with independent state so a user
+ * can log in to both in the same session without collision.
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
@@ -26,43 +28,72 @@ interface LoginSession {
   startedAt: number;
 }
 
-const g = globalThis as typeof globalThis & {
-  __seleneCliproxyLogin?: LoginSession | null;
-};
-if (!("__seleneCliproxyLogin" in g)) g.__seleneCliproxyLogin = null;
-
-function getActive(): LoginSession | null {
-  return g.__seleneCliproxyLogin ?? null;
-}
-
-function setActive(state: LoginSession | null): void {
-  g.__seleneCliproxyLogin = state;
-}
-
-/** Kill any in-flight login attempt. Safe to call when nothing is active. */
-export function killClaudeLogin(): void {
-  const active = getActive();
-  if (!active) return;
-  if (active.child.exitCode === null && !active.child.killed) {
-    active.child.kill("SIGTERM");
-  }
-  setActive(null);
-}
-
 export interface LoginStart {
   url: string | null;
   output: string[];
 }
 
-/**
- * Spawn the sidecar in `-claude-login` mode. Resolves once the URL is
- * captured (or the timeout elapses). The process continues running until the
- * OAuth callback fires — call `awaitLoginCompletion()` to block on that.
- */
-export async function startClaudeLogin(): Promise<LoginStart> {
-  killClaudeLogin();
+export interface LoginState {
+  active: boolean;
+  status: LoginStatus;
+  url: string | null;
+  output: string[];
+  errorMessage?: string;
+}
+
+type LoginFlavor = "claude" | "codex";
+
+interface FlavorDef {
+  /** CLI flag passed to `cliproxyapi`. */
+  flag: string;
+  /** Regex matching the upstream success line we look for in stdout. */
+  successPattern: RegExp;
+  /** Global state slot key. */
+  stateKey: string;
+}
+
+const FLAVORS: Record<LoginFlavor, FlavorDef> = {
+  claude: {
+    flag: "-claude-login",
+    successPattern: /claude authentication successful/i,
+    stateKey: "__seleneCliproxyClaudeLogin",
+  },
+  codex: {
+    flag: "-codex-login",
+    successPattern: /codex (login|authentication) successful/i,
+    stateKey: "__seleneCliproxyCodexLogin",
+  },
+};
+
+type GlobalSlots = typeof globalThis & {
+  [k: string]: LoginSession | null | undefined;
+};
+
+function getActive(flavor: LoginFlavor): LoginSession | null {
+  const g = globalThis as GlobalSlots;
+  const slot = FLAVORS[flavor].stateKey;
+  return (g[slot] as LoginSession | null | undefined) ?? null;
+}
+
+function setActive(flavor: LoginFlavor, state: LoginSession | null): void {
+  const g = globalThis as GlobalSlots;
+  g[FLAVORS[flavor].stateKey] = state;
+}
+
+function killActive(flavor: LoginFlavor): void {
+  const active = getActive(flavor);
+  if (!active) return;
+  if (active.child.exitCode === null && !active.child.killed) {
+    active.child.kill("SIGTERM");
+  }
+  setActive(flavor, null);
+}
+
+async function spawnLoginFlow(flavor: LoginFlavor): Promise<LoginStart> {
+  killActive(flavor);
 
   const { configPath } = ensureCliproxyConfig();
+  const def = FLAVORS[flavor];
 
   const { env } = buildEnvironmentForTarget({
     target: "claude-sdk",
@@ -72,7 +103,7 @@ export async function startClaudeLogin(): Promise<LoginStart> {
 
   const child = spawn(
     CLIPROXY_BINARY,
-    ["-claude-login", "-no-browser", "-config", configPath],
+    [def.flag, "-no-browser", "-config", configPath],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: env as NodeJS.ProcessEnv,
@@ -88,7 +119,7 @@ export async function startClaudeLogin(): Promise<LoginStart> {
     status: "pending",
     startedAt: Date.now(),
   };
-  setActive(session);
+  setActive(flavor, session);
 
   const onData = (chunk: Buffer): void => {
     const text = chunk.toString();
@@ -96,10 +127,8 @@ export async function startClaudeLogin(): Promise<LoginStart> {
       const trimmed = line.trim();
       if (!trimmed) continue;
       session.outputLines.push(trimmed);
-      if (/claude authentication successful/i.test(trimmed)) {
+      if (def.successPattern.test(trimmed)) {
         session.status = "success";
-      } else if (/error|failed|unable/i.test(trimmed) && session.status === "pending") {
-        // soft signal — don't overwrite a later "successful" line
       }
     }
     if (!session.url) {
@@ -119,8 +148,8 @@ export async function startClaudeLogin(): Promise<LoginStart> {
   child.once("exit", (code) => {
     if (session.status === "pending") {
       if (code === 0) {
-        // No explicit success line but exit-0 implies completion; defer to
-        // the credentials check the caller will do next.
+        // No explicit success line but exit-0 implies completion; the caller
+        // re-reads the credentials directory to confirm.
         session.status = "success";
       } else {
         session.status = "error";
@@ -137,17 +166,8 @@ export async function startClaudeLogin(): Promise<LoginStart> {
   return { url: session.url, output: [...session.outputLines] };
 }
 
-export interface LoginState {
-  active: boolean;
-  status: LoginStatus;
-  url: string | null;
-  output: string[];
-  errorMessage?: string;
-}
-
-/** Snapshot the current login session, or `null` if nothing is in flight. */
-export function getLoginState(): LoginState | null {
-  const active = getActive();
+function snapshotState(flavor: LoginFlavor): LoginState | null {
+  const active = getActive(flavor);
   if (!active) return null;
   return {
     active: active.child.exitCode === null && !active.child.killed,
@@ -158,18 +178,51 @@ export function getLoginState(): LoginState | null {
   };
 }
 
-/**
- * Block until the active login session reaches a terminal state, or `timeoutMs`
- * elapses. If no session is active, resolves immediately with `null`.
- */
-export async function awaitLoginCompletion(
-  timeoutMs = 120_000,
+async function awaitFlavor(
+  flavor: LoginFlavor,
+  timeoutMs: number,
 ): Promise<LoginState | null> {
-  const active = getActive();
+  const active = getActive(flavor);
   if (!active) return null;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && active.status === "pending") {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  return getLoginState();
+  return snapshotState(flavor);
+}
+
+// ── Claude flavor public API ────────────────────────────────────────────────
+
+export function startClaudeLogin(): Promise<LoginStart> {
+  return spawnLoginFlow("claude");
+}
+
+export function getClaudeLoginState(): LoginState | null {
+  return snapshotState("claude");
+}
+
+export function awaitClaudeLoginCompletion(timeoutMs = 120_000): Promise<LoginState | null> {
+  return awaitFlavor("claude", timeoutMs);
+}
+
+export function killClaudeLogin(): void {
+  killActive("claude");
+}
+
+// ── Codex flavor public API ─────────────────────────────────────────────────
+
+export function startCodexLogin(): Promise<LoginStart> {
+  return spawnLoginFlow("codex");
+}
+
+export function getCodexLoginState(): LoginState | null {
+  return snapshotState("codex");
+}
+
+export function awaitCodexLoginCompletion(timeoutMs = 120_000): Promise<LoginState | null> {
+  return awaitFlavor("codex", timeoutMs);
+}
+
+export function killCodexLogin(): void {
+  killActive("codex");
 }

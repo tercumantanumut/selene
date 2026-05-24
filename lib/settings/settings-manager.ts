@@ -88,14 +88,28 @@ export interface AppSettings {
         project_id?: string; // Antigravity project ID from loadCodeAssist
     };
 
-    // OpenAI Codex OAuth authentication (ChatGPT Plus/Pro)
+    // OpenAI Codex auth state — backed by the CLIProxyAPI sidecar's
+    // credential dir; we cache a snapshot here so the settings UI doesn't
+    // round-trip the sidecar on every render. Token storage itself lives
+    // inside the sidecar (~/.cli-proxy-api/codex-*.json).
     codexAuth?: {
         isAuthenticated: boolean;
         email?: string;
         accountId?: string;
+        plan?: string;
         expiresAt?: number;
         lastRefresh?: number;
+        tokenSource?: string;
+        authUrl?: string;
+        output?: string[];
+        error?: string;
     };
+    /**
+     * Legacy field — selene's pre-refactor PKCE flow stored its OAuth token
+     * here. `ensureCodexCredentialBridged()` migrates it into the sidecar's
+     * auth-dir on first run; new logins go straight to the sidecar so this
+     * field stays empty going forward. Kept in the type for back-compat.
+     */
     codexToken?: {
         type: "oauth";
         access_token: string;
