@@ -13,6 +13,7 @@ import * as fs from "fs";
 import { debugLog, debugError, debugVerbose, debugWarn, setLogRendererWindow } from "./debug-logger";
 import { buildPersistedLocaleCookie } from "@/lib/i18n/persisted-locale";
 import { getSetting } from "@/lib/settings/settings-manager";
+import { isElectronInternalUrl } from "./local-url-policy";
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -442,8 +443,9 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
 
   // Handle external links - open in default browser
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-    // Allow same-origin navigation (HTTP or HTTPS localhost)
-    if (targetUrl.startsWith("http://localhost") || targetUrl.startsWith("https://localhost") || targetUrl.startsWith("file://")) {
+    // Keep Selene-owned local URLs inside Electron. Electron trusts Selene's
+    // self-signed loopback certificate, but the system browser does not.
+    if (isElectronInternalUrl(targetUrl)) {
       return { action: "allow" };
     }
     // Open external links in default browser
@@ -454,12 +456,9 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
   // Handle navigation for external links
   mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
     debugLog("[Window] will-navigate:", targetUrl);
-    const parsedUrl = new URL(targetUrl);
-    // Allow localhost and file protocol
-    if (
-      parsedUrl.hostname === "localhost" ||
-      parsedUrl.protocol === "file:"
-    ) {
+    // Keep Selene-owned local URLs inside Electron. This includes the production
+    // app origin https://127.0.0.1:3456 and generated /api/media links.
+    if (isElectronInternalUrl(targetUrl)) {
       return;
     }
     // Block and open external URLs in default browser
