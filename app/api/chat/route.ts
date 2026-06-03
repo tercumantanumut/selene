@@ -82,7 +82,7 @@ import type { InjectionStreamWriter } from "@/lib/ai/streaming/injection-stream-
 import { generateNextAssistantMessageId } from "@/lib/ai/streaming/injection-stream-emitter";
 import {
   findOrphanToolCalls,
-  buildSyntheticModelToolResults,
+  insertSyntheticToolResultsAfterMatchingAssistant,
 } from "@/lib/ai/providers/message-shaping";
 
 // ── Extracted utility modules ─────────────────────────────────────────────────
@@ -1405,23 +1405,16 @@ export async function POST(req: Request) {
               // every other model-facing system/replay string in this file —
               // see `canonical-content.ts#makeEphemeralStubResult` for the same
               // rationale).
-              const syntheticShim: ModelMessage[] =
-                orphanToolCalls.length > 0
-                  ? [
-                      {
-                        role: "tool",
-                        content: buildSyntheticModelToolResults(
-                          orphanToolCalls,
-                          "Cancelled — user interjected with a new message",
-                        ),
-                      } as unknown as ModelMessage,
-                    ]
-                  : [];
+              const messagesWithSyntheticResults = insertSyntheticToolResultsAfterMatchingAssistant(
+                stepMessages as ModelMessage[],
+                orphanToolCalls,
+                "Cancelled — user interjected with a new message",
+              );
 
               return {
                 activeTools: currentActiveTools as string[],
                 messages: routeMultimodalReadFileResults(
-                  [...stepMessages, ...syntheticShim, injectedUserMessage],
+                  [...messagesWithSyntheticResults, injectedUserMessage],
                   provider,
                 ),
               };
@@ -1490,18 +1483,11 @@ export async function POST(req: Request) {
                     content: buildUserInjectionContent(delegationPrompts),
                   };
 
-                  const syntheticShim: ModelMessage[] =
-                    orphanToolCalls.length > 0
-                      ? [
-                          {
-                            role: "tool",
-                            content: buildSyntheticModelToolResults(
-                              orphanToolCalls,
-                              "Cancelled — delegation result arrived while tool call was in flight",
-                            ),
-                          } as unknown as ModelMessage,
-                        ]
-                      : [];
+                  const messagesWithSyntheticResults = insertSyntheticToolResultsAfterMatchingAssistant(
+                    stepMessages as ModelMessage[],
+                    orphanToolCalls,
+                    "Cancelled — delegation result arrived while tool call was in flight",
+                  );
 
                   // If more delegations are still running, force the model to
                   // call a tool (even a no-op) so the loop continues to the next
@@ -1512,7 +1498,7 @@ export async function POST(req: Request) {
                   const result: Record<string, unknown> = {
                     activeTools: currentActiveTools as string[],
                     messages: routeMultimodalReadFileResults(
-                      [...stepMessages, ...syntheticShim, injectedUserMessage],
+                      [...messagesWithSyntheticResults, injectedUserMessage],
                       provider,
                     ),
                   };
