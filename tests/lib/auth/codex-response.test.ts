@@ -37,4 +37,23 @@ describe("convertSseToJson", () => {
       text: "compact ok",
     });
   });
+
+  it("parses Codex SSE data fields without a space after the colon", async () => {
+    const json = await convertSseBody(
+      'event: response.reasoning_summary_text.delta\r\n' +
+      'data:{"type":"response.reasoning_summary_text.delta","delta":"ignore reasoning summary"}\r\n\r\n' +
+      'event: response.output_text.delta\r\n' +
+      'data:{"type":"response.output_text.delta","delta":"enhanced"}\r\n\r\n' +
+      'event: response.output_text.delta\r\n' +
+      'data:{"type":"response.output_text.delta","delta":" prompt"}\r\n\r\n' +
+      'event: response.done\r\n' +
+      'data:{"type":"response.done","response":{"id":"resp_no_space","object":"response","created_at":0,"model":"gpt-5.4","status":"completed","output":[],"usage":null}}\r\n\r\n'
+    );
+
+    expect(json.status).toBe("completed");
+    expect(json.output[0].content[0]).toMatchObject({
+      type: "output_text",
+      text: "enhanced prompt",
+    });
+  });
 });

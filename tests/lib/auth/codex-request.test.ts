@@ -96,6 +96,24 @@ describe("transformCodexRequest", () => {
     expect(ids).not.toContain("gpt-5.4-none");
   });
 
+  it("preserves non-streaming generateText mode instead of forcing SSE", async () => {
+    const transformed = await transformCodexRequest(
+      { model: "gpt-5.5-low", input: [] } as Record<string, any>,
+      "",
+    );
+
+    expect(transformed.stream).toBe(false);
+  });
+
+  it("preserves streaming mode for streamText calls", async () => {
+    const transformed = await transformCodexRequest(
+      { model: "gpt-5.5-low", input: [], stream: true } as Record<string, any>,
+      "",
+    );
+
+    expect(transformed.stream).toBe(true);
+  });
+
   it("normalizes CLIProxyAPI suffix variants to supported base model IDs", () => {
     expect(normalizeCodexModel("gpt-5.5-xhigh")).toBe("gpt-5.5");
     expect(normalizeCodexModel("gpt-5.4-mini-high")).toBe("gpt-5.4-mini");

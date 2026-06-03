@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { generateText } from "ai";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +42,7 @@ describe("codex-client", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     rmSync(dataDir, { recursive: true, force: true });
     if (prev === undefined) delete process.env.LOCAL_DATA_PATH;
     else process.env.LOCAL_DATA_PATH = prev;
@@ -85,5 +87,30 @@ describe("codex-client", () => {
     expect(provider("gpt-5.5")).toBeTruthy();
     expect(provider("gpt-5.4")).toBeTruthy();
     expect(provider("gpt-5.4-mini")).toBeTruthy();
+  });
+
+  it("converts Codex SSE to JSON for non-streaming generateText callers", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body === "string") {
+        requestBodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      }
+
+      return new Response(
+        'event: response.done\n' +
+          'data: {"type":"response.done","response":{"id":"resp_test","object":"response","created_at":0,"model":"gpt-5.5","status":"completed","output":[{"type":"message","id":"msg_test","status":"completed","role":"assistant","content":[{"type":"output_text","text":"enhanced ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}}\n\n',
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }));
+
+    const provider = createCodexProvider();
+    const result = await generateText({
+      model: provider("gpt-5.5-low"),
+      prompt: "enhance this prompt",
+    });
+
+    expect(result.text).toBe("enhanced ok");
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0].stream).toBe(false);
   });
 });

@@ -43,9 +43,10 @@ function parseSseStream(sseText: string): ParsedSseResult {
   let doneResponse: unknown = null;
   let hadDoneEvent = false;
 
-  for (const line of lines) {
-    if (!line.startsWith("data: ")) continue;
-    const payload = line.slice(6);
+  for (const rawLine of lines) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trimStart();
     if (!payload) continue;
 
     try {
