@@ -87,7 +87,7 @@ describe("cliproxy/codex-bridge — legacy → sidecar migration", () => {
     expect(written.expired).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
   });
 
-  it("is a no-op when a sidecar credential already exists (sidecar owns the token)", async () => {
+  it("returns the existing sidecar credential without overwriting it when one already exists", async () => {
     const existing = join(authDir, "codex-user@example.com-prolite.json");
     writeFileSync(
       existing,
@@ -106,7 +106,12 @@ describe("cliproxy/codex-bridge — legacy → sidecar migration", () => {
 
     const result = await ensureCodexCredentialBridged();
 
-    expect(result).toBeNull();
+    expect(result).toEqual({
+      filePath: existing,
+      email: "user@example.com",
+      accountId: "acct-123",
+      plan: "prolite",
+    });
     expect(readFileSync(existing, "utf8")).toBe(before);
   });
 

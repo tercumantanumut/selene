@@ -23,20 +23,32 @@
  * it in place so users can downgrade gracefully if needed.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import {
   decodeCodexJWT,
 } from "@/lib/auth/codex-auth";
 import { getCliproxyAuthDir } from "./config";
-import { hasCodexCredential } from "./credentials";
+import { listCodexCredentials } from "./credentials";
 
 export interface BridgedCodexCredential {
   filePath: string;
   email: string;
-  accountId: string;
+  accountId?: string;
   plan?: string;
+}
+
+function readExistingCredentialAccountId(filePath: string): string | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as { account_id?: unknown };
+    return typeof parsed.account_id === "string" && parsed.account_id.trim()
+      ? parsed.account_id.trim()
+      : undefined;
+  } catch {
+    // The filename is enough to prove the sidecar has a Codex credential.
+    return undefined;
+  }
 }
 
 interface CodexCredentialFile {
@@ -88,8 +100,15 @@ function buildCredentialFilename(email: string, planType: string | undefined): s
  */
 export async function ensureCodexCredentialBridged(): Promise<BridgedCodexCredential | null> {
   // Fast path: sidecar already has a credential file → don't overwrite.
-  if (await hasCodexCredential()) {
-    return null;
+  const existingCredentials = await listCodexCredentials();
+  if (existingCredentials.length > 0) {
+    const primary = existingCredentials[0];
+    return {
+      filePath: primary.filePath,
+      email: primary.email,
+      accountId: readExistingCredentialAccountId(primary.filePath),
+      plan: primary.plan,
+    };
   }
 
   const settings = loadSettings();
