@@ -62,7 +62,7 @@ function getReasoningConfig(
     !isCodexMini;
 
   const supportsXhigh = isGpt54 || isGpt53General || isGpt53Codex || isGpt52General || isGpt52Codex || isCodexMax;
-  const supportsNone = isGpt54 || isGpt53General || isGpt52General || isGpt51General;
+  const supportsNone = isGpt52General || isGpt51General;
 
   const defaultEffort: ReasoningEffort = isGpt54
       ? "medium"

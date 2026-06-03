@@ -1,25 +1,34 @@
 export const CODEX_MODEL_IDS = [
   // GPT-5.5 (released 2026-04-23 — 1M context, successor to 5.4)
   "gpt-5.5",
-  "gpt-5.5-none",
   "gpt-5.5-low",
   "gpt-5.5-medium",
   "gpt-5.5-high",
   "gpt-5.5-xhigh",
-  "gpt-5.5-pro",
   // GPT-5.4
   "gpt-5.4",
-  "gpt-5.4-none",
   "gpt-5.4-low",
   "gpt-5.4-medium",
   "gpt-5.4-high",
   "gpt-5.4-xhigh",
+  // GPT-5.4 Mini
+  "gpt-5.4-mini",
+  "gpt-5.4-mini-low",
+  "gpt-5.4-mini-medium",
+  "gpt-5.4-mini-high",
+  "gpt-5.4-mini-xhigh",
   // GPT-5.3 Codex
   "gpt-5.3-codex",
   "gpt-5.3-codex-low",
   "gpt-5.3-codex-medium",
   "gpt-5.3-codex-high",
   "gpt-5.3-codex-xhigh",
+  // GPT-5.3 Codex Spark
+  "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-low",
+  "gpt-5.3-codex-spark-medium",
+  "gpt-5.3-codex-spark-high",
+  "gpt-5.3-codex-spark-xhigh",
   // GPT-5.2 (general)
   "gpt-5.2",
   "gpt-5.2-none",
@@ -33,6 +42,12 @@ export const CODEX_MODEL_IDS = [
   "gpt-5.2-codex-medium",
   "gpt-5.2-codex-high",
   "gpt-5.2-codex-xhigh",
+  // Codex Auto Review
+  "codex-auto-review",
+  "codex-auto-review-low",
+  "codex-auto-review-medium",
+  "codex-auto-review-high",
+  "codex-auto-review-xhigh",
   // GPT-5.1 Codex Max
   "gpt-5.1-codex-max",
   "gpt-5.1-codex-max-low",
@@ -71,25 +86,34 @@ type CodexModelId = (typeof CODEX_MODEL_IDS)[number];
 const MODEL_MAP: Record<string, string> = {
   // GPT-5.5
   "gpt-5.5": "gpt-5.5",
-  "gpt-5.5-none": "gpt-5.5",
   "gpt-5.5-low": "gpt-5.5",
   "gpt-5.5-medium": "gpt-5.5",
   "gpt-5.5-high": "gpt-5.5",
   "gpt-5.5-xhigh": "gpt-5.5",
-  "gpt-5.5-pro": "gpt-5.5-pro",
   // GPT-5.4
   "gpt-5.4": "gpt-5.4",
-  "gpt-5.4-none": "gpt-5.4",
   "gpt-5.4-low": "gpt-5.4",
   "gpt-5.4-medium": "gpt-5.4",
   "gpt-5.4-high": "gpt-5.4",
   "gpt-5.4-xhigh": "gpt-5.4",
+  // GPT-5.4 Mini
+  "gpt-5.4-mini": "gpt-5.4-mini",
+  "gpt-5.4-mini-low": "gpt-5.4-mini",
+  "gpt-5.4-mini-medium": "gpt-5.4-mini",
+  "gpt-5.4-mini-high": "gpt-5.4-mini",
+  "gpt-5.4-mini-xhigh": "gpt-5.4-mini",
   // GPT-5.3 Codex
   "gpt-5.3-codex": "gpt-5.3-codex",
   "gpt-5.3-codex-low": "gpt-5.3-codex",
   "gpt-5.3-codex-medium": "gpt-5.3-codex",
   "gpt-5.3-codex-high": "gpt-5.3-codex",
   "gpt-5.3-codex-xhigh": "gpt-5.3-codex",
+  // GPT-5.3 Codex Spark
+  "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-low": "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-medium": "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-high": "gpt-5.3-codex-spark",
+  "gpt-5.3-codex-spark-xhigh": "gpt-5.3-codex-spark",
   // GPT-5.2
   "gpt-5.2": "gpt-5.2",
   "gpt-5.2-none": "gpt-5.2",
@@ -103,6 +127,12 @@ const MODEL_MAP: Record<string, string> = {
   "gpt-5.2-codex-medium": "gpt-5.2-codex",
   "gpt-5.2-codex-high": "gpt-5.2-codex",
   "gpt-5.2-codex-xhigh": "gpt-5.2-codex",
+  // Codex Auto Review
+  "codex-auto-review": "codex-auto-review",
+  "codex-auto-review-low": "codex-auto-review",
+  "codex-auto-review-medium": "codex-auto-review",
+  "codex-auto-review-high": "codex-auto-review",
+  "codex-auto-review-xhigh": "codex-auto-review",
   // GPT-5.1 Codex Max
   "gpt-5.1-codex-max": "gpt-5.1-codex-max",
   "gpt-5.1-codex-max-low": "gpt-5.1-codex-max",
@@ -138,10 +168,12 @@ const MODEL_MAP: Record<string, string> = {
 
 const BASE_MODEL_LABELS: Record<string, string> = {
   "gpt-5.5": "GPT-5.5",
-  "gpt-5.5-pro": "GPT-5.5 Pro",
   "gpt-5.4": "GPT-5.4",
+  "gpt-5.4-mini": "GPT-5.4 Mini",
   "gpt-5.3-codex": "GPT-5.3 Codex",
+  "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
   "gpt-5.2": "GPT-5.2",
+  "codex-auto-review": "Codex Auto Review",
   "gpt-5.2-codex": "GPT-5.2 Codex",
   "gpt-5.1-codex-max": "GPT-5.1 Codex Max",
   "gpt-5.1-codex": "GPT-5.1 Codex",
@@ -183,17 +215,23 @@ export function normalizeCodexModel(model: string | undefined): string {
 
   const normalized = modelId.toLowerCase();
 
-  if (normalized.includes("gpt-5.5-pro") || normalized.includes("gpt 5.5 pro")) {
-    return "gpt-5.5-pro";
-  }
   if (normalized.includes("gpt-5.5") || normalized.includes("gpt 5.5")) {
     return "gpt-5.5";
+  }
+  if (normalized.includes("gpt-5.4-mini") || normalized.includes("gpt 5.4 mini")) {
+    return "gpt-5.4-mini";
   }
   if (normalized.includes("gpt-5.4") || normalized.includes("gpt 5.4")) {
     return "gpt-5.4";
   }
+  if (normalized.includes("gpt-5.3-codex-spark") || normalized.includes("gpt 5.3 codex spark")) {
+    return "gpt-5.3-codex-spark";
+  }
   if (normalized.includes("gpt-5.3-codex") || normalized.includes("gpt 5.3 codex")) {
     return "gpt-5.3-codex";
+  }
+  if (normalized.includes("codex-auto-review") || normalized.includes("codex auto review")) {
+    return "codex-auto-review";
   }
   if (normalized.includes("gpt-5.2-codex") || normalized.includes("gpt 5.2 codex")) {
     return "gpt-5.2-codex";
