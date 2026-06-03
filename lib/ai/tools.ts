@@ -61,6 +61,17 @@ export {
   createOpenRouterSeedream45Generate,
   createOpenRouterSeedream45Edit,
   createOpenRouterSeedream45Reference,
+  createOpenRouterFlux2FlexImageTool,
+  createOpenRouterGpt5ImageMiniImageTool,
+  createOpenRouterGpt5ImageImageTool,
+  createOpenRouterGemini31FlashImageTool,
+  createOpenRouterGemini3ProImageTool,
+  createOpenRouterFlux2ProImageTool,
+  createOpenRouterFlux2MaxImageTool,
+  createOpenRouterFlux2Klein4BImageTool,
+  createOpenRouterGpt54Image2ImageTool,
+  createOpenRouterGrokImagineImageTool,
+  createOpenRouterSeedream45ImageTool,
   createOpenRouterImageTool,
 } from "@/lib/ai/tools/openrouter-image-tools";
 
@@ -78,6 +89,16 @@ export { createVertexAIVideoTool } from "@/lib/ai/tools/vertex-ai-video-tool";
 
 // OpenRouter video tool (Phase 3 — 10 models, async polling via /api/v1/videos)
 export {
+  createOpenRouterGrokImagineVideoTool,
+  createOpenRouterKlingV3ProVideoTool,
+  createOpenRouterKlingV3StandardVideoTool,
+  createOpenRouterKlingO1VideoTool,
+  createOpenRouterVeo31FastVideoTool,
+  createOpenRouterVeo31LiteVideoTool,
+  createOpenRouterHailuo23VideoTool,
+  createOpenRouterSeedance20FastVideoTool,
+  createOpenRouterSeedance20VideoTool,
+  createOpenRouterWan27VideoTool,
   createOpenRouterVideoTool,
 } from "@/lib/ai/tools/openrouter-video-tools";
 

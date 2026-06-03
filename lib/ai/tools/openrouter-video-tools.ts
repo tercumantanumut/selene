@@ -13,8 +13,10 @@ import { createToolRun, updateToolRun, createImage } from "@/lib/db/queries";
 import { withToolLogging } from "@/lib/ai/tool-registry/logging";
 import {
   openRouterVideoSchema,
+  openRouterVideoModelSchema,
   OPENROUTER_VIDEO_MODELS,
   type OpenRouterVideoInput,
+  type OpenRouterVideoModelInput,
   type OpenRouterVideoResult,
 } from "@/lib/ai/tools/openrouter-video-schemas";
 
@@ -132,10 +134,11 @@ async function pollVideoJob(
 async function executeOpenRouterVideo(
   sessionId: string,
   args: OpenRouterVideoInput,
+  toolName = "openRouterVideo",
 ): Promise<OpenRouterVideoResult> {
   const toolRun = await createToolRun({
     sessionId,
-    toolName: "openRouterVideo",
+    toolName,
     args: args as unknown as Record<string, unknown>,
     status: "running",
   });
@@ -256,6 +259,129 @@ async function executeOpenRouterVideo(
   }
 }
 
+interface VideoModelToolConfig {
+  toolName: string;
+  displayName: string;
+  model: string;
+  capabilitySummary: string;
+  supportedActions: string;
+}
+
+const VIDEO_MODEL_DESCRIPTORS: VideoModelToolConfig[] = [
+  {
+    toolName: "openRouterVideoGrokImagine",
+    displayName: "OpenRouter Video — Grok Imagine",
+    model: OPENROUTER_VIDEO_MODELS.GROK_IMAGINE_VIDEO,
+    capabilitySummary: "text-to-video, image-to-video, and reference-to-video; 1-15s at 24fps.",
+    supportedActions: "generate, animate, reference, check",
+  },
+  {
+    toolName: "openRouterVideoKlingV3Pro",
+    displayName: "OpenRouter Video — Kling v3.0 Pro",
+    model: OPENROUTER_VIDEO_MODELS.KLING_V3_PRO,
+    capabilitySummary: "premium text/image video with first-frame and last-frame controls, 3-15s, optional audio.",
+    supportedActions: "generate, animate, check; first_frame_url and last_frame_url supported",
+  },
+  {
+    toolName: "openRouterVideoKlingV3Standard",
+    displayName: "OpenRouter Video — Kling v3.0 Standard",
+    model: OPENROUTER_VIDEO_MODELS.KLING_V3_STANDARD,
+    capabilitySummary: "balanced text/image video with first-frame and last-frame controls, 3-15s.",
+    supportedActions: "generate, animate, check; first_frame_url and last_frame_url supported",
+  },
+  {
+    toolName: "openRouterVideoKlingO1",
+    displayName: "OpenRouter Video — Kling O1",
+    model: OPENROUTER_VIDEO_MODELS.KLING_O1,
+    capabilitySummary: "cinematic text/image video with first-frame and last-frame controls, 5-10s.",
+    supportedActions: "generate, animate, check; first_frame_url and last_frame_url supported",
+  },
+  {
+    toolName: "openRouterVideoVeo31Fast",
+    displayName: "OpenRouter Video — Veo 3.1 Fast",
+    model: OPENROUTER_VIDEO_MODELS.VEO_31_FAST,
+    capabilitySummary: "Google Veo fast model with native audio plus first-frame and last-frame controls.",
+    supportedActions: "generate, animate, check; first_frame_url and last_frame_url supported",
+  },
+  {
+    toolName: "openRouterVideoVeo31Lite",
+    displayName: "OpenRouter Video — Veo 3.1 Lite",
+    model: OPENROUTER_VIDEO_MODELS.VEO_31_LITE,
+    capabilitySummary: "cheapest Google Veo option with native audio, 4-8s output.",
+    supportedActions: "generate, animate, check",
+  },
+  {
+    toolName: "openRouterVideoHailuo23",
+    displayName: "OpenRouter Video — Hailuo 2.3",
+    model: OPENROUTER_VIDEO_MODELS.HAILUO_23,
+    capabilitySummary: "realistic motion and character animation for text/image video.",
+    supportedActions: "generate, animate, check",
+  },
+  {
+    toolName: "openRouterVideoSeedance20Fast",
+    displayName: "OpenRouter Video — Seedance 2.0 Fast",
+    model: OPENROUTER_VIDEO_MODELS.SEEDANCE_20_FAST,
+    capabilitySummary: "speed-prioritized text/image video with first-frame and last-frame controls.",
+    supportedActions: "generate, animate, check; first_frame_url and last_frame_url supported",
+  },
+  {
+    toolName: "openRouterVideoSeedance20",
+    displayName: "OpenRouter Video — Seedance 2.0",
+    model: OPENROUTER_VIDEO_MODELS.SEEDANCE_20,
+    capabilitySummary: "character consistency, camera control, first/last-frame controls, and references.",
+    supportedActions: "generate, animate, reference, check; first_frame_url and last_frame_url supported",
+  },
+  {
+    toolName: "openRouterVideoWan27",
+    displayName: "OpenRouter Video — Wan 2.7",
+    model: OPENROUTER_VIDEO_MODELS.WAN_27,
+    capabilitySummary: "text/image/reference video with first-frame and last-frame controls.",
+    supportedActions: "generate, animate, reference, check; first_frame_url and last_frame_url supported",
+  },
+];
+
+function createOpenRouterVideoModelTool(sessionId: string, config: VideoModelToolConfig) {
+  return tool({
+    description: `${config.displayName}: ${config.capabilitySummary}
+
+The selected tool fixes the provider/model to ${config.model}; do not pass a model parameter.
+
+**Supported actions and parameters:** ${config.supportedActions}.
+
+- action="generate" → text-to-video (prompt required)
+- action="animate" → image-to-video (prompt + image_url)
+- action="reference" → reference-to-video when supported (prompt + reference_image_urls)
+- action="check" → poll an existing OpenRouter job with job_id or polling_url
+
+Optional fields are model-dependent: duration, aspect_ratio, first_frame_url, last_frame_url.`,
+    inputSchema: openRouterVideoModelSchema,
+    execute: withToolLogging(config.toolName, sessionId, (args: OpenRouterVideoModelInput) =>
+      executeOpenRouterVideo(sessionId, { ...args, model: config.model } as OpenRouterVideoInput, config.toolName)
+    ),
+  });
+}
+
+export const createOpenRouterGrokImagineVideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[0]);
+export const createOpenRouterKlingV3ProVideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[1]);
+export const createOpenRouterKlingV3StandardVideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[2]);
+export const createOpenRouterKlingO1VideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[3]);
+export const createOpenRouterVeo31FastVideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[4]);
+export const createOpenRouterVeo31LiteVideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[5]);
+export const createOpenRouterHailuo23VideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[6]);
+export const createOpenRouterSeedance20FastVideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[7]);
+export const createOpenRouterSeedance20VideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[8]);
+export const createOpenRouterWan27VideoTool = (sessionId: string) =>
+  createOpenRouterVideoModelTool(sessionId, VIDEO_MODEL_DESCRIPTORS[9]);
+
 // ---------------------------------------------------------------------------
 // Unified tool creator (Phase 3 — 10 models, 4 actions)
 // ---------------------------------------------------------------------------
@@ -264,7 +390,7 @@ export function createOpenRouterVideoTool(sessionId: string) {
   const executeWithLogging = withToolLogging(
     "openRouterVideo",
     sessionId,
-    (args: OpenRouterVideoInput) => executeOpenRouterVideo(sessionId, args),
+    (args: OpenRouterVideoInput) => executeOpenRouterVideo(sessionId, args, "openRouterVideo"),
   );
 
   return tool({

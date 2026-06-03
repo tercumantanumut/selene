@@ -67,6 +67,73 @@ export const OPENROUTER_VIDEO_MODELS = {
 // Unified Multi-Action Schema
 // ==========================================================================
 
+
+export interface OpenRouterVideoModelInput {
+  action: "generate" | "animate" | "reference" | "check";
+  prompt?: string;
+  job_id?: string;
+  polling_url?: string;
+  image_url?: string;
+  reference_image_urls?: string[];
+  first_frame_url?: string;
+  last_frame_url?: string;
+  duration?: number;
+  aspect_ratio?: "16:9" | "9:16" | "1:1" | "4:3" | "3:4";
+}
+
+export const openRouterVideoModelSchema = jsonSchema<OpenRouterVideoModelInput>({
+  type: "object",
+  title: "OpenRouterVideoModelInput",
+  description: "Per-model OpenRouter video input schema. The selected tool fixes the provider/model; choose text-to-video, image-to-video, reference-to-video, or check.",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["generate", "animate", "reference", "check"],
+      description: "'generate'=text-to-video, 'animate'=image-to-video (needs image_url), 'reference'=reference-to-video (needs reference_image_urls when supported by the selected model), 'check'=poll an existing job.",
+    },
+    prompt: {
+      type: "string",
+      description: "Text description of the video to generate. Required for generate/animate/reference; not needed for check.",
+    },
+    job_id: {
+      type: "string",
+      description: "Job ID from a previous request. Used with action='check'.",
+    },
+    polling_url: {
+      type: "string",
+      description: "Polling URL from a previous request. Overrides job_id when both are set.",
+    },
+    image_url: {
+      type: "string",
+      description: "Image URL for image-to-video workflows (action='animate'). Animates a still image.",
+    },
+    reference_image_urls: {
+      type: "array",
+      items: { type: "string" },
+      description: "Reference image URLs for style/content guidance. Required for action='reference' on models that support references.",
+    },
+    first_frame_url: {
+      type: "string",
+      description: "First frame image URL for frame-to-video transitions when supported by the selected model.",
+    },
+    last_frame_url: {
+      type: "string",
+      description: "Last frame image URL for guided transitions when supported by the selected model.",
+    },
+    duration: {
+      type: "number",
+      description: "Video duration in seconds (model-dependent).",
+    },
+    aspect_ratio: {
+      type: "string",
+      enum: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+      description: "Output aspect ratio (model-dependent).",
+    },
+  },
+  required: ["action"],
+  additionalProperties: false,
+});
+
 export const openRouterVideoSchema = jsonSchema<OpenRouterVideoInput>({
   type: "object",
   title: "OpenRouterVideoInput",

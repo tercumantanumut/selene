@@ -102,6 +102,38 @@ export interface OpenRouterImageInput {
   reference_strength?: number;
 }
 
+
+export interface OpenRouterImageModelInput {
+  action: "generate" | "edit" | "reference";
+  prompt: string;
+  aspect_ratio?: "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
+  source_image_urls?: string[];
+  mask_url?: string;
+  reference_image_urls?: string[];
+  reference_strength?: number;
+}
+
+export const openRouterImageModelSchema = jsonSchema<OpenRouterImageModelInput>({
+  type: "object",
+  title: "OpenRouterImageModelInput",
+  description: "Per-model OpenRouter image input schema. The selected tool fixes the provider/model; choose an action for generate, edit, or reference-guided generation.",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["generate", "edit", "reference"],
+      description: "Operation to perform. 'generate'=text-to-image, 'edit'=image-to-image editing (needs source_image_urls), 'reference'=reference-guided generation (needs reference_image_urls)."
+    },
+    prompt: { type: "string", description: "Text prompt. generate: describe the image. edit: describe changes. reference: describe output guided by references." },
+    aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"], description: "Output aspect ratio (optional)." },
+    source_image_urls: { type: "array", items: { type: "string" }, minItems: 1, description: "Image URLs to edit. REQUIRED for action='edit'. Supports multiple images for batch editing." },
+    mask_url: { type: "string", description: "Optional mask for inpainting (white=edit, black=preserve). Edit action only." },
+    reference_image_urls: { type: "array", items: { type: "string" }, minItems: 1, description: "Reference image URLs for style/content guidance. REQUIRED for action='reference'. Supports multiple images." },
+    reference_strength: { type: "number", minimum: 0, maximum: 1, description: "Reference influence strength (0.0-1.0, optional). Reference action only." },
+  },
+  required: ["action", "prompt"],
+  additionalProperties: false,
+});
+
 export const openRouterImageSchema = jsonSchema<OpenRouterImageInput>({
   type: "object",
   title: "OpenRouterImageInput",

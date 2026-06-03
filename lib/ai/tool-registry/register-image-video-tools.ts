@@ -37,6 +37,17 @@ import {
   createOpenRouterSeedream45Edit,
   createOpenRouterSeedream45Reference,
   createOpenRouterImageTool,
+  createOpenRouterFlux2FlexImageTool,
+  createOpenRouterGpt5ImageMiniImageTool,
+  createOpenRouterGpt5ImageImageTool,
+  createOpenRouterGemini31FlashImageTool,
+  createOpenRouterGemini3ProImageTool,
+  createOpenRouterFlux2ProImageTool,
+  createOpenRouterFlux2MaxImageTool,
+  createOpenRouterFlux2Klein4BImageTool,
+  createOpenRouterGpt54Image2ImageTool,
+  createOpenRouterGrokImagineImageTool,
+  createOpenRouterSeedream45ImageTool,
   createWan22ImagenTool,
   createWan22PixelVideoTool,
   createWan22VideoTool,
@@ -44,6 +55,16 @@ import {
   createEditCodexImageTool,
   createReferenceCodexImageTool,
   createCodexImageTool,
+  createOpenRouterGrokImagineVideoTool,
+  createOpenRouterKlingV3ProVideoTool,
+  createOpenRouterKlingV3StandardVideoTool,
+  createOpenRouterKlingO1VideoTool,
+  createOpenRouterVeo31FastVideoTool,
+  createOpenRouterVeo31LiteVideoTool,
+  createOpenRouterHailuo23VideoTool,
+  createOpenRouterSeedance20FastVideoTool,
+  createOpenRouterSeedance20VideoTool,
+  createOpenRouterWan27VideoTool,
   createOpenRouterVideoTool,
 } from "../tools";
 import { createRunwayVideoTool } from "../tools/runway-video-tool";
@@ -554,7 +575,7 @@ Advanced reference-guided generation and style transfer. Adjust reference_streng
 registry.register(
   "openRouterImage",
   {
-    displayName: "OpenRouter Image",
+    displayName: "OpenRouter Image (11 models)",
     category: "image-generation",
     keywords: [
       "generate", "create", "image", "edit", "modify", "transform", "reference",
@@ -563,7 +584,7 @@ registry.register(
       "seedream", "bytedance", "try on", "virtual try-on",
       "generate image", "edit image", "create image", "image generation",
     ],
-    shortDescription: "Generate, edit, or reference images using 11 OpenRouter models through one unified tool",
+    shortDescription: "Unified generate, edit, and reference image workflows across 11 OpenRouter models",
     fullInstructions: `## OpenRouter Image (Unified)
 
 Single tool for all OpenRouter image operations. Choose action + model:
@@ -593,6 +614,164 @@ Single tool for all OpenRouter image operations. Choose action + model:
   } satisfies ToolMetadata,
   ({ sessionId }) => createOpenRouterImageTool(sessionId!)
 );
+
+
+// ============================================================================
+// PER-MODEL UNIFIED OPENROUTER IMAGE TOOLS
+// One selectable tool per provider/model; each supports generate/edit/reference.
+// ============================================================================
+
+const openRouterImageModelTools = [
+  {
+    id: "openRouterImageFlux2Flex",
+    displayName: "OpenRouter Image — Flux.2 Flex",
+    keywords: ["image", "openrouter", "flux", "flux.2", "flex", "generate", "edit", "reference", "text", "typography"],
+    shortDescription: "Flux.2 Flex image model: generate, edit, reference; strongest Flux option for text/typography",
+    instructions: `## OpenRouter Image — Flux.2 Flex
+
+Per-model image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for high-quality versatile images and text/typography rendering. Use source_image_urls for edits, reference_image_urls for reference-guided generation, and aspect_ratio for layout.`,
+    create: createOpenRouterFlux2FlexImageTool,
+  },
+  {
+    id: "openRouterImageGpt5Mini",
+    displayName: "OpenRouter Image — GPT-5 Image Mini",
+    keywords: ["image", "openrouter", "openai", "gpt", "gpt-5", "mini", "generate", "edit", "reference", "fast"],
+    shortDescription: "GPT-5 Image Mini: fast generate, edit, and reference workflows",
+    instructions: `## OpenRouter Image — GPT-5 Image Mini
+
+Per-model OpenAI image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for quick iterations and efficient image workflows. Use source_image_urls for edits and reference_image_urls for guided generation.`,
+    create: createOpenRouterGpt5ImageMiniImageTool,
+  },
+  {
+    id: "openRouterImageGpt5",
+    displayName: "OpenRouter Image — GPT-5 Image",
+    keywords: ["image", "openrouter", "openai", "gpt", "gpt-5", "generate", "edit", "reference", "premium"],
+    shortDescription: "GPT-5 Image: premium OpenAI generate, edit, and reference workflows",
+    instructions: `## OpenRouter Image — GPT-5 Image
+
+Per-model OpenAI image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for premium-quality image generation and editing. Use source_image_urls for edits and reference_image_urls for guided generation.`,
+    create: createOpenRouterGpt5ImageImageTool,
+  },
+  {
+    id: "openRouterImageGemini31Flash",
+    displayName: "OpenRouter Image — Nano Banana 2",
+    keywords: ["image", "openrouter", "google", "gemini", "nano banana", "flash", "generate", "edit", "reference"],
+    shortDescription: "Nano Banana 2: fast Gemini image model with generate, edit, and reference workflows",
+    instructions: `## OpenRouter Image — Nano Banana 2
+
+Per-model Gemini 3.1 Flash Image tool. Supports action="generate", action="edit", and action="reference".
+
+Best default for most image work: Pro-level visual quality at Flash speed with strong contextual understanding.`,
+    create: createOpenRouterGemini31FlashImageTool,
+  },
+  {
+    id: "openRouterImageGemini3Pro",
+    displayName: "OpenRouter Image — Gemini 3 Pro",
+    keywords: ["image", "openrouter", "google", "gemini", "pro", "nano banana pro", "generate", "edit", "reference"],
+    shortDescription: "Gemini 3 Pro Image: advanced generate, edit, and reference workflows",
+    instructions: `## OpenRouter Image — Gemini 3 Pro
+
+Per-model Gemini image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for advanced, complex, and detailed image work with strong contextual understanding.`,
+    create: createOpenRouterGemini3ProImageTool,
+  },
+  {
+    id: "openRouterImageFlux2Pro",
+    displayName: "OpenRouter Image — Flux.2 Pro",
+    keywords: ["image", "openrouter", "flux", "flux.2", "pro", "photorealism", "generate", "edit", "reference"],
+    shortDescription: "Flux.2 Pro: photorealistic generate, edit, and reference workflows with up to 4MP output",
+    instructions: `## OpenRouter Image — Flux.2 Pro
+
+Per-model Flux.2 image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for production photorealism, stable lighting, strong prompt adherence, and up to 4MP output.`,
+    create: createOpenRouterFlux2ProImageTool,
+  },
+  {
+    id: "openRouterImageFlux2Max",
+    displayName: "OpenRouter Image — Flux.2 Max",
+    keywords: ["image", "openrouter", "flux", "flux.2", "max", "quality", "generate", "edit", "reference"],
+    shortDescription: "Flux.2 Max: top-tier Flux quality with generate, edit, and reference workflows",
+    instructions: `## OpenRouter Image — Flux.2 Max
+
+Per-model Flux.2 image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for top-tier Flux.2 quality, prompt understanding, and editing consistency.`,
+    create: createOpenRouterFlux2MaxImageTool,
+  },
+  {
+    id: "openRouterImageFlux2Klein4B",
+    displayName: "OpenRouter Image — Flux.2 Klein 4B",
+    keywords: ["image", "openrouter", "flux", "flux.2", "klein", "fast", "cheap", "generate", "edit", "reference"],
+    shortDescription: "Flux.2 Klein 4B: fastest, cheapest Flux generate/edit/reference workflows",
+    instructions: `## OpenRouter Image — Flux.2 Klein 4B
+
+Per-model Flux.2 image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for fast, cost-effective, high-throughput image workflows.`,
+    create: createOpenRouterFlux2Klein4BImageTool,
+  },
+  {
+    id: "openRouterImageGpt54Image2",
+    displayName: "OpenRouter Image — GPT-5.4 Image 2",
+    keywords: ["image", "openrouter", "openai", "gpt", "gpt-5.4", "image 2", "generate", "edit", "reference"],
+    shortDescription: "GPT-5.4 Image 2: latest OpenAI reasoning-backed generate, edit, and reference workflows",
+    instructions: `## OpenRouter Image — GPT-5.4 Image 2
+
+Per-model OpenAI image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for workflows that benefit from GPT-5.4 reasoning paired with image generation/editing.`,
+    create: createOpenRouterGpt54Image2ImageTool,
+  },
+  {
+    id: "openRouterImageGrokImagine",
+    displayName: "OpenRouter Image — Grok Imagine",
+    keywords: ["image", "openrouter", "grok", "xai", "photorealistic", "brands", "named entities", "generate", "edit", "reference"],
+    shortDescription: "Grok Imagine: photorealistic generate/edit/reference with strong named entities and brands",
+    instructions: `## OpenRouter Image — Grok Imagine
+
+Per-model xAI image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for photorealistic outputs, named entities, brands, locations, posters, packaging, ads, and multilingual text.`,
+    create: createOpenRouterGrokImagineImageTool,
+  },
+  {
+    id: "openRouterImageSeedream45",
+    displayName: "OpenRouter Image — Seedream 4.5",
+    keywords: ["image", "openrouter", "seedream", "bytedance", "composition", "portrait", "generate", "edit", "reference"],
+    shortDescription: "Seedream 4.5: strong editing consistency, portraits, text, and multi-image composition",
+    instructions: `## OpenRouter Image — Seedream 4.5
+
+Per-model ByteDance image tool. Supports action="generate", action="edit", and action="reference".
+
+Best for editing consistency, portrait refinement, small-text rendering, and multi-image composition.`,
+    create: createOpenRouterSeedream45ImageTool,
+  },
+] as const;
+
+for (const modelTool of openRouterImageModelTools) {
+  registry.register(
+    modelTool.id,
+    {
+      displayName: modelTool.displayName,
+      category: "image-generation",
+      keywords: [...modelTool.keywords],
+      shortDescription: modelTool.shortDescription,
+      fullInstructions: modelTool.instructions,
+      loading: { deferLoading: true },
+      requiresSession: true,
+      enableEnvVar: "OPENROUTER_API_KEY",
+    } satisfies ToolMetadata,
+    ({ sessionId }) => modelTool.create(sessionId!)
+  );
+}
 
 // ============================================================================
 // NEW OPENROUTER IMAGE MODELS (May 2026 — individual per-model tools)
@@ -905,7 +1084,7 @@ Reference-guided generation with strong multi-image composition capabilities. Ad
 registry.register(
   "openRouterVideo",
   {
-    displayName: "OpenRouter Video",
+    displayName: "OpenRouter Video (10 models)",
     category: "video-generation",
     keywords: [
       "video", "generate video", "animate", "animation", "motion",
@@ -913,7 +1092,7 @@ registry.register(
       "grok", "kling", "veo", "hailuo", "seedance", "wan",
       "cinematic", "clip", "film", "xai", "google", "bytedance",
     ],
-    shortDescription: "Generate videos from text, images, or references using 10 OpenRouter models via async polling",
+    shortDescription: "Unified text-to-video, image-to-video, and reference-to-video workflows across 10 OpenRouter models",
     fullInstructions: `## OpenRouter Video (Unified)
 
 Generate videos from text, images, or reference images using 10 OpenRouter video models. Uses async polling — action="generate" submits and polls inline (up to 5 minutes).
@@ -943,6 +1122,152 @@ Generate videos from text, images, or reference images using 10 OpenRouter video
   } satisfies ToolMetadata,
   ({ sessionId }) => createOpenRouterVideoTool(sessionId!)
 );
+
+
+// ============================================================================
+// PER-MODEL UNIFIED OPENROUTER VIDEO TOOLS
+// One selectable tool per provider/model; each preserves model-specific params.
+// ============================================================================
+
+const openRouterVideoModelTools = [
+  {
+    id: "openRouterVideoGrokImagine",
+    displayName: "OpenRouter Video — Grok Imagine",
+    keywords: ["video", "openrouter", "grok", "xai", "text-to-video", "image-to-video", "reference-to-video", "generate", "animate"],
+    shortDescription: "Grok Imagine Video: text/image/reference video, 1-15s at 24fps",
+    instructions: `## OpenRouter Video — Grok Imagine
+
+Per-model video tool. Supports action="generate", action="animate", action="reference", and action="check".
+
+Capabilities: text-to-video, image-to-video with image_url, reference-to-video with reference_image_urls, 1-15s at 24fps.`,
+    create: createOpenRouterGrokImagineVideoTool,
+  },
+  {
+    id: "openRouterVideoKlingV3Pro",
+    displayName: "OpenRouter Video — Kling v3.0 Pro",
+    keywords: ["video", "openrouter", "kling", "kuaishou", "pro", "text-to-video", "image-to-video", "first frame", "last frame", "audio"],
+    shortDescription: "Kling v3.0 Pro: premium text/image video, first+last frame controls, optional audio, 3-15s",
+    instructions: `## OpenRouter Video — Kling v3.0 Pro
+
+Per-model video tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: premium text-to-video and image-to-video, first_frame_url and last_frame_url controls, optional audio, 3-15s duration.`,
+    create: createOpenRouterKlingV3ProVideoTool,
+  },
+  {
+    id: "openRouterVideoKlingV3Standard",
+    displayName: "OpenRouter Video — Kling v3.0 Standard",
+    keywords: ["video", "openrouter", "kling", "kuaishou", "standard", "text-to-video", "image-to-video", "first frame", "last frame"],
+    shortDescription: "Kling v3.0 Standard: balanced text/image video with first+last frame controls, 3-15s",
+    instructions: `## OpenRouter Video — Kling v3.0 Standard
+
+Per-model video tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: balanced text-to-video and image-to-video, first_frame_url and last_frame_url controls, 3-15s duration.`,
+    create: createOpenRouterKlingV3StandardVideoTool,
+  },
+  {
+    id: "openRouterVideoKlingO1",
+    displayName: "OpenRouter Video — Kling O1",
+    keywords: ["video", "openrouter", "kling", "o1", "cinematic", "text-to-video", "image-to-video", "first frame", "last frame"],
+    shortDescription: "Kling O1: cinematic text/image video with first+last frame controls, 5-10s",
+    instructions: `## OpenRouter Video — Kling O1
+
+Per-model video tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: cinematic text-to-video and image-to-video, first_frame_url and last_frame_url controls, 5-10s duration.`,
+    create: createOpenRouterKlingO1VideoTool,
+  },
+  {
+    id: "openRouterVideoVeo31Fast",
+    displayName: "OpenRouter Video — Veo 3.1 Fast",
+    keywords: ["video", "openrouter", "google", "veo", "3.1", "fast", "native audio", "text-to-video", "image-to-video", "first frame", "last frame"],
+    shortDescription: "Veo 3.1 Fast: Google video with native audio and first+last frame controls",
+    instructions: `## OpenRouter Video — Veo 3.1 Fast
+
+Per-model Google Veo tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: text-to-video and image-to-video, native audio, first_frame_url and last_frame_url controls.`,
+    create: createOpenRouterVeo31FastVideoTool,
+  },
+  {
+    id: "openRouterVideoVeo31Lite",
+    displayName: "OpenRouter Video — Veo 3.1 Lite",
+    keywords: ["video", "openrouter", "google", "veo", "3.1", "lite", "native audio", "text-to-video", "image-to-video"],
+    shortDescription: "Veo 3.1 Lite: cost-effective Google text/image video with native audio, 4-8s",
+    instructions: `## OpenRouter Video — Veo 3.1 Lite
+
+Per-model Google Veo tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: cost-effective text-to-video and image-to-video, native audio, 4-8s duration.`,
+    create: createOpenRouterVeo31LiteVideoTool,
+  },
+  {
+    id: "openRouterVideoHailuo23",
+    displayName: "OpenRouter Video — Hailuo 2.3",
+    keywords: ["video", "openrouter", "hailuo", "minimax", "motion", "character animation", "text-to-video", "image-to-video"],
+    shortDescription: "Hailuo 2.3: realistic motion and character animation for text/image video",
+    instructions: `## OpenRouter Video — Hailuo 2.3
+
+Per-model MiniMax video tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: realistic motion and character animation for text-to-video and image-to-video workflows.`,
+    create: createOpenRouterHailuo23VideoTool,
+  },
+  {
+    id: "openRouterVideoSeedance20Fast",
+    displayName: "OpenRouter Video — Seedance 2.0 Fast",
+    keywords: ["video", "openrouter", "seedance", "bytedance", "fast", "text-to-video", "image-to-video", "first frame", "last frame"],
+    shortDescription: "Seedance 2.0 Fast: speed-prioritized text/image video with first+last frame controls",
+    instructions: `## OpenRouter Video — Seedance 2.0 Fast
+
+Per-model ByteDance video tool. Supports action="generate", action="animate", and action="check".
+
+Capabilities: speed-prioritized text-to-video and image-to-video, first_frame_url and last_frame_url controls.`,
+    create: createOpenRouterSeedance20FastVideoTool,
+  },
+  {
+    id: "openRouterVideoSeedance20",
+    displayName: "OpenRouter Video — Seedance 2.0",
+    keywords: ["video", "openrouter", "seedance", "bytedance", "reference", "camera", "character consistency", "first frame", "last frame"],
+    shortDescription: "Seedance 2.0: character consistency, camera control, references, first+last frame controls",
+    instructions: `## OpenRouter Video — Seedance 2.0
+
+Per-model ByteDance video tool. Supports action="generate", action="animate", action="reference", and action="check".
+
+Capabilities: character consistency, camera control, reference_image_urls, first_frame_url and last_frame_url controls.`,
+    create: createOpenRouterSeedance20VideoTool,
+  },
+  {
+    id: "openRouterVideoWan27",
+    displayName: "OpenRouter Video — Wan 2.7",
+    keywords: ["video", "openrouter", "wan", "alibaba", "reference", "text-to-video", "image-to-video", "first frame", "last frame"],
+    shortDescription: "Wan 2.7: text/image/reference video with first+last frame controls",
+    instructions: `## OpenRouter Video — Wan 2.7
+
+Per-model Alibaba video tool. Supports action="generate", action="animate", action="reference", and action="check".
+
+Capabilities: text-to-video, image-to-video, reference_image_urls, first_frame_url and last_frame_url controls.`,
+    create: createOpenRouterWan27VideoTool,
+  },
+] as const;
+
+for (const modelTool of openRouterVideoModelTools) {
+  registry.register(
+    modelTool.id,
+    {
+      displayName: modelTool.displayName,
+      category: "video-generation",
+      keywords: [...modelTool.keywords],
+      shortDescription: modelTool.shortDescription,
+      fullInstructions: modelTool.instructions,
+      loading: { deferLoading: true },
+      requiresSession: true,
+      enableEnvVar: "OPENROUTER_API_KEY",
+    } satisfies ToolMetadata,
+    ({ sessionId }) => modelTool.create(sessionId!)
+  );
+}
 
 // ============================================================================
 // RUNWAY VIDEO GENERATION TOOLS
