@@ -298,6 +298,7 @@ async function handleStart(
       characterId: resolution.candidate.agentId,
       characterName: resolution.candidate.agentName,
       delegationTask: task,
+      initiatorSessionId,
       rootSessionId,
     },
   });

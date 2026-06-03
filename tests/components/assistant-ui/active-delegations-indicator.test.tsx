@@ -174,6 +174,60 @@ describe("ActiveDelegationsIndicator", () => {
     expect(onOpenSession).toHaveBeenCalledWith("session-123", "agent-123");
   });
 
+  it("passes an initiator session scope to the delegation status hook", () => {
+    mockUseDelegationStatus.mockReturnValue({
+      delegations: [],
+      isLoading: false,
+      error: null,
+    });
+
+    flushSync(() => {
+      root.render(
+        createElement(ActiveDelegationsIndicator, {
+          characterId: "parent-agent",
+          initiatorSessionId: "session-A",
+          embedded: true,
+        }),
+      );
+    });
+
+    expect(mockUseDelegationStatus).toHaveBeenCalledWith("parent-agent", {
+      initiatorSessionId: "session-A",
+    });
+  });
+
+  it("uses the delegated agent name as the embedded one-agent pill label", () => {
+    mockUseDelegationStatus.mockReturnValue({
+      delegations: [
+        {
+          delegationId: "del-embedded",
+          sessionId: "session-embedded",
+          delegateAgentId: "agent-embedded",
+          delegateAgent: "Explore",
+          task: "Trace session switch flow",
+          running: true,
+          elapsed: 65000,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    flushSync(() => {
+      root.render(
+        createElement(ActiveDelegationsIndicator, {
+          characterId: "parent-agent",
+          initiatorSessionId: "session-A",
+          embedded: true,
+        }),
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement;
+    expect(trigger.textContent).toContain("Explore");
+    expect(trigger.textContent).not.toContain("1 active delegations");
+  });
+
   it("falls back to task-unavailable copy and uses sidebar label when workspaceMode is sidebar", () => {
     const onOpenSession = vi.fn();
     mockUseDelegationStatus.mockReturnValue({

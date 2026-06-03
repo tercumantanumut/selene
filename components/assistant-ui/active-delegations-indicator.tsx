@@ -26,11 +26,21 @@ const HOVER_CLOSE_DELAY_MS = 140;
 
 export const ActiveDelegationsIndicator: FC<{
   characterId: string | null;
+  initiatorSessionId?: string;
   workspaceMode?: ChatWorkspaceMode;
   onOpenSession?: OpenDelegationSessionHandler;
-}> = ({ characterId, workspaceMode = "sidebar", onOpenSession }) => {
+  className?: string;
+  embedded?: boolean;
+}> = ({
+  characterId,
+  initiatorSessionId,
+  workspaceMode = "sidebar",
+  onOpenSession,
+  className,
+  embedded = false,
+}) => {
   const t = useTranslations("assistantUi.delegations");
-  const { delegations } = useDelegationStatus(characterId);
+  const { delegations } = useDelegationStatus(characterId, { initiatorSessionId });
 
   const [open, setOpen] = useState(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -68,15 +78,97 @@ export const ActiveDelegationsIndicator: FC<{
   );
   if (running.length === 0) return null;
 
-  const countLabel = t("activeDelegations", { count: running.length });
+  const headerLabel = t("activeDelegations", { count: running.length });
+  const countLabel = embedded && running.length === 1
+    ? (running[0]?.delegateAgent ?? headerLabel)
+    : headerLabel;
   const ModeIcon = workspaceMode === "browser-tabs" ? LayoutGrid : PanelLeft;
   const modeLabel =
     workspaceMode === "browser-tabs"
       ? t("openInBrowserTabs")
       : t("openInSidebar");
 
+  if (embedded) {
+    return (
+      <div className={cn("group/delegations mt-1 w-full px-0", className)}>
+        <button
+          type="button"
+          aria-label={t("triggerAriaLabel", { count: running.length })}
+          className={cn(
+            "inline-flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-[11px] font-medium text-muted-foreground",
+            "transition-colors duration-150",
+            "group-hover/delegations:border-emerald-400/60 group-hover/delegations:bg-emerald-500/[0.06] group-hover/delegations:text-foreground",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+          )}
+        >
+          <span className="relative inline-flex size-2 items-center justify-center" aria-hidden="true">
+            <span className="absolute inset-0 animate-ping rounded-full bg-emerald-500/40" />
+            <span className="relative size-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="min-w-0 truncate tabular-nums">{countLabel}</span>
+        </button>
+
+        <div className="mt-1 hidden space-y-1 rounded-lg border border-border/60 bg-muted/30 p-1 group-hover/delegations:block group-focus-within/delegations:block">
+          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {headerLabel}
+          </div>
+          {running.map((delegation) => {
+            const taskLabel = delegation.task?.trim() || t("taskUnavailable");
+            return (
+              <button
+                key={delegation.delegationId}
+                type="button"
+                onClick={() => {
+                  void onOpenSession?.(
+                    delegation.sessionId,
+                    delegation.delegateAgentId,
+                  );
+                }}
+                disabled={!onOpenSession}
+                aria-label={t("openDelegationSessionRich", {
+                  agent: delegation.delegateAgent,
+                  task: taskLabel,
+                  destination: modeLabel,
+                })}
+                className={cn(
+                  "group/row flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
+                  "hover:bg-accent/60",
+                  "focus-visible:outline-none focus-visible:bg-accent/60 focus-visible:ring-1 focus-visible:ring-emerald-500/40",
+                  "disabled:cursor-not-allowed disabled:opacity-60",
+                )}
+              >
+                <span className="relative mt-1.5 inline-flex size-2 shrink-0 items-center justify-center" aria-hidden="true">
+                  <span className="absolute inset-0 animate-ping rounded-full bg-emerald-500/40" />
+                  <span className="relative size-2 rounded-full bg-emerald-500" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="truncate text-xs font-semibold text-foreground">
+                      {delegation.delegateAgent}
+                    </span>
+                    <span className="shrink-0 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-emerald-700 dark:text-emerald-300">
+                      {formatElapsed(delegation.elapsed)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+                    {taskLabel}
+                  </div>
+                  <div className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground/90 group-hover/row:text-foreground">
+                    <ModeIcon className="h-3 w-3" aria-hidden="true" />
+                    <span>{modeLabel}</span>
+                    <ExternalLink className="h-3 w-3 opacity-60 transition-opacity group-hover/row:opacity-100" aria-hidden="true" />
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="mt-2 w-full px-1">
+    <div className={cn(embedded ? "mt-1 w-full px-0" : "mt-2 w-full px-1", className)}>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
@@ -89,7 +181,7 @@ export const ActiveDelegationsIndicator: FC<{
             aria-haspopup="dialog"
             aria-label={t("triggerAriaLabel", { count: running.length })}
             className={cn(
-              "group inline-flex items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-[11px] font-medium text-muted-foreground",
+              "group inline-flex max-w-full items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-[11px] font-medium text-muted-foreground",
               "transition-colors duration-150",
               "hover:border-emerald-400/60 hover:bg-emerald-500/[0.06] hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
@@ -103,7 +195,7 @@ export const ActiveDelegationsIndicator: FC<{
               <span className="absolute inset-0 rounded-full bg-emerald-500/40 animate-ping" />
               <span className="relative size-2 rounded-full bg-emerald-500" />
             </span>
-            <span className="tabular-nums">{countLabel}</span>
+            <span className="min-w-0 truncate tabular-nums">{countLabel}</span>
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -127,7 +219,7 @@ export const ActiveDelegationsIndicator: FC<{
               <span className="relative size-2 rounded-full bg-emerald-500" />
             </span>
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {countLabel}
+              {headerLabel}
             </span>
           </div>
           <div className="max-h-80 space-y-1 overflow-y-auto p-1.5">

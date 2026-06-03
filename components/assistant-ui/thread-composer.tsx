@@ -73,7 +73,6 @@ import { useSettings } from "@/lib/hooks/use-settings";
 import { providerRejectsInlineImages } from "@/lib/ai/provider-types";
 import { ContextWindowIndicator } from "./context-window-indicator";
 import { ModelSelector } from "./model-selector";
-import { ActiveDelegationsIndicator } from "./active-delegations-indicator";
 import { BackgroundProcessesIndicator } from "./background-processes-indicator";
 import { ClaudeCodeSubagentsIndicator } from "./claude-code-subagents-indicator";
 import FileMentionAutocomplete, { type MentionSelection } from "./file-mention-autocomplete";
@@ -243,8 +242,6 @@ export const Composer: FC<{
   isProcessingInBackground = false,
   sessionId,
   activeRunId,
-  workspaceMode = "sidebar",
-  onOpenDelegationSession,
   sttEnabled = false,
   voicePostProcessing = true,
   voiceActionsEnabled = true,
@@ -2274,11 +2271,6 @@ export const Composer: FC<{
         {sessionId && <ModelSelector sessionId={sessionId} status={contextStatus} />}
       </div>
 
-      <ActiveDelegationsIndicator
-        characterId={character?.id ?? null}
-        workspaceMode={workspaceMode}
-        onOpenSession={onOpenDelegationSession}
-      />
       <ClaudeCodeSubagentsIndicator
         enabled={activeLlmProvider === "claudecode"}
         sessionId={sessionId}

@@ -539,6 +539,8 @@ export async function POST(req: Request) {
               workflowId: sessionMetadata.workflowId,
               characterName: sessionMetadata.characterName,
               delegationTask: sessionMetadata.delegationTask,
+              initiatorSessionId: sessionMetadata.initiatorSessionId,
+              rootSessionId: sessionMetadata.rootSessionId,
             } : {}),
           }
         : undefined,
