@@ -141,7 +141,7 @@ async function runGenerate(
 async function runEdit(
   sessionId: string,
   toolName: "editImageGptImage2" | "referenceImageGptImage2",
-  args: { prompt: string; images: string[]; mask?: string; format?: CodexImageGenerationArgs["output_format"]; size?: CodexImageGenerationArgs["size"]; quality?: CodexImageGenerationArgs["quality"]; background?: CodexImageGenerationArgs["background"]; inputFidelity?: "low" | "high" },
+  args: { prompt: string; images: string[]; mask?: string; format?: CodexImageGenerationArgs["output_format"]; size?: CodexImageGenerationArgs["size"]; quality?: CodexImageGenerationArgs["quality"]; background?: CodexImageGenerationArgs["background"] },
   rawArgs: Record<string, unknown>,
   operation: "edit" | "reference",
 ): Promise<ToolResult> {
@@ -163,7 +163,6 @@ async function runEdit(
         quality: args.quality,
         background: args.background,
         outputFormat: args.format,
-        inputFidelity: args.inputFidelity,
       },
     });
 
@@ -215,7 +214,7 @@ export function createGenerateCodexImageTool(sessionId: string) {
 
 export function createEditCodexImageTool(sessionId: string) {
   return tool({
-    description: "Edit an existing image using Codex gpt-image-2 (via CLIProxyAPI). Supports an optional mask (white pixels are repainted, black pixels preserved) and `input_fidelity` to control how strictly the original is kept.",
+    description: "Edit an existing image using Codex gpt-image-2 (via CLIProxyAPI). Supports an optional mask (white pixels are repainted, black pixels preserved).",
     inputSchema: codexImageEditSchema,
     execute: withToolLogging<CodexImageEditingArgs, ToolResult>(
       "editImageGptImage2",
@@ -232,7 +231,6 @@ export function createEditCodexImageTool(sessionId: string) {
             size: args.size,
             quality: args.quality,
             background: args.background,
-            inputFidelity: args.input_fidelity,
           },
           args as unknown as Record<string, unknown>,
           "edit",
@@ -298,7 +296,6 @@ export function createCodexImageTool(sessionId: string) {
               size: args.size,
               quality: args.quality,
               background: args.background,
-              inputFidelity: args.input_fidelity,
             },
             args as unknown as Record<string, unknown>,
             "edit",
@@ -329,7 +326,7 @@ Requires the user to be signed in to Codex (Settings → Codex).
 
 **Actions:**
 - action="generate" → text-to-image (prompt + optional size/quality/background/output_format)
-- action="edit" → edit existing images (prompt + source_image_urls + optional mask_url/input_fidelity)
+- action="edit" → edit existing images (prompt + source_image_urls + optional mask_url)
 - action="reference" → reference-guided generation (prompt + reference_image_urls)
 
 **Options:** size (1024x1024 default), quality (low/medium/high/auto), background (transparent/opaque/auto), output_format (png/jpeg/webp). Use png for transparent backgrounds.`,

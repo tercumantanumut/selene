@@ -1385,8 +1385,7 @@ registry.register(
 Edit an existing image (or composite multiple) via the CLIProxyAPI sidecar.
 Pass selene /api/media/ URLs, http(s) URLs, or base64 data URLs as
 \`source_image_urls\`. Optional \`mask_url\` controls inpainting
-(white pixels are repainted, black pixels preserved). \`input_fidelity: high\`
-preserves the source more strictly.`,
+(white pixels are repainted, black pixels preserved).`,
     loading: { deferLoading: true },
     requiresSession: true,
   } satisfies ToolMetadata,
@@ -1434,7 +1433,7 @@ OpenAI-native image generation routed through the local CLIProxyAPI sidecar. Req
 
 **Actions:**
 - action="generate" → text-to-image (prompt + optional size/quality/background/output_format)
-- action="edit" → edit images (prompt + source_image_urls + optional mask/input_fidelity)
+- action="edit" → edit images (prompt + source_image_urls + optional mask)
 - action="reference" → reference-guided (prompt + reference_image_urls)
 
 **Options:** size (1024x1024 default), quality (low/medium/high/auto), background (transparent for PNG), output_format (png/jpeg/webp). Use png + transparent background for logos/icons.`,

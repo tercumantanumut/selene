@@ -52,6 +52,7 @@ vi.mock("ai", () => ({
   }),
 }));
 
+import { generateText } from "ai";
 import { CompactionService } from "@/lib/context-window/compaction-service";
 
 // ============================================================================
@@ -76,6 +77,42 @@ function makeMessage(
   };
 }
 
+function makeRawMessage(
+  id: string,
+  role: "user" | "assistant",
+  content: string,
+  createdAt: string
+) {
+  return {
+    id,
+    sessionId: "session-1",
+    role,
+    content,
+    createdAt,
+    isCompacted: false,
+    toolInvocations: null,
+    metadata: null,
+  };
+}
+
+function hasLoneSurrogate(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i++;
+        continue;
+      }
+      return true;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 describe("Compaction boundary persistence", () => {
   const sessionId = "session-1";
 
@@ -89,6 +126,50 @@ describe("Compaction boundary persistence", () => {
     });
     dbMocks.updateSessionSummary.mockResolvedValue(undefined);
     dbMocks.markMessagesAsCompactedByIds.mockResolvedValue(0);
+  });
+
+  it("uses a 10K-token output budget for generated compaction summaries", async () => {
+    const longContent = "X".repeat(500);
+    const messages = [
+      makeMessage("msg-1", "user", longContent, "2026-02-10T10:00:00.000Z"),
+      makeMessage("msg-2", "assistant", longContent, "2026-02-10T10:00:01.000Z"),
+      makeMessage("msg-3", "user", longContent, "2026-02-10T10:00:02.000Z"),
+      makeMessage("msg-4", "assistant", longContent, "2026-02-10T10:00:03.000Z"),
+      makeMessage("msg-5", "user", longContent, "2026-02-10T10:00:04.000Z"),
+      makeMessage("msg-6", "assistant", longContent, "2026-02-10T10:00:05.000Z"),
+      makeMessage("msg-7", "user", longContent, "2026-02-10T10:00:06.000Z"),
+    ];
+
+    dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
+
+    await CompactionService.compact(sessionId);
+
+    expect(generateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxOutputTokens: 10_000,
+      })
+    );
+  });
+
+  it("does not split surrogate pairs when truncating compaction prompt content", async () => {
+    const contentThatSplitsWithStringSlice = `${"A".repeat(1999)}📄 trailing text`;
+    const messages = [
+      makeRawMessage("msg-1", "user", contentThatSplitsWithStringSlice, "2026-02-10T10:00:00.000Z"),
+      makeRawMessage("msg-2", "assistant", "middle", "2026-02-10T10:00:01.000Z"),
+      makeRawMessage("msg-3", "user", "final", "2026-02-10T10:00:02.000Z"),
+    ];
+
+    dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
+
+    await CompactionService.compact(sessionId, {
+      keepRecentMessages: 0,
+      minMessagesForCompaction: 3,
+      enableAutoPruning: false,
+    });
+
+    const [{ prompt }] = vi.mocked(generateText).mock.calls.at(-1)!;
+    expect(prompt).toContain("... [truncated]");
+    expect(hasLoneSurrogate(prompt)).toBe(false);
   });
 
   it("includes boundary message in compacted set (no off-by-one)", async () => {

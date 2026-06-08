@@ -48,7 +48,7 @@ export interface CompactionResult {
 interface CompactionOptions {
   /** Number of recent messages to keep uncompacted (default: 6) */
   keepRecentMessages: number;
-  /** Maximum tokens for the summary (default: 2000) */
+  /** Maximum output tokens for the generated summary (default: 10000) */
   maxSummaryTokens: number;
   /** Whether to preserve user rules/constraints (default: true) */
   preserveRules: boolean;
@@ -70,7 +70,7 @@ interface CompactionOptions {
 
 const DEFAULT_OPTIONS: CompactionOptions = {
   keepRecentMessages: 6,
-  maxSummaryTokens: 2000,
+  maxSummaryTokens: 10000,
   preserveRules: true,
   preserveToolResults: [
     "updatePlan", 
@@ -86,6 +86,41 @@ const DEFAULT_OPTIONS: CompactionOptions = {
  * Enhanced compaction prompt that generates structured summaries.
  * Designed to preserve critical context while being concise.
  */
+function sanitizeUnicodeScalarValues(text: string): string {
+  let sanitized = "";
+
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        sanitized += text[i] + text[i + 1];
+        i++;
+      } else {
+        sanitized += "�";
+      }
+      continue;
+    }
+
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      sanitized += "�";
+      continue;
+    }
+
+    sanitized += text[i];
+  }
+
+  return sanitized;
+}
+
+function truncateSummaryText(text: string, maxCodePoints: number): string {
+  const sanitized = sanitizeUnicodeScalarValues(text);
+  const codePoints = Array.from(sanitized);
+  if (codePoints.length <= maxCodePoints) return sanitized;
+  return codePoints.slice(0, maxCodePoints).join("");
+}
+
 const ENHANCED_COMPACTION_PROMPT = `You are a conversation summarizer for an AI coding assistant. Create a structured summary that enables seamless continuation of the conversation.
 
 **REQUIRED SECTIONS:**
@@ -120,7 +155,7 @@ const ENHANCED_COMPACTION_PROMPT = `You are a conversation summarizer for an AI 
 - Preserve error messages and stack traces if they're still relevant
 - Preserve Log IDs (logId) for executed commands so they can be retrieved later
 - DO NOT lose user constraints or preferences
-- Keep the summary under 2000 tokens
+- Keep the summary under 10000 tokens
 
 {previousSummary}
 
@@ -569,7 +604,7 @@ export class CompactionService {
             /constraint|requirement|rule|policy|important/i,
           ];
           if (rulePatterns.some((pattern) => pattern.test(content))) {
-            userRules.push(content.slice(0, 200)); // Truncate long messages
+            userRules.push(truncateSummaryText(content, 200)); // Truncate long messages
           }
         }
       } else if (Array.isArray(msg.content)) {
@@ -598,7 +633,7 @@ export class CompactionService {
                     resultText = `[Tool result: memorize] Status: ${res.success ? "Success" : "Failed"}, Memory: "${res.message || ""}"`;
                 } else if (part.result) {
                     // For other tools, provide a summarized JSON
-                    resultText = `[Tool result: ${toolName}] ${JSON.stringify(part.result).slice(0, 500)}`;
+                    resultText = `[Tool result: ${toolName}] ${truncateSummaryText(JSON.stringify(part.result), 500)}`;
                 } else {
                     resultText = `[Tool result: ${toolName}]`;
                 }
@@ -618,16 +653,18 @@ export class CompactionService {
             /constraint|requirement|rule|policy|important/i,
           ];
           if (rulePatterns.some((pattern) => pattern.test(textContent))) {
-            userRules.push(textContent.slice(0, 200));
+            userRules.push(truncateSummaryText(textContent, 200));
           }
         }
       } else {
-        content = JSON.stringify(msg.content).slice(0, 500);
+        content = truncateSummaryText(JSON.stringify(msg.content), 500);
       }
 
       // Truncate very long messages (but we already did smart truncation for tool results)
-      if (content.length > 2000) {
-        content = content.slice(0, 2000) + "... [truncated]";
+      if (Array.from(sanitizeUnicodeScalarValues(content)).length > 2000) {
+        content = truncateSummaryText(content, 2000) + "... [truncated]";
+      } else {
+        content = sanitizeUnicodeScalarValues(content);
       }
 
       formatted.push(`${role}: ${content}`);
@@ -639,7 +676,7 @@ export class CompactionService {
       result += `\n\n**DETECTED USER RULES (MUST PRESERVE):**\n${userRules.map((r) => `- ${r}`).join("\n")}`;
     }
 
-    return result;
+    return sanitizeUnicodeScalarValues(result);
   }
 
   /**

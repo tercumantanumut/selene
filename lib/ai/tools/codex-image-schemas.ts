@@ -22,7 +22,6 @@ export interface CodexImageEditingArgs {
   quality?: "low" | "medium" | "high" | "auto";
   background?: "transparent" | "opaque" | "auto";
   output_format?: "png" | "jpeg" | "webp";
-  input_fidelity?: "low" | "high";
 }
 
 export interface CodexImageReferencingArgs {
@@ -89,11 +88,6 @@ export const codexImageEditSchema = jsonSchema<CodexImageEditingArgs>({
     quality: qualityProp,
     background: backgroundProp,
     output_format: outputFormatProp,
-    input_fidelity: {
-      type: "string",
-      description: "How closely to preserve the source image. 'high' = stricter.",
-      enum: ["low", "high"],
-    },
   },
   required: ["prompt", "source_image_urls"],
   additionalProperties: false,
@@ -132,7 +126,6 @@ export interface CodexImageInput {
   output_format?: "png" | "jpeg" | "webp";
   source_image_urls?: string[];
   mask_url?: string;
-  input_fidelity?: "low" | "high";
   reference_image_urls?: string[];
 }
 
@@ -153,7 +146,6 @@ export const codexImageSchema = jsonSchema<CodexImageInput>({
     output_format: outputFormatProp,
     source_image_urls: { type: "array", items: { type: "string" }, minItems: 1, description: "Source images to edit. REQUIRED for action='edit'." },
     mask_url: { type: "string", description: "Optional mask for inpainting (white=edit, black=preserve). Edit only." },
-    input_fidelity: { type: "string", enum: ["low", "high"], description: "How strictly to preserve source. 'high'=stricter. Edit only." },
     reference_image_urls: { type: "array", items: { type: "string" }, minItems: 1, description: "Reference images for style/subject guidance. REQUIRED for action='reference'." },
   },
   required: ["action", "prompt"],

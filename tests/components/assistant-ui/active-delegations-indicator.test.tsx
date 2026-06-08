@@ -228,6 +228,46 @@ describe("ActiveDelegationsIndicator", () => {
     expect(trigger.textContent).not.toContain("1 active delegations");
   });
 
+  it("does not duplicate the embedded active-delegation count in the hover detail content", () => {
+    mockUseDelegationStatus.mockReturnValue({
+      delegations: [
+        {
+          delegationId: "del-one",
+          sessionId: "session-one",
+          delegateAgentId: "agent-one",
+          delegateAgent: "Explore",
+          task: "Research voice UI",
+          running: true,
+          elapsed: 65000,
+        },
+        {
+          delegationId: "del-two",
+          sessionId: "session-two",
+          delegateAgentId: "agent-two",
+          delegateAgent: "Plan",
+          task: "Plan voice UI",
+          running: true,
+          elapsed: 65000,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    });
+
+    flushSync(() => {
+      root.render(
+        createElement(ActiveDelegationsIndicator, {
+          characterId: "parent-agent",
+          initiatorSessionId: "session-A",
+          embedded: true,
+        }),
+      );
+    });
+
+    const countMatches = container.textContent?.match(/2 active delegations/g) ?? [];
+    expect(countMatches).toHaveLength(1);
+  });
+
   it("falls back to task-unavailable copy and uses sidebar label when workspaceMode is sidebar", () => {
     const onOpenSession = vi.fn();
     mockUseDelegationStatus.mockReturnValue({

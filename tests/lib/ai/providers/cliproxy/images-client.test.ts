@@ -169,7 +169,7 @@ describe("cliproxy/images-client", () => {
         images: ["data:image/png;base64,aGVsbG8="],
         mask: "data:image/png;base64,bWFzaw==",
         resolveLocal: () => null,
-        options: { size: "1024x1024", inputFidelity: "high" },
+        options: { size: "1024x1024" },
       });
 
       expect(items).toEqual([{ b64: "Yg==", format: "png" }]);
@@ -187,7 +187,7 @@ describe("cliproxy/images-client", () => {
       expect(fd.get("prompt")).toBe("make it night");
       expect(fd.get("response_format")).toBe("b64_json");
       expect(fd.get("size")).toBe("1024x1024");
-      expect(fd.get("input_fidelity")).toBe("high");
+      expect(fd.get("input_fidelity")).toBeNull();
       expect(fd.get("image")).toBeInstanceOf(Blob);
       expect(fd.get("mask")).toBeInstanceOf(Blob);
     });

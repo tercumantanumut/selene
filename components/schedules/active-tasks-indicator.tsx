@@ -7,7 +7,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
@@ -29,7 +29,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { useActiveTaskCount, useActiveTasks } from "@/lib/stores/unified-tasks-store";
+import { useActiveTasks } from "@/lib/stores/unified-tasks-store";
 import {
   useSessionActivity,
   useSessionSyncStore,
@@ -37,6 +37,7 @@ import {
   type SessionActivityKind,
 } from "@/lib/stores/session-sync-store";
 import type { UnifiedTask } from "@/lib/background-tasks/types";
+import { selectVisibleActiveTasks } from "@/lib/background-tasks/visible-active-tasks";
 import { cn } from "@/lib/utils";
 
 const HOVER_CLOSE_DELAY_MS = 140;
@@ -77,6 +78,11 @@ function metadataString(metadata: Record<string, unknown>, key: string) {
 
 function trimLabel(value: string, maxLength: number) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+}
+
+function useVisibleActiveTasks() {
+  const tasks = useActiveTasks();
+  return useMemo(() => selectVisibleActiveTasks(tasks), [tasks]);
 }
 
 function useTaskDisplayContext(task: UnifiedTask) {
@@ -273,7 +279,7 @@ function InlineStatusSummary({ task, count }: { task: UnifiedTask; count: number
 }
 
 export function ActiveTasksInlineStatus({ className }: { className?: string }) {
-  const tasks = useActiveTasks();
+  const tasks = useVisibleActiveTasks();
   const count = tasks.length;
   const firstTask = tasks[0];
   const [open, setOpen] = useState(false);
@@ -369,8 +375,8 @@ export function ActiveTasksInlineStatus({ className }: { className?: string }) {
 export function ActiveTasksIndicator() {
   const t = useTranslations("schedules.notifications");
   const [open, setOpen] = useState(false);
-  const count = useActiveTaskCount();
-  const tasks = useActiveTasks();
+  const tasks = useVisibleActiveTasks();
+  const count = tasks.length;
   const latestIndicator = useLatestActivityLabel(tasks);
   const handleNavigate = useTaskNavigator(() => setOpen(false));
 

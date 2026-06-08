@@ -31,9 +31,8 @@ export interface CodexImageRequestOptions {
   partialImages?: number;
 }
 
-export interface CodexImageEditOptions extends CodexImageRequestOptions {
-  inputFidelity?: "low" | "high";
-}
+export type CodexImageEditOptions = CodexImageRequestOptions;
+
 
 export interface CodexImageItem {
   /** Base64-encoded image body (no `data:` prefix). */
@@ -236,7 +235,6 @@ export async function editCodexImage(args: {
   if (args.options?.quality) form.set("quality", args.options.quality);
   if (args.options?.background) form.set("background", args.options.background);
   if (args.options?.outputFormat) form.set("output_format", args.options.outputFormat);
-  if (args.options?.inputFidelity) form.set("input_fidelity", args.options.inputFidelity);
   if (args.options?.moderation) form.set("moderation", args.options.moderation);
   if (typeof args.options?.outputCompression === "number") form.set("output_compression", String(args.options.outputCompression));
   if (typeof args.options?.partialImages === "number") form.set("partial_images", String(args.options.partialImages));

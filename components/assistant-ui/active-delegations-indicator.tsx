@@ -109,9 +109,6 @@ export const ActiveDelegationsIndicator: FC<{
         </button>
 
         <div className="mt-1 hidden space-y-1 rounded-lg border border-border/60 bg-muted/30 p-1 group-hover/delegations:block group-focus-within/delegations:block">
-          <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-            {headerLabel}
-          </div>
           {running.map((delegation) => {
             const taskLabel = delegation.task?.trim() || t("taskUnavailable");
             return (
