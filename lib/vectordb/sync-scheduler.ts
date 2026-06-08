@@ -373,8 +373,25 @@ export async function restartAllWatchers(): Promise<void> {
     }
   }
 
+  // Tally folders deferred due to FD pressure / concurrent-watcher cap so the
+  // user can see why some folders aren't syncing. Each deferred folder has its
+  // lastError set to a message starting with "Deferred:" by teardownPathFatally.
+  let deferredCount = 0;
+  for (const group of byPath.values()) {
+    for (const folder of group) {
+      const [row] = await db
+        .select({ lastError: agentSyncFolders.lastError })
+        .from(agentSyncFolders)
+        .where(eq(agentSyncFolders.id, folder.folderId));
+      if (row?.lastError?.startsWith("Deferred:")) {
+        deferredCount++;
+      }
+    }
+  }
+
   console.error(
     `[SyncService] Watcher restart complete: ${watchersCreated} new watcher(s), ` +
-    `${subscribersAdded} shared subscriber(s), ${foldersToWatch.length} total folders`
+    `${subscribersAdded} shared subscriber(s), ${foldersToWatch.length} total folders` +
+    (deferredCount > 0 ? `, ${deferredCount} deferred (FD pressure / watcher cap)` : "")
   );
 }

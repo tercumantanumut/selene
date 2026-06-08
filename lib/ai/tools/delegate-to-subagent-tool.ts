@@ -53,13 +53,13 @@ const delegateSchema = jsonSchema<DelegateToSubagentInput>({
   description:
     "Delegate work to a sub-agent. 'start' returns immediately and runs the sub-agent in the background. " +
     "Launch multiple start calls in parallel for concurrent sub-agent work. " +
-    "Use observe(delegationId, waitSeconds) to collect results once sub-agents settle.",
+    "Results are auto-delivered when sub-agents settle; use observe only for progress, pending prompts, missing output, or force re-read.",
   properties: {
     action: {
       type: "string",
       enum: ["start", "observe", "continue", "answer", "stop", "list"],
       description:
-        "Action to perform: 'start' a new delegation (returns immediately), 'observe' progress and collect results, 'continue' with a follow-up message, 'answer' a pending interactive question from a sub-agent, 'stop' a running delegation, or 'list' available sub-agents and active delegations.",
+        "Action to perform: 'start' a new delegation (returns immediately), 'observe' progress or force re-read a delivered result, 'continue' with a follow-up message, 'answer' a pending interactive question from a sub-agent, 'stop' a running delegation, or 'list' available sub-agents and active delegations.",
     },
     agentId: {
       type: "string",
@@ -106,6 +106,11 @@ const delegateSchema = jsonSchema<DelegateToSubagentInput>({
         "Max wait time in seconds. For blocking 'start': timeout before returning partial result (default 300). " +
         "For 'observe': wait before returning (default 0). Example: 30, 60, 600.",
     },
+    force: {
+      type: "boolean",
+      description:
+        "For action='observe': set true to re-read a settled result that was already auto-delivered. Default false returns compact already_delivered metadata instead of duplicating the payload.",
+    },
     runInBackground: {
       type: "boolean",
       description:
@@ -146,7 +151,7 @@ export function createDelegateToSubagentTool(
       "Delegate work to a sub-agent in your workflow team. " +
       "'start' launches the sub-agent and returns immediately. " +
       "Launch multiple start calls in parallel for concurrent sub-agent work. " +
-      "Use observe(delegationId, waitSeconds) to collect results once sub-agents settle.",
+      "Settled results are auto-delivered; avoid observe after delivery unless you need progress, missing output, pending prompts, or force re-read.",
     inputSchema: delegateSchema,
     execute: async (input: DelegateToSubagentInput): Promise<DelegateResult> => {
       const normalizedInput = normalizeCompatibilityInput(input);

@@ -6,7 +6,7 @@ Selene is built on the shoulders of giants. We are grateful to the open-source p
 
 - **[Vercel AI SDK](https://sdk.vercel.ai/)** and its provider packages (`@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/openai-compatible`). The core of all AI interactions in Selene.
 - **[Assistant UI](https://assistant-ui.com/)** (`@assistant-ui/react`, `@assistant-ui/react-ai-sdk`, `@assistant-ui/react-markdown`). Chat interface components.
-- **[Claude Agent SDK](https://docs.anthropic.com/en/docs/agents)** (`@anthropic-ai/claude-agent-sdk`). Powers the Claude Code provider.
+- **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)**. Local OAuth-bearing proxy that exposes Claude Code (and other CLI-bound providers) as standard Anthropic/OpenAI endpoints. Powers the Claude Code provider.
 - **[Model Context Protocol SDK](https://modelcontextprotocol.io/)** (`@modelcontextprotocol/sdk`). Tool and data integration standard.
 - **[GPT Tokenizer](https://github.com/niieani/gpt-tokenizer)**. Token counting across models.
 - **[Zod](https://zod.dev/)**. Schema validation for tool parameters and settings.

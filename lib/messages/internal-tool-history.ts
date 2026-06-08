@@ -11,12 +11,23 @@ const INTERNAL_TOOL_NAME_PATTERNS = [
 ];
 
 const INTERNAL_NAMESPACE_PATTERNS = [
-  /\bfunctions\.[a-z]+\b/i,
+  // Trailing `.` form catches mid-stream fragments where the second token of
+  // `functions.tool` has not arrived yet. Without this, a flush right after
+  // the period (which `shouldFlushBufferedText` triggers) would never match.
+  /\bfunctions\.(?:[a-z]+\b|(?=$|\s|[^a-zA-Z0-9_]))/i,
   /\bonly commentary tools?\b/i,
   /\bactual tools available names\b/i,
   /\bwe already have context\b/i,
   /\bread current files before edit\b/i,
   /\bsequential edits?\b/i,
+];
+
+const INTERNAL_HIGH_CONFIDENCE_PATTERNS = [
+  /\bfunctions\.tool\b/i,
+  /\bactual tool names\b/i,
+  /\bweird transcript says\b/i,
+  /\bread route\b/i,
+  /\bdue maybe alias\b/i,
 ];
 
 const INTERNAL_DIRECTIVE_PATTERNS = [
@@ -80,16 +91,43 @@ export function isInternalAssistantLeakText(
     return true;
   }
 
-  if (!options.hasToolCallLikeParts) {
-    return false;
-  }
-
   const namespaceMatches = countPatternMatches(trimmed, INTERNAL_NAMESPACE_PATTERNS);
+  const highConfidenceMatches = countPatternMatches(trimmed, INTERNAL_HIGH_CONFIDENCE_PATTERNS);
   const toolNameMatches = countPatternMatches(trimmed, INTERNAL_TOOL_NAME_PATTERNS);
   const directiveMatches = countPatternMatches(trimmed, INTERNAL_DIRECTIVE_PATTERNS);
   const codeNavigationMatches = countPatternMatches(trimmed, INTERNAL_CODE_NAVIGATION_PATTERNS);
 
-  if (namespaceMatches > 0 && directiveMatches > 0 && (toolNameMatches > 0 || codeNavigationMatches > 0)) {
+  if (!options.hasToolCallLikeParts) {
+    if (
+      namespaceMatches > 0 &&
+      directiveMatches > 0 &&
+      highConfidenceMatches > 0
+    ) {
+      return true;
+    }
+
+    // Fragment-leak guard: when streaming flushes a sentence at a mid-token
+    // period (e.g. inside `functions.tool`), the namespace pattern may not
+    // yet match — but the leak prose still includes ≥2 phrasings that are
+    // virtually never produced by polished assistant output. Combined with
+    // a directive/imperative cue, this is enough signal to suppress the
+    // fragment without waiting for the rest of the sentence.
+    if (highConfidenceMatches >= 2 && directiveMatches > 0) {
+      return true;
+    }
+
+    return false;
+  }
+
+  if (
+    namespaceMatches > 0 &&
+    directiveMatches > 0 &&
+    (toolNameMatches > 0 || codeNavigationMatches > 0 || highConfidenceMatches > 0)
+  ) {
+    return true;
+  }
+
+  if (highConfidenceMatches >= 2 && directiveMatches > 0) {
     return true;
   }
 

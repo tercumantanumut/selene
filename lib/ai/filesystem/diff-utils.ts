@@ -14,6 +14,56 @@ function truncateDiffLines(lines: string[], maxLines: number): string[] {
   ];
 }
 
+function getChangedLineSections(
+  beforeContent: string,
+  afterContent: string
+): { prefix: number; removed: string[]; added: string[] } {
+  const beforeLines = beforeContent.split("\n");
+  const afterLines = afterContent.split("\n");
+
+  let prefix = 0;
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix++;
+  }
+
+  let beforeSuffix = beforeLines.length - 1;
+  let afterSuffix = afterLines.length - 1;
+  while (
+    beforeSuffix >= prefix &&
+    afterSuffix >= prefix &&
+    beforeLines[beforeSuffix] === afterLines[afterSuffix]
+  ) {
+    beforeSuffix--;
+    afterSuffix--;
+  }
+
+  return {
+    prefix,
+    removed:
+      beforeSuffix >= prefix
+        ? beforeLines.slice(prefix, beforeSuffix + 1)
+        : [],
+    added:
+      afterSuffix >= prefix ? afterLines.slice(prefix, afterSuffix + 1) : [],
+  };
+}
+
+export function calculateChangedLineCount(
+  beforeContent: string,
+  afterContent: string
+): number {
+  if (beforeContent === afterContent) {
+    return 0;
+  }
+
+  const { removed, added } = getChangedLineSections(beforeContent, afterContent);
+  return Math.max(removed.length, added.length);
+}
+
 /**
  * Generates a unified diff-like string with line numbers for a string replacement.
  */
@@ -63,37 +113,10 @@ export function generateBeforeAfterDiff(
   maxLines: number = DEFAULT_MAX_DIFF_LINES
 ): string {
   const fileName = basename(filePath);
-  const beforeLines = beforeContent.split("\n");
-  const afterLines = afterContent.split("\n");
-
-  let prefix = 0;
-  while (
-    prefix < beforeLines.length &&
-    prefix < afterLines.length &&
-    beforeLines[prefix] === afterLines[prefix]
-  ) {
-    prefix++;
-  }
-
-  let beforeSuffix = beforeLines.length - 1;
-  let afterSuffix = afterLines.length - 1;
-  while (
-    beforeSuffix >= prefix &&
-    afterSuffix >= prefix &&
-    beforeLines[beforeSuffix] === afterLines[afterSuffix]
-  ) {
-    beforeSuffix--;
-    afterSuffix--;
-  }
-
-  const removed =
-    beforeSuffix >= prefix
-      ? beforeLines.slice(prefix, beforeSuffix + 1)
-      : ([] as string[]);
-  const added =
-    afterSuffix >= prefix
-      ? afterLines.slice(prefix, afterSuffix + 1)
-      : ([] as string[]);
+  const { prefix, removed, added } = getChangedLineSections(
+    beforeContent,
+    afterContent
+  );
 
   const startLine = prefix + 1;
   const output = [

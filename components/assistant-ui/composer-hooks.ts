@@ -667,6 +667,15 @@ export function usePromptEnhancement({
     chunksRetrieved?: number;
   } | null>(null);
 
+  // Mirror the live composer value so the in-flight enhance request can detect
+  // mid-flight typing on response. The useCallback closure captures inputValue
+  // at click time; without this ref we would unconditionally overwrite whatever
+  // the user typed while the request was in flight.
+  const currentInputRef = useRef(inputValue);
+  useEffect(() => {
+    currentInputRef.current = inputValue;
+  }, [inputValue]);
+
   const clearEnhancement = useCallback(() => {
     setEnhancedContext(null);
     setEnhancementInfo(null);
@@ -734,6 +743,17 @@ export function usePromptEnhancement({
       const enhancedPrompt = data.enhancedPrompt?.trim() ?? "";
 
       if (data.success && enhancedPrompt) {
+        // Bug guard: do not clobber mid-flight user typing. The reviewer flagged
+        // that this branch unconditionally overwrote the textarea, so any keys
+        // pressed during the request were silently lost. Compare the live
+        // composer value (via ref) against the input we actually requested
+        // enhancement for; if they diverge, keep the user's typing and tell
+        // them what we have so they can re-enhance the new text if they want.
+        const liveInput = currentInputRef.current.trim();
+        if (liveInput && liveInput !== enhancementInput) {
+          toast.info(t("enhance.inputChangedDuringEnhance"));
+          return;
+        }
         setInputValue(enhancedPrompt);
         setEnhancedContext(enhancedPrompt);
         setEnhancementInfo({ filesFound: data.filesFound, chunksRetrieved: data.chunksRetrieved });

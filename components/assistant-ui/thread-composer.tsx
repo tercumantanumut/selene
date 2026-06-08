@@ -1,6 +1,19 @@
 "use client";
 
 import type { FC } from "react";
+type RichEditorAppendPart =
+  | { type: "text"; text: string }
+  | {
+      type: "image";
+      id?: string;
+      image: string;
+      displayName?: string;
+      contentType?: string;
+      localPath?: string;
+      filePath?: string;
+      size?: number;
+      kind?: string;
+    };
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   ComposerPrimitive,
@@ -22,6 +35,8 @@ import {
   MicIcon,
   CrosshairIcon,
   ImageOffIcon,
+  RulerIcon,
+  PipetteIcon,
 } from "lucide-react";
 import { resilientFetch, resilientPost } from "@/lib/utils/resilient-fetch";
 import { toast } from "sonner";
@@ -33,6 +48,15 @@ import {
   formatInspectSelectionLabel,
   type InspectMessageContext,
 } from "@/lib/design/workspace/inspect-context";
+import {
+  buildDesignContext,
+  type DesignMessageContext,
+} from "@/lib/design/workspace/design-context";
+import type {
+  Measurement,
+  PickedColor,
+} from "@/lib/design/workspace/types";
+import { pickedColorSourceShortLabel } from "@/lib/design/workspace/picked-color-display";
 import { useCharacter } from "./character-context";
 import { useChatLifecycleStatus } from "@/components/chat-provider";
 import { useOptionalDeepResearch } from "./deep-research-context";
@@ -49,8 +73,9 @@ import { useSettings } from "@/lib/hooks/use-settings";
 import { providerRejectsInlineImages } from "@/lib/ai/provider-types";
 import { ContextWindowIndicator } from "./context-window-indicator";
 import { ModelSelector } from "./model-selector";
-import { ActiveDelegationsIndicator } from "./active-delegations-indicator";
-import FileMentionAutocomplete from "./file-mention-autocomplete";
+import { BackgroundProcessesIndicator } from "./background-processes-indicator";
+import { ClaudeCodeSubagentsIndicator } from "./claude-code-subagents-indicator";
+import FileMentionAutocomplete, { type MentionSelection } from "./file-mention-autocomplete";
 import { ComposerAttachment } from "./thread-message-components";
 import { ComposerActionBar } from "./composer-action-bar";
 import { buildSimpleComposerSubmission } from "./composer-submit";
@@ -91,12 +116,38 @@ interface QueuedMessage {
   id: string;
   content: string;
   mode: "chat" | "deep-research";
-  inspectContext?: InspectMessageContext | null;
+  designContext?: DesignMessageContext | null;
+  vectorMentions?: ComposerVectorMention[];
   // "queued-classic": waiting for run to end before replaying
   // "queued-live": currently being submitted to the live queue API
   // "injected-live": successfully delivered to the running model
   // "fallback": live injection failed, will replay after run ends
   status: "queued-classic" | "queued-live" | "injected-live" | "fallback";
+}
+
+/**
+ * v2 @-mention payload kept alongside `inputValue`. Each mention is paired
+ * with a literal `@<displayLabel>` marker in the textarea; if the user
+ * deletes the marker, the mention is dropped from this list (see effect
+ * below). At submit time the list is forwarded to the API as
+ * `metadata.custom.vectorMentions` and resolved server-side by
+ * `injectVectorMentions` in `app/api/chat/content-extractor.ts`.
+ */
+interface ComposerVectorMention {
+  id: string;
+  kind: "file" | "chunk";
+  characterId: string;
+  folderId?: string;
+  relativePath: string;
+  filePath: string;
+  displayLabel: string;
+  snippet?: {
+    text: string;
+    startLine?: number;
+    endLine?: number;
+    score?: number;
+    chunkIndex?: number;
+  };
 }
 
 type VoiceTranscriptPhase = "polishing" | "swap" | "stable";
@@ -125,8 +176,25 @@ function buildInspectChipLabel(element: {
   });
 }
 
-function buildUserMessageMetadata(inspectContext: InspectMessageContext | null) {
-  return inspectContext ? { custom: { inspectContext } } : undefined;
+function buildMeasurementChipLabel(m: Measurement): string {
+  const dx = Math.round(m.distances?.dx ?? 0);
+  const dy = Math.round(m.distances?.dy ?? 0);
+  return `${Math.abs(dx)}×${Math.abs(dy)}px`;
+}
+
+function buildUserMessageMetadata(
+  designContext: DesignMessageContext | null,
+  vectorMentions?: ComposerVectorMention[],
+) {
+  const hasDesign = !!designContext;
+  const hasMentions = Array.isArray(vectorMentions) && vectorMentions.length > 0;
+  if (!hasDesign && !hasMentions) return undefined;
+  return {
+    custom: {
+      ...(hasDesign ? { designContext } : {}),
+      ...(hasMentions ? { vectorMentions } : {}),
+    },
+  };
 }
 
 function appendQueuedUserMessage(
@@ -137,7 +205,7 @@ function appendQueuedUserMessage(
   threadRuntime.append({
     role: "user",
     content: [{ type: "text", text: message.content }],
-    metadata: buildUserMessageMetadata(message.inspectContext ?? null),
+    metadata: buildUserMessageMetadata(message.designContext ?? null, message.vectorMentions),
   });
 }
 
@@ -174,8 +242,6 @@ export const Composer: FC<{
   isProcessingInBackground = false,
   sessionId,
   activeRunId,
-  workspaceMode = "sidebar",
-  onOpenDelegationSession,
   sttEnabled = false,
   voicePostProcessing = true,
   voiceActionsEnabled = true,
@@ -215,14 +281,23 @@ export const Composer: FC<{
 
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [activeVoiceTranscript, setActiveVoiceTranscript] = useState<ActiveVoiceTranscript | null>(null);
+  // v2 @-mention payloads (file refs and semantic chunks) staged for the next send.
+  const [pendingMentions, setPendingMentions] = useState<ComposerVectorMention[]>([]);
 
-  // Design workspace inspect state — for attaching inspect context on send
+  // Design workspace inspect / measurement / colour state — surfaced as
+  // composer chips and serialised onto outbound messages as `designContext`.
   const inspectorEnabled = useDesignWorkspaceStore((s) => s.inspectorEnabled);
   const selectedElements = useDesignWorkspaceStore((s) => s.selectedElements);
   const activeComponentId = useDesignWorkspaceStore((s) => s.activeComponentId);
   const designComponents = useDesignWorkspaceStore((s) => s.components);
   const removeSelectedElement = useDesignWorkspaceStore((s) => s.removeSelectedElement);
   const clearSelectedElements = useDesignWorkspaceStore((s) => s.clearSelectedElements);
+  const designMeasurements = useDesignWorkspaceStore((s) => s.measurements);
+  const designPickedColors = useDesignWorkspaceStore((s) => s.pickedColors);
+  const removeMeasurement = useDesignWorkspaceStore((s) => s.removeMeasurement);
+  const clearMeasurements = useDesignWorkspaceStore((s) => s.clearMeasurements);
+  const removePickedColor = useDesignWorkspaceStore((s) => s.removePickedColor);
+  const clearPickedColors = useDesignWorkspaceStore((s) => s.clearPickedColors);
 
   const inspectContext = useMemo((): InspectMessageContext | null => {
     if (!inspectorEnabled || selectedElements.length === 0) return null;
@@ -235,6 +310,39 @@ export const Composer: FC<{
       sessionId,
     });
   }, [inspectorEnabled, selectedElements, activeComponentId, designComponents, sessionId]);
+
+  const designContext = useMemo((): DesignMessageContext | null => {
+    const component = activeComponentId
+      ? designComponents.find((c) => c.id === activeComponentId) ?? null
+      : null;
+    return buildDesignContext({
+      inspect: inspectContext,
+      measurements: designMeasurements,
+      pickedColors: designPickedColors,
+      component: component ? { id: component.id, name: component.name } : null,
+      sessionId,
+    });
+  }, [
+    inspectContext,
+    designMeasurements,
+    designPickedColors,
+    activeComponentId,
+    designComponents,
+    sessionId,
+  ]);
+
+  const clearDesignContextOnSend = useCallback(() => {
+    if (selectedElements.length > 0) clearSelectedElements();
+    if (designMeasurements.length > 0) clearMeasurements();
+    if (designPickedColors.length > 0) clearPickedColors();
+  }, [
+    selectedElements.length,
+    designMeasurements.length,
+    designPickedColors.length,
+    clearSelectedElements,
+    clearMeasurements,
+    clearPickedColors,
+  ]);
 
   // Attempt to inject a message into the currently active run's live prompt queue.
   // The server resolves the active runId from the session index — no runId needed on the client.
@@ -253,7 +361,7 @@ export const Composer: FC<{
   //
   // Returns true if successfully queued, false if all retries failed.
   const queueLivePromptForActiveRun = useCallback(
-    async (content: string, inspectCtx?: InspectMessageContext | null): Promise<boolean> => {
+    async (content: string, designCtx?: DesignMessageContext | null): Promise<boolean> => {
       const MAX_RETRIES = 8;
       const BASE_DELAY_MS = 200;
       const MAX_DELAY_MS = 3200;
@@ -270,7 +378,7 @@ export const Composer: FC<{
         try {
           const { data, status } = await resilientPost<{ queued: boolean; reason?: string }>(
             `/api/sessions/${sessionId}/live-prompt-queue`,
-            { content, ...(inspectCtx ? { inspectContext: inspectCtx } : {}) },
+            { content, ...(designCtx ? { designContext: designCtx } : {}) },
             { timeout: 5_000, retries: 0 }
           );
 
@@ -924,12 +1032,13 @@ export const Composer: FC<{
               id: msgId,
               content: expandedMessage,
               mode: "chat",
-              inspectContext,
+              designContext,
+              vectorMentions: pendingMentions.length > 0 ? [...pendingMentions] : undefined,
               status: "queued-live",
             }]);
 
             // Fire injection in the background; chip lifecycle driven by result
-            void queueLivePromptForActiveRun(expandedMessage, inspectContext).then(injected => {
+            void queueLivePromptForActiveRun(expandedMessage, designContext).then(injected => {
               if (injected) {
                 // Successfully delivered — show brief confirmation then remove chip
                 setQueuedMessages(prev =>
@@ -953,7 +1062,8 @@ export const Composer: FC<{
               id: msgId,
               content: expandedMessage,
               mode: isDeepResearchMode ? "deep-research" : "chat",
-              inspectContext,
+              designContext,
+              vectorMentions: pendingMentions.length > 0 ? [...pendingMentions] : undefined,
               status: "queued-classic",
             }]);
           }
@@ -966,11 +1076,15 @@ export const Composer: FC<{
         if (captureSession.isUnifiedSession) {
           captureSession.endSession();
         }
-        // Clear inspect selections after queuing
-        if (inspectContext) clearSelectedElements();
+        // Clear design-context selections after queuing
+        if (designContext) clearDesignContextOnSend();
+        if (pendingMentions.length > 0) setPendingMentions([]);
       } else {
-        if (inspectContext) {
-          // Use threadRuntime.append() to include inspect metadata (composer.send() doesn't support metadata)
+        const hasMentions = pendingMentions.length > 0;
+        if (designContext || hasMentions) {
+          // composer.send() can't carry metadata — when we need to forward
+          // designContext or v2 vector mentions, fall back to the explicit
+          // append path so the API receives `metadata.custom.*`.
           const composerAttachments = (threadRuntime.composer.getState().attachments ?? []).filter(
             (a): a is CompleteAttachment =>
               a.status.type === "complete" || a.status.type === "requires-action",
@@ -979,10 +1093,11 @@ export const Composer: FC<{
             role: "user",
             content: [{ type: "text", text: expandedMessage }],
             attachments: composerAttachments,
-            metadata: buildUserMessageMetadata(inspectContext),
+            metadata: buildUserMessageMetadata(designContext, pendingMentions),
           });
           if (hasAttachments) threadRuntime.composer.clearAttachments();
-          clearSelectedElements();
+          if (designContext) clearDesignContextOnSend();
+          if (hasMentions) setPendingMentions([]);
         } else {
           threadRuntime.composer.setText(expandedMessage);
           threadRuntime.composer.send();
@@ -1013,8 +1128,11 @@ export const Composer: FC<{
       lastTranscriptRef,
       wasAiEnhancedRef,
       captureSession,
-      inspectContext,
-      clearSelectedElements,
+      designContext,
+      clearDesignContextOnSend,
+      queueLivePromptForActiveRun,
+      sessionId,
+      pendingMentions,
     ]
   );
 
@@ -1086,8 +1204,29 @@ export const Composer: FC<{
         return;
       }
 
+      const appendContent: RichEditorAppendPart[] = [];
+      for (const part of contentParts) {
+        if (part.type === "text" && typeof part.text === "string" && part.text.trim().length > 0) {
+          appendContent.push({ type: "text", text: part.text });
+          continue;
+        }
+
+        if (part.type === "image" && typeof part.image === "string") {
+          appendContent.push({
+            type: "image",
+            id: part.id,
+            image: part.image,
+            displayName: part.displayName,
+            contentType: part.contentType,
+            localPath: part.localPath,
+            filePath: part.filePath,
+            size: part.size,
+            kind: part.kind,
+          });
+        }
+      }
+
       // Prepend screen capture context if metadata is available from a unified session
-      let finalComposerText = composerText;
       if (captureSession.isUnifiedSession && captureSession.metadata) {
         const meta = captureSession.metadata;
         const contextParts: string[] = [];
@@ -1100,32 +1239,15 @@ export const Composer: FC<{
           contextParts.push(`[URL: ${meta.browserUrl}]`);
         }
         if (contextParts.length > 0) {
-          finalComposerText = contextParts.join("\n") + "\n\n" + finalComposerText;
+          appendContent.unshift({ type: "text" as const, text: contextParts.join("\n") });
         }
       }
 
-      const inlineAttachments = inlineImageParts.map((part, index) => ({
-        id: `tiptap-inline-${Date.now()}-${index}`,
-        type: "image" as const,
-        name: `inline-image-${index + 1}`,
-        contentType: part.contentType ?? "image/*",
-        content: [{ type: "image" as const, image: part.image }],
-        status: { type: "complete" as const },
-        metadata: {
-          url: part.image,
-          localPath: part.localPath,
-          filePath: part.filePath,
-          contentType: part.contentType,
-          size: part.size,
-          kind: part.kind ?? "image",
-        },
-      }));
-
       threadRuntime.append({
         role: "user",
-        content: finalComposerText ? [{ type: "text", text: finalComposerText }] : [],
-        attachments: [...composerAttachments, ...inlineAttachments],
-        metadata: buildUserMessageMetadata(inspectContext),
+        content: appendContent,
+        attachments: composerAttachments,
+        metadata: buildUserMessageMetadata(designContext),
       });
 
       tiptapRef.current?.clear();
@@ -1136,7 +1258,7 @@ export const Composer: FC<{
       }
       // End unified capture session after send (don't clear attachments — already sent)
       if (captureSession.isUnifiedSession) captureSession.endSession();
-      if (inspectContext) clearSelectedElements();
+      if (designContext) clearDesignContextOnSend();
     },
     [
       attachmentCount,
@@ -1148,8 +1270,8 @@ export const Composer: FC<{
       isQueueBlocked,
       t,
       threadRuntime,
-      inspectContext,
-      clearSelectedElements,
+      designContext,
+      clearDesignContextOnSend,
     ]
   );
 
@@ -1209,12 +1331,51 @@ export const Composer: FC<{
   }, [clearTiptapDraft]);
 
   const handleInsertMention = useCallback(
-    (mention: string, atIndex: number, queryLength: number) => {
+    (
+      displayLabel: string,
+      atIndex: number,
+      queryLength: number,
+      selection: MentionSelection,
+    ) => {
       const before = inputValue.slice(0, atIndex);
       const after = inputValue.slice(atIndex + 1 + queryLength);
-      const newValue = `${before}@${mention} ${after}`;
+      const newValue = `${before}@${displayLabel} ${after}`;
       setInputValue(newValue);
-      const newCursor = atIndex + mention.length + 2;
+
+      // Stash the structured mention so the submit handler can forward it
+      // as `metadata.custom.vectorMentions`. We DON'T encode any payload
+      // into the textarea text — the marker is purely a visual hook the
+      // user can delete to remove the mention.
+      const newMention: ComposerVectorMention =
+        selection.kind === "file"
+          ? {
+              id: `vm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              kind: "file",
+              characterId: character?.id ?? "",
+              folderId: selection.file.folderId,
+              relativePath: selection.file.relativePath,
+              filePath: selection.file.filePath,
+              displayLabel,
+            }
+          : {
+              id: `vm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              kind: "chunk",
+              characterId: character?.id ?? "",
+              folderId: selection.chunk.folderId,
+              relativePath: selection.chunk.relativePath,
+              filePath: selection.chunk.filePath,
+              displayLabel,
+              snippet: {
+                text: selection.chunk.text,
+                startLine: selection.chunk.startLine,
+                endLine: selection.chunk.endLine,
+                score: selection.chunk.score,
+                chunkIndex: selection.chunk.chunkIndex,
+              },
+            };
+      setPendingMentions((prev) => [...prev, newMention]);
+
+      const newCursor = atIndex + displayLabel.length + 2;
       updateCursorPosition(newCursor);
       requestAnimationFrame(() => {
         if (inputRef.current) {
@@ -1223,8 +1384,39 @@ export const Composer: FC<{
         }
       });
     },
-    [inputValue, updateCursorPosition]
+    [inputValue, updateCursorPosition, character?.id]
   );
+
+  // Reconcile mentions: when the user deletes a `@<label>` text marker,
+  // drop the corresponding mention payload so we don't leak stale context.
+  useEffect(() => {
+    if (pendingMentions.length === 0) return;
+    setPendingMentions((prev) => {
+      const filtered = prev.filter((m) => inputValue.includes(`@${m.displayLabel}`));
+      return filtered.length === prev.length ? prev : filtered;
+    });
+  }, [inputValue, pendingMentions.length]);
+
+  const removePendingMention = useCallback((id: string) => {
+    setPendingMentions((prev) => {
+      const m = prev.find((x) => x.id === id);
+      if (!m) return prev;
+      // Remove the corresponding `@<label> ` marker (including trailing space).
+      setInputValue((text) => {
+        const marker = `@${m.displayLabel} `;
+        const idx = text.indexOf(marker);
+        if (idx === -1) {
+          // Try without trailing space (last token)
+          const bare = `@${m.displayLabel}`;
+          const bareIdx = text.indexOf(bare);
+          if (bareIdx === -1) return text;
+          return text.slice(0, bareIdx) + text.slice(bareIdx + bare.length);
+        }
+        return text.slice(0, idx) + text.slice(idx + marker.length);
+      });
+      return prev.filter((x) => x.id !== id);
+    });
+  }, [setInputValue]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1495,7 +1687,7 @@ export const Composer: FC<{
       || deepResearch.phase === "error"
     )
   );
-  const isBackgroundProcessingVisible = isProcessingInBackground || isDeepResearchBackgroundPolling;
+  const isBackgroundProcessingVisible = isProcessingInBackground || isDeepResearchBackgroundPolling || hasTrackedBackgroundRun;
 
   return (
     <div className="relative w-full">
@@ -1633,6 +1825,28 @@ export const Composer: FC<{
 
         <div className="flex flex-wrap gap-2 p-2 empty:hidden">
           <ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} />
+          {pendingMentions.map((m) => (
+            <div
+              key={m.id}
+              title={m.kind === "chunk" ? `${m.relativePath} • semantic snippet` : m.relativePath}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-mono",
+                "bg-blue-50 text-blue-900 border border-blue-200",
+                "dark:bg-blue-950/40 dark:text-blue-200 dark:border-blue-900",
+              )}
+            >
+              <span className="opacity-60">{m.kind === "file" ? "@" : "@~"}</span>
+              <span className="truncate max-w-[18ch]">{m.displayLabel}</span>
+              <button
+                type="button"
+                className="opacity-60 hover:opacity-100"
+                onClick={() => removePendingMention(m.id)}
+                aria-label={`Remove mention ${m.displayLabel}`}
+              >
+                <XIcon className="size-3" />
+              </button>
+            </div>
+          ))}
         </div>
 
         {/*
@@ -1685,6 +1899,86 @@ export const Composer: FC<{
               <button
                 type="button"
                 onClick={clearSelectedElements}
+                className="text-[11px] font-mono text-muted-foreground hover:text-red-500 transition-colors ml-1"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Measurement chips — picked rulers between two inspected elements */}
+        {designMeasurements.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-terminal-dark/10">
+            <RulerIcon className="size-3 text-emerald-500 shrink-0" />
+            <span className="text-[11px] font-mono text-muted-foreground mr-1">Measure:</span>
+            {designMeasurements.map((m) => (
+              <span
+                key={m.id}
+                className={cn(
+                  "inline-flex items-center gap-0.5 rounded border px-1.5 py-0.5 text-[11px] font-mono",
+                  m.orphaned
+                    ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300"
+                    : "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+                )}
+                title={m.orphaned ? "Target element no longer present" : undefined}
+              >
+                {buildMeasurementChipLabel(m)}
+                <button
+                  type="button"
+                  onClick={() => removeMeasurement(m.id)}
+                  className="ml-0.5 text-emerald-400 hover:text-red-500 transition-colors"
+                  aria-label="Remove measurement"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </span>
+            ))}
+            {designMeasurements.length > 1 && (
+              <button
+                type="button"
+                onClick={clearMeasurements}
+                className="text-[11px] font-mono text-muted-foreground hover:text-red-500 transition-colors ml-1"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Colour-picker chips — swatch + hex + paint source pill */}
+        {designPickedColors.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-terminal-dark/10">
+            <PipetteIcon className="size-3 text-pink-500 shrink-0" />
+            <span className="text-[11px] font-mono text-muted-foreground mr-1">Colors:</span>
+            {designPickedColors.map((c) => (
+              <span
+                key={c.id}
+                className="inline-flex items-center gap-1 rounded bg-pink-50 dark:bg-pink-950/40 border border-pink-200 dark:border-pink-800 px-1.5 py-0.5 text-[11px] font-mono text-pink-700 dark:text-pink-300"
+              >
+                <span
+                  aria-hidden="true"
+                  className="inline-block size-3 rounded-sm border border-black/20"
+                  style={{ backgroundColor: c.hex }}
+                />
+                <span>{c.hex}</span>
+                <span className="rounded-sm bg-pink-100 dark:bg-pink-900/60 px-1 text-[11px] uppercase tracking-tight">
+                  {pickedColorSourceShortLabel(c.source)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removePickedColor(c.id)}
+                  className="ml-0.5 text-pink-400 hover:text-red-500 transition-colors"
+                  aria-label={`Remove ${c.hex}`}
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </span>
+            ))}
+            {designPickedColors.length > 1 && (
+              <button
+                type="button"
+                onClick={clearPickedColors}
                 className="text-[11px] font-mono text-muted-foreground hover:text-red-500 transition-colors ml-1"
               >
                 Clear all
@@ -1977,10 +2271,13 @@ export const Composer: FC<{
         {sessionId && <ModelSelector sessionId={sessionId} status={contextStatus} />}
       </div>
 
-      <ActiveDelegationsIndicator
+      <ClaudeCodeSubagentsIndicator
+        enabled={activeLlmProvider === "claudecode"}
+        sessionId={sessionId}
+      />
+      <BackgroundProcessesIndicator
         characterId={character?.id ?? null}
-        workspaceMode={workspaceMode}
-        onOpenSession={onOpenDelegationSession}
+        sessionId={sessionId}
       />
     </div>
   );

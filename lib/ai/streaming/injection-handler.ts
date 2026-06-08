@@ -1,10 +1,8 @@
 /**
  * Mid-Stream User-Message Injection — Per-Prompt Handler
  *
- * Shared server-side flow that both the non-Claude-Code path
- * (`app/api/chat/route.ts` `prepareStep` :1219–1265) and the Claude Code
- * path (`lib/ai/providers/claudecode-provider.ts` `onQueueMessages`
- * :808–849) call when draining injected prompts.
+ * Shared server-side flow that every provider's chat route calls when
+ * draining injected prompts mid-stream.
  *
  * Responsibilities:
  *   1. Seal the pre-injection assistant streaming partial (flush to DB).
@@ -23,14 +21,15 @@
  *      the chat AbortController and start a fresh step.
  *
  * The handlers do NOT construct the AI SDK `UserModelMessage` array or the
- * synthetic tool_result shim — those concerns live in the caller (route.ts
- * for non-CC, `streamInput` for CC). Keeping this module narrow makes it
- * unit-testable without mocking `streamText`.
+ * synthetic tool_result shim — those concerns live in the caller route.
+ * Keeping this module narrow makes it unit-testable without mocking
+ * `streamText`.
  */
 
 import { createMessage, updateMessage } from "@/lib/db/queries";
 import { nextOrderingIndex } from "@/lib/session/message-ordering";
 import type { LivePromptEntry } from "@/lib/background-tasks/live-prompt-queue-registry";
+import { mergeDesignContext } from "@/lib/design/workspace/design-context";
 import {
   emitInjectedUserMessageChunk,
   type InjectedUserMessagePayload,
@@ -45,9 +44,8 @@ import {
 
 /**
  * Subset of the streaming-state object that we mutate during the seal/reset
- * phase. Kept narrow so tests can pass a plain object and so both the route
- * handler and claudecode-provider can share the signature without leaking
- * their provider-specific extensions.
+ * phase. Kept narrow so tests can pass a plain object and so callers can
+ * share the signature without leaking their provider-specific extensions.
  */
 export interface InjectionStreamingState {
   messageId: string | undefined;
@@ -67,8 +65,7 @@ export interface HandleInjectedPromptsArgs {
   streamingState: InjectionStreamingState | null | undefined;
   /**
    * Flush-on-truthy wrapper around the per-provider streaming→DB sync
-   * helper. Matches the signature used in `app/api/chat/route.ts` and
-   * `claudecode-provider.ts`.
+   * helper. Matches the signature used in `app/api/chat/route.ts`.
    */
   syncStreamingMessage: ((flush?: boolean) => Promise<void>) | null | undefined;
   /**
@@ -187,10 +184,12 @@ export async function handleInjectedPromptsNonCC(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Covers `lib/ai/providers/claudecode-provider.ts` `onQueueMessages`
- * :808–849. The caller is responsible for calling `query.streamInput(...)`
- * after this handler returns — we handle only DB + wire, not the SDK-level
- * input injection.
+ * Claude-Code-specific variant of the injection handler. The Claude Code
+ * provider runs entirely inside streamText step 0, so post-injection
+ * follow-ups must ignore canonical step reconciliation — the caller in
+ * `app/api/chat/route.ts` bumps `streamingState.stepOffset` accordingly.
+ * This handler still owns only the DB + wire concerns; it does not touch
+ * the underlying streamText handle.
  */
 export async function handleInjectedPromptsCC(
   args: HandleInjectedPromptsArgs,
@@ -239,8 +238,15 @@ async function runHandler(
       const orderingIndex = await nextOrderingIndex(sessionId);
 
       const promptCustom: Record<string, unknown> = {};
-      if (prompt.metadata?.inspectContext) {
-        promptCustom.inspectContext = prompt.metadata.inspectContext;
+      // Merge legacy `inspectContext` into the unified `designContext` so a
+      // measurements-only design payload doesn't drop a populated legacy
+      // inspect on persistence.
+      const merged = mergeDesignContext(
+        prompt.metadata?.designContext ?? null,
+        { inspect: prompt.metadata?.inspectContext ?? null },
+      );
+      if (merged) {
+        promptCustom.designContext = merged;
       }
       if (prompt.metadata?.kind === "delegation_completion") {
         if (prompt.metadata.delegationId) {

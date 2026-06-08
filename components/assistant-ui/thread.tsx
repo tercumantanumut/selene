@@ -42,6 +42,7 @@ import {
   EditComposer as EditComposerComponent,
 } from "./thread-message-components";
 import { Composer } from "./thread-composer";
+import { ActiveTasksInlineStatus } from "@/components/schedules/active-tasks-indicator";
 import { BrowserBackdrop } from "./browser-backdrop";
 import { useTheme } from "@/components/theme/theme-provider";
 import { useChatTransportError } from "@/components/chat-provider";
@@ -424,6 +425,7 @@ export const Thread: FC<ThreadProps> = ({
               onCompact={triggerCompact}
               isCompacting={isCompacting}
             />
+            <ActiveTasksInlineStatus className="mt-1" />
           </div>
         </GalleryWrapper>
         </BrowserActiveProvider>

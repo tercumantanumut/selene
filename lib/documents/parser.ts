@@ -4,6 +4,7 @@ import { extname, join, relative } from "path";
 import { pathToFileURL } from "url";
 
 import { isAudioMimeType, transcribeAudio } from "@/lib/audio/transcription";
+import { loadPdfParseRuntime } from "./pdf-parse-runtime";
 
 import { DocumentErrorCode, DocumentProcessingError } from "./errors";
 import {
@@ -464,7 +465,7 @@ async function extractFromPdf(
   }
 
   try {
-    const pdfModule = await import("pdf-parse");
+    const pdfModule = await loadPdfParseRuntime();
     const PDFParse = (pdfModule as { PDFParse?: new (options: { data: Buffer }) => any }).PDFParse;
 
     if (typeof PDFParse === "function") {

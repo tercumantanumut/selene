@@ -423,12 +423,16 @@ const loggedSanitizerToolCallIds = new Set<string>();
 const DEBUG_CHAT = process.env.NEXT_PUBLIC_DEBUG_CHAT === "true";
 
 type AttachmentMetadata = {
+  id?: string;
+  name?: string;
   url?: string;
   localPath?: string;
   filePath?: string;
   contentType?: string;
   size?: number;
   kind?: string;
+  inline?: boolean;
+  order?: number;
 };
 
 interface InspectContextMetadata {
@@ -463,6 +467,18 @@ function isInspectContextMetadata(value: unknown): value is InspectContextMetada
   return Array.isArray(candidate.elements) && candidate.elements.length > 0;
 }
 
+/**
+ * Shallow predicate for the unified `designContext` metadata. Strict
+ * sanitisation lives server-side in `sanitizeDesignContext` — here we only
+ * validate enough shape to know the field is a non-empty object so we can
+ * forward it as-is to the wire.
+ */
+function isDesignContextMetadata(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return obj.source === "design-workspace" || typeof obj.version === "number";
+}
+
 type AttachmentAwarePending = PendingAttachment & {
   metadata?: AttachmentMetadata;
 };
@@ -474,6 +490,44 @@ type AttachmentAwareComplete = CompleteAttachment & {
 type CustomToCreateMessageFunction = <UI_MESSAGE extends UIMessage = UIMessage>(
   message: AppendMessage,
 ) => CreateUIMessage<UI_MESSAGE>;
+
+function createInlineAttachmentMetadata(part: {
+  type?: string;
+  id?: string;
+  image?: string;
+  displayName?: string;
+  contentType?: string;
+  localPath?: string;
+  filePath?: string;
+  size?: number;
+}, index: number): AttachmentMetadata | null {
+  if (
+    part.type !== "image" ||
+    typeof part.image !== "string" ||
+    part.image.length === 0 ||
+    typeof part.id !== "string" ||
+    !part.id.startsWith("editor-inline-image-")
+  ) {
+    return null;
+  }
+
+  const order = index + 1;
+  return {
+    id: part.id,
+    name:
+      typeof part.displayName === "string" && part.displayName.length > 0
+        ? part.displayName
+        : `[Image ${order}]`,
+    contentType: part.contentType || "image/png",
+    url: part.image,
+    localPath: part.localPath,
+    filePath: part.filePath,
+    size: part.size,
+    kind: "inline-image",
+    inline: true,
+    order,
+  };
+}
 
 export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunction = <
   UI_MESSAGE extends UIMessage = UIMessage,
@@ -498,6 +552,7 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
     });
   }
 
+  let inlineImageIndex = 0;
   const rawInputParts = [
     ...message.content.filter((part) => part.type !== "file"),
     ...(message.attachments?.flatMap((attachment) =>
@@ -536,12 +591,16 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
         return { type: "text" as const, text: part.text };
       case "image":
         {
+          const inlineAttachment = createInlineAttachmentMetadata(part, inlineImageIndex++);
           const attachmentDetails = attachmentDetailsByUrl.get(part.image);
         return {
           type: "file" as const,
           url: part.image,
-          ...((part.filename || attachmentDetails?.filename) && {
-            filename: part.filename || attachmentDetails?.filename,
+          ...(inlineAttachment?.id && {
+            id: inlineAttachment.id,
+          }),
+          ...((part.filename || inlineAttachment?.name || attachmentDetails?.filename) && {
+            filename: part.filename || inlineAttachment?.name || attachmentDetails?.filename,
           }),
           mediaType:
             ("contentType" in part && typeof part.contentType === "string"
@@ -565,6 +624,11 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
         throw new Error(`Unsupported part type: ${part.type}`);
     }
   });
+
+  inlineImageIndex = 0;
+  const inlineAttachmentMetadata = inputParts
+    .map((part) => part.type === "image" ? createInlineAttachmentMetadata(part, inlineImageIndex++) : null)
+    .filter((attachment): attachment is AttachmentMetadata => attachment !== null);
 
   const attachmentMetadata = (message.attachments ?? [])
     .map((attachment) => {
@@ -597,18 +661,23 @@ export const toCreateMessageWithAttachmentMetadata: CustomToCreateMessageFunctio
   const inspectContext = isInspectContextMetadata(existingCustom.inspectContext)
     ? existingCustom.inspectContext
     : undefined;
+  const designContext = isDesignContextMetadata(existingCustom.designContext)
+    ? existingCustom.designContext
+    : undefined;
 
   return {
     role: message.role,
     parts,
     metadata: {
       ...(message.metadata ?? {}),
-      ...((attachmentMetadata.length > 0 || inspectContext)
+      ...((attachmentMetadata.length > 0 || inlineAttachmentMetadata.length > 0 || inspectContext || designContext)
         ? {
             custom: {
               ...existingCustom,
               ...(attachmentMetadata.length > 0 ? { attachments: attachmentMetadata } : {}),
+              ...(inlineAttachmentMetadata.length > 0 ? { inlineAttachments: inlineAttachmentMetadata } : {}),
               ...(inspectContext ? { inspectContext } : {}),
+              ...(designContext ? { designContext } : {}),
             },
           }
         : {}),
@@ -1344,11 +1413,20 @@ export const ChatProvider: FC<ChatProviderProps> = ({
         }
 
         if (typeof input === "string" && input === "/api/chat") {
+          const requestHeaders = new Headers(mergedInit?.headers);
+          const isDelegationAutoResume = requestHeaders.get("X-Delegation-Auto-Resume") === "true";
+
+          if (isDelegationAutoResume) {
+            requestHeaders.set("X-Delegation-Auto-Resume", "true");
+            requestHeaders.set("X-Task-Source", "delegation-auto-resume");
+            mergedInit = { ...(mergedInit ?? {}), headers: requestHeaders };
+          }
+
           const preflightResponse = await fetch("/api/chat/preflight", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              ...(mergedInit?.headers ? Object.fromEntries(new Headers(mergedInit.headers).entries()) : {}),
+              ...Object.fromEntries(requestHeaders.entries()),
             },
             body: mergedInit?.body,
             signal: mergedInit?.signal,
@@ -1422,6 +1500,8 @@ export const ChatProvider: FC<ChatProviderProps> = ({
   const chatStatusRef = useRef("ready");
   const autoRetryAttemptRef = useRef(0);
   const autoRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const delegationAutoResumeInFlightRef = useRef(false);
+  const delegationAutoResumeQueuedRef = useRef(false);
   const lastTrackedUserMessageIdRef = useRef<string | undefined>(undefined);
   const MAX_CLIENT_AUTO_RETRIES = 2;
   const recoverRetryStateRef = useRef<() => void>(() => {});
@@ -1530,13 +1610,17 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     chat.clearError();
   }, [chat]);
 
-  const submitRetryMessage = useCallback(async (reason: string, retryMessage = buildRetryMessage(chat.messages)) => {
+  const submitRetryMessage = useCallback(async (
+    reason: string,
+    retryMessage = buildRetryMessage(chat.messages),
+    headers?: Record<string, string>,
+  ) => {
     if (!retryMessage) {
       return false;
     }
 
     try {
-      await chat.sendMessage(retryMessage);
+      await chat.sendMessage(retryMessage, headers ? { headers } : undefined);
       return true;
     } catch (retryError) {
       const normalizedError = toError(retryError);
@@ -1705,8 +1789,78 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     lastStreamingRef.current = Date.now();
   }
 
-  // Delegation results are now auto-delivered by blocking in prepareStep —
-  // no SSE auto-resume needed. The turn stays alive while subagents run.
+  const startDelegationAutoResume = useCallback(async () => {
+    if (delegationAutoResumeInFlightRef.current) {
+      delegationAutoResumeQueuedRef.current = true;
+      return;
+    }
+
+    delegationAutoResumeInFlightRef.current = true;
+    try {
+      do {
+        delegationAutoResumeQueuedRef.current = false;
+        const submitted = await submitRetryMessage("delegation-completion", undefined, {
+          "X-Delegation-Auto-Resume": "true",
+          "X-Task-Source": "delegation-auto-resume",
+        });
+        if (!submitted) {
+          break;
+        }
+      } while (delegationAutoResumeQueuedRef.current && chatStatusRef.current !== "streaming" && chatStatusRef.current !== "submitted");
+    } finally {
+      delegationAutoResumeInFlightRef.current = false;
+    }
+  }, [submitRetryMessage]);
+
+  // Latest-ref for the SSE/poll effect below. `useChat` returns a fresh helpers
+  // object on every render, which cascades through `submitRetryMessage` →
+  // `startDelegationAutoResume` and would otherwise re-fire the effect on every
+  // render — closing/reopening the EventSource and re-issuing the catch-up GET,
+  // each cycle triggering another `chat.sendMessage` until React #185.
+  const startDelegationAutoResumeRef = useRef(startDelegationAutoResume);
+  useEffect(() => {
+    startDelegationAutoResumeRef.current = startDelegationAutoResume;
+  }, [startDelegationAutoResume]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const handleDelegationCompleted = () => {
+      if (chatStatusRef.current === "streaming" || chatStatusRef.current === "submitted") {
+        delegationAutoResumeQueuedRef.current = true;
+        return;
+      }
+      void startDelegationAutoResumeRef.current();
+    };
+
+    let cancelled = false;
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-completions`, { method: "GET" })
+      .then((response) => response.ok ? response.json() as Promise<{ hasPending?: boolean }> : null)
+      .then((data) => {
+        if (!cancelled && data?.hasPending) {
+          handleDelegationCompleted();
+        }
+      })
+      .catch(() => {});
+
+    if (typeof EventSource === "undefined") {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-events`);
+    eventSource.addEventListener("delegation-completed", handleDelegationCompleted);
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+
+    return () => {
+      cancelled = true;
+      eventSource.removeEventListener("delegation-completed", handleDelegationCompleted);
+      eventSource.close();
+    };
+  }, [sessionId]);
 
   return (
     <ChatErrorBoundary

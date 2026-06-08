@@ -25,8 +25,10 @@ export async function GET(req: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Run not found" }, { status: 404 });
     }
 
-    const isZombie = run.status === "running" &&
+    const registryTask = taskRegistry.get(runId);
+    const isStaleSuspected = run.status === "running" &&
       isStale(run.updatedAt ?? run.startedAt, 30 * 60 * 1000);
+    const isZombie = isStaleSuspected && !registryTask;
 
     const metadata = (run.metadata && typeof run.metadata === "object")
       ? run.metadata as Record<string, unknown>
@@ -42,6 +44,9 @@ export async function GET(req: Request, { params }: RouteParams) {
       durationMs: run.durationMs,
       updatedAt: run.updatedAt,
       isZombie,
+      health: isStaleSuspected ? "stale_suspected" : "running",
+      hasRegistryTask: Boolean(registryTask),
+      canForceCancel: isZombie,
       deepResearchState,
     });
   } catch (error) {

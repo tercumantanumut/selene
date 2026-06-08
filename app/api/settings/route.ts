@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadSettings, saveSettings, validateSettingsModels, type AppSettings } from "@/lib/settings/settings-manager";
 import { invalidateProviderCache } from "@/lib/ai/providers";
 import { validateModelConfiguration } from "@/lib/config/embedding-models";
+import { locales, type Locale } from "@/i18n/config";
 
 /**
  * GET /api/settings
@@ -44,6 +45,19 @@ export async function PUT(request: NextRequest) {
     const body = await request.json();
     const currentSettings = loadSettings();
 
+    // Locale must come from the supported set. The dedicated `/api/locale`
+    // path already rejects bad values, but the general settings PUT used to
+    // accept anything and persist it, which left the next launch with a value
+    // next-intl couldn't resolve and silently fell back to English.
+    if (body.appLanguage !== undefined && !locales.includes(body.appLanguage as Locale)) {
+      return NextResponse.json(
+        {
+          error: `Unsupported appLanguage. Expected one of: ${locales.join(", ")}`,
+        },
+        { status: 400 },
+      );
+    }
+
     // Detect provider change early so we can clear stale model fields
     const newProvider = body.llmProvider ?? currentSettings.llmProvider;
     const providerIsChanging = newProvider !== currentSettings.llmProvider;
@@ -57,6 +71,7 @@ export async function PUT(request: NextRequest) {
       llmProvider: newProvider,
       ollamaBaseUrl: body.ollamaBaseUrl !== undefined ? body.ollamaBaseUrl : currentSettings.ollamaBaseUrl,
       vllmBaseUrl: body.vllmBaseUrl !== undefined ? body.vllmBaseUrl : currentSettings.vllmBaseUrl,
+      appLanguage: body.appLanguage !== undefined ? body.appLanguage : currentSettings.appLanguage,
       theme: body.theme ?? currentSettings.theme,
       chatWorkspaceMode:
         body.chatWorkspaceMode === "browser-tabs" || body.chatWorkspaceMode === "sidebar"

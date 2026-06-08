@@ -128,10 +128,22 @@ const MODEL_METADATA: Record<
     tier: "flagship",
     capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "fast" },
   },
+  "gpt-5.4-mini": {
+    tier: "standard",
+    capabilities: { vision: true, thinking: true, contextWindow: "400K", speed: "fast" },
+  },
   // Codex (GPT-5 legacy models — 400K context)
   "gpt-5.3-codex": {
     tier: "standard",
     capabilities: { vision: true, thinking: true, contextWindow: "400K", speed: "standard" },
+  },
+  "gpt-5.3-codex-spark": {
+    tier: "utility",
+    capabilities: { vision: true, thinking: true, contextWindow: "128K", speed: "fast" },
+  },
+  "codex-auto-review": {
+    tier: "utility",
+    capabilities: { vision: true, thinking: true, contextWindow: "272K", speed: "standard" },
   },
   "gpt-5.2-codex": {
     tier: "flagship",

@@ -352,17 +352,17 @@ describe("Stop Message Loss Prevention", () => {
 
     const filtered = filterStreamingPartsForPersistence(state);
 
-    expect(filtered).toEqual([
-      { type: "text", text: "Working" },
-      {
-        type: "tool-call",
-        toolCallId: "tc-unsealed",
-        toolName: "localGrep",
-        state: "input-available",
-        args: { pattern: "todo" },
-        active: true,
-      },
-    ]);
+    expect(filtered).toHaveLength(2);
+    expect(filtered[0]).toEqual({ type: "text", text: "Working" });
+    expect(filtered[1]).toMatchObject({
+      type: "tool-call",
+      toolCallId: "tc-unsealed",
+      toolName: "localGrep",
+      state: "input-available",
+      args: { pattern: "todo" },
+      active: true,
+    });
+    expect(typeof (filtered[1] as { timestamp?: unknown }).timestamp).toBe("string");
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

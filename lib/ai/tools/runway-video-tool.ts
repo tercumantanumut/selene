@@ -54,7 +54,9 @@ const runwayVideoSchema = jsonSchema<{
     seed: {
       type: "integer",
       minimum: 0,
-      maximum: 4294967295,
+      // Clamp to int32 max — Anthropic's tool-schema validator rejects
+      // values that overflow int32 ("int too big to convert").
+      maximum: 2147483647,
       description: "Optional seed for reproducible generation.",
     },
   },

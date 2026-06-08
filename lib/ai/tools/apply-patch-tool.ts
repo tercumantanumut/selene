@@ -9,8 +9,8 @@
 
 import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
 import { logToolEvent } from "@/lib/ai/tool-registry/logging";
-import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
-import { getActiveWorktreePath, isOtherWorktreePath } from "@/lib/ai/filesystem";
+import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import { executeCommandWithValidation } from "@/lib/command-execution";
 import { computeInlineDiffs } from "./execute-command-tool";
 import type {
@@ -122,6 +122,7 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                 onProgress?.({
                     ...update,
                     toolCallId: update.toolCallId ?? toolCallId,
+                    toolName: update.toolName ?? "applyPatch",
                 });
             };
 
@@ -155,12 +156,11 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                 };
             }
 
-            // Get synced folders
+            // Use the same workspace-aware authorization roots as file tools.
             let syncedFolders: string[];
             try {
-                const folders = await getAccessibleSyncFolders(characterId);
-                syncedFolders = folders.map((f) => f.folderPath);
-                if (syncedFolders.length === 0) {
+                syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
+                if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
                     return {
                         status: "no_folders",
                         message: "No synced folders configured. Add synced folders for this agent to enable patch application.",
@@ -173,21 +173,7 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                 };
             }
 
-            // Determine working directory
-            const worktreePath = await getActiveWorktreePath(sessionId);
-            let executionDir = input.cwd;
-            if (!executionDir) {
-                executionDir = worktreePath || syncedFolders[0];
-            }
-
-            if (worktreePath && !syncedFolders.includes(worktreePath)) {
-                syncedFolders = [worktreePath, ...syncedFolders];
-            }
-            if (worktreePath) {
-                syncedFolders = syncedFolders.filter(
-                    (p) => !isOtherWorktreePath(p, worktreePath),
-                );
-            }
+            const executionDir = input.cwd || syncedFolders[0] || process.cwd();
 
             // Ensure patch ends with newline for stdin
             const stdin = patch.endsWith("\n") ? patch : `${patch}\n`;

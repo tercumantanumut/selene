@@ -24,6 +24,7 @@ import { nextOrderingIndex } from "@/lib/session/message-ordering";
 import { addDelegationCompletion } from "@/lib/ai/tools/delegation-completion-store";
 import { runStopHooks } from "@/lib/plugins/hook-integration";
 import { buildInterruptionMessage, buildInterruptionMetadata } from "@/lib/messages/interruption";
+import { mergeDesignContext } from "@/lib/design/workspace/design-context";
 import type { DBContentPart } from "@/lib/messages/converter";
 import {
   type StepLike,
@@ -98,8 +99,15 @@ export async function handleUndrainedQueueMessages(
     try {
       const orderingIndex = await nextOrderingIndex(sessionId);
       const promptCustom: Record<string, unknown> = {};
-      if (entry.metadata?.inspectContext) {
-        promptCustom.inspectContext = entry.metadata.inspectContext;
+      // Merge legacy `inspectContext` into the unified `designContext` so a
+      // measurements-only design payload doesn't drop a populated legacy
+      // inspect on persistence.
+      const merged = mergeDesignContext(
+        entry.metadata?.designContext ?? null,
+        { inspect: entry.metadata?.inspectContext ?? null },
+      );
+      if (merged) {
+        promptCustom.designContext = merged;
       }
 
       await createMessage({
@@ -157,7 +165,6 @@ interface StreamCallbackContext {
   runFinalized: { value: boolean };
   provider: string;
   streamAbortSignal: AbortSignal;
-  disposeSdkToolResultBridge?: () => void;
   rawMode?: boolean;
   /** Getter for the current assistant message UUID (may be rotated on retry). */
   getAssistantMessageId?: () => string | undefined;
@@ -185,7 +192,6 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
   }) => {
     if (ctx.runFinalized.value) return;
     ctx.runFinalized.value = true;
-    ctx.disposeSdkToolResultBridge?.();
 
     if (ctx.hasStopHooks) {
       try {
@@ -516,7 +522,6 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
   return async ({ steps }: { steps: StepLike[] }) => {
     if (ctx.runFinalized.value) return;
     ctx.runFinalized.value = true;
-    ctx.disposeSdkToolResultBridge?.();
 
     if (ctx.hasStopHooks) {
       try {

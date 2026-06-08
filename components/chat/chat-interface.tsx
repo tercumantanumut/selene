@@ -9,7 +9,7 @@ import { Thread } from "@/components/assistant-ui/thread";
 import { useTheme } from "@/components/theme/theme-provider";
 import { ChatProvider, useChatSetMessages } from "@/components/chat-provider";
 import { CharacterProvider, type CharacterDisplayData } from "@/components/assistant-ui/character-context";
-import { GitBranchIcon, Loader2 } from "lucide-react";
+import { GitBranchIcon, Loader2, Palette } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { resilientFetch, resilientPost } from "@/lib/utils/resilient-fetch";
 import { useSettings, invalidateSettingsCache } from "@/lib/hooks/use-settings";
@@ -39,6 +39,7 @@ import {
     shouldDeferLivePromptForegroundReconciliation,
     shouldSkipEnsureCurrentSessionOpen,
     shouldApplySessionScopedAsyncResult,
+    resolveBackgroundRunState,
     toOpenChatWorkspaceSession,
 } from "@/components/chat/chat-interface-utils";
 import { ChatSidebarHeader, ScheduledRunBanner } from "@/components/chat/chat-interface-parts";
@@ -48,6 +49,7 @@ import { BrowserChatWorkspace } from "@/components/chat/browser-chat-workspace";
 import type { SessionInfo } from "@/components/chat/chat-sidebar/types";
 import { useChatWorkspaceStore } from "@/lib/stores/chat-workspace-store";
 import type { ChatWorkspaceMode } from "@/lib/chat/workspace-mode";
+import { useDesignWorkspaceStore } from "@/lib/design/workspace/store";
 
 // Lazy-load the design workspace so the preview-frame + properties-panel + gallery bundles
 // stay off the initial chat route JS. ssr: false because the workspace uses DOM-only APIs
@@ -409,6 +411,7 @@ export default function ChatInterface({
     const [detectedGitFolders, setDetectedGitFolders] = useState<DetectedGitFolder[]>([]);
     const [isDetectingGitFolders, setIsDetectingGitFolders] = useState(false);
     const [isEnablingGitMode, setIsEnablingGitMode] = useState(false);
+    const [isOpeningDesignWorkspace, setIsOpeningDesignWorkspace] = useState(false);
     const [avatarConfig, setAvatarConfig] = useState<Avatar3DConfig>({ enabled: false });
     const [avatarHidden, setAvatarHidden] = useState(false);
     const [avatarMuted, setAvatarMuted] = useState(false);
@@ -434,6 +437,7 @@ export default function ChatInterface({
     const workspaceTabs = useChatWorkspaceStore((s) => s.tabs);
     const workspaceActiveSessionId = useChatWorkspaceStore((s) => s.activeSessionId);
     const workspaceRecentlyClosed = useChatWorkspaceStore((s) => s.recentlyClosed);
+    const isDesignWorkspaceOpen = useDesignWorkspaceStore((s) => s.isOpen);
 
     // Keep muted ref in sync with state (bridge reads ref, not state)
     useEffect(() => { avatarMutedRef.current = avatarMuted; }, [avatarMuted]);
@@ -863,6 +867,23 @@ export default function ChatInterface({
         }
     }, [applyWorkspaceUpdate, detectedPrimaryGitFolder, sessionId, sm]);
 
+    const handleOpenDesignWorkspace = useCallback(async () => {
+        if (!sessionId) return;
+        setIsOpeningDesignWorkspace(true);
+        try {
+            const store = useDesignWorkspaceStore.getState();
+            if (store.sessionId !== sessionId) {
+                store.setActiveSession(sessionId);
+            }
+            useDesignWorkspaceStore.getState().open();
+        } catch (error) {
+            const { toast } = await import("sonner");
+            toast.error(error instanceof Error ? error.message : "Failed to open Design Workspace Mode.");
+        } finally {
+            setIsOpeningDesignWorkspace(false);
+        }
+    }, [sessionId]);
+
     const adaptivePollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const adaptivePollBackoffRef = useRef(5000);
     const isPollingRef = useRef(false);
@@ -1056,22 +1077,23 @@ export default function ChatInterface({
                 return;
             }
 
-            const activeForegroundRunId =
-                !isForegroundStreamingRef.current && data.hasActiveRun
-                    ? data.runId ?? null
-                    : null;
-
-            const resumedForegroundRunId =
-                activeForegroundRunId && data.shouldResumeBackgroundRun !== false
-                    ? activeForegroundRunId
-                    : null;
-
-            const deepResearchRunId = data.latestDeepResearchStatus === "running"
-                ? data.latestDeepResearchRunId ?? null
-                : null;
-
-            const trackedRunId = activeForegroundRunId ?? deepResearchRunId;
-            const shouldShowBackgroundRun = Boolean(activeForegroundRunId || deepResearchRunId);
+            const {
+                activeForegroundRunId,
+                resumedForegroundRunId,
+                deepResearchRunId,
+                trackedRunId,
+                shouldShowBackgroundRun,
+                shouldPollRun,
+                isStaleSuspected,
+            } = resolveBackgroundRunState({
+                isForegroundStreaming: isForegroundStreamingRef.current,
+                hasActiveRun: data.hasActiveRun,
+                runId: data.runId,
+                health: data.health,
+                shouldResumeBackgroundRun: data.shouldResumeBackgroundRun,
+                latestDeepResearchStatus: data.latestDeepResearchStatus,
+                latestDeepResearchRunId: data.latestDeepResearchRunId,
+            });
 
             if (trackedRunId) {
                 const isSameTrackedRun =
@@ -1086,6 +1108,8 @@ export default function ChatInterface({
                         JSON.stringify({
                             hasInteractiveWait: data.hasInteractiveWait,
                             shouldResumeBackgroundRun: data.shouldResumeBackgroundRun,
+                            health: data.health,
+                            staleSuspected: isStaleSuspected,
                         }),
                     );
                     lastDetectedRunIdRef.current = trackedRunId;
@@ -1097,7 +1121,7 @@ export default function ChatInterface({
                     bg.setIsZombieRun(false);
                 }
 
-                if (resumedForegroundRunId || deepResearchRunId) {
+                if (shouldPollRun) {
                     bg.startPollingForCompletion(trackedRunId);
                 } else if (bg.pollingIntervalRef.current) {
                     clearInterval(bg.pollingIntervalRef.current);
@@ -1689,43 +1713,65 @@ export default function ChatInterface({
     ) : null;
 
     /**
-     * Git workspace header bar.
+     * Workspace mode controls.
      * showDetecting: when true, renders a "Checking git repos..." spinner when no
      * workspace or git folder has been detected yet (sidebar mode only).
      * containerClassName: extra classes for the wrapping div.
      */
-    const renderGitWorkspaceHeader = (showDetecting: boolean, containerClassName: string) => {
-        const visible = currentWorkspaceInfo || detectedPrimaryGitFolder || (showDetecting && isDetectingGitFolders);
+    const renderWorkspaceControls = (showDetecting: boolean, containerClassName: string) => {
+        const visible = currentWorkspaceInfo || detectedPrimaryGitFolder || isDesignWorkspaceOpen || (showDetecting && isDetectingGitFolders);
         if (!visible) return null;
+
+        const controlClassName = "inline-flex items-center gap-2 rounded-md border border-terminal-dark/10 px-3 py-1.5 text-xs font-mono transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70";
+
         return (
             <div className={`${containerClassName} items-center justify-end px-4 pt-2`}>
-                {currentWorkspaceInfo ? (
-                    <WorkspaceIndicator
-                        sessionId={sessionId}
-                        workspaceInfo={currentWorkspaceInfo}
-                        onOpenDiffPanel={() => setIsDiffPanelOpen(true)}
-                    />
-                ) : detectedPrimaryGitFolder ? (
+                <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                    {currentWorkspaceInfo ? (
+                        <WorkspaceIndicator
+                            sessionId={sessionId}
+                            workspaceInfo={currentWorkspaceInfo}
+                            onOpenDiffPanel={() => setIsDiffPanelOpen(true)}
+                        />
+                    ) : detectedPrimaryGitFolder ? (
+                        <button
+                            type="button"
+                            onClick={() => void handleEnableGitMode()}
+                            disabled={isEnablingGitMode}
+                            className={`${controlClassName} bg-terminal-dark text-terminal-cream`}
+                            title={detectedPrimaryGitFolder.path}
+                        >
+                            {isEnablingGitMode ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                                <GitBranchIcon className="h-3.5 w-3.5" />
+                            )}
+                            <span className="hidden sm:inline">{isEnablingGitMode ? "Enabling Git..." : `Git · ${detectedPrimaryGitFolder.branch}`}</span>
+                            <span className="sm:hidden">Git</span>
+                        </button>
+                    ) : showDetecting ? (
+                        <div className={`${controlClassName} bg-terminal-dark/5 text-terminal-muted`}>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <span className="hidden sm:inline">Checking git repos...</span>
+                            <span className="sm:hidden">Git</span>
+                        </div>
+                    ) : null}
                     <button
                         type="button"
-                        onClick={() => void handleEnableGitMode()}
-                        disabled={isEnablingGitMode}
-                        className="inline-flex items-center gap-2 rounded-md border border-terminal-dark/10 bg-terminal-dark px-3 py-1.5 text-xs font-mono text-terminal-cream transition-opacity hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
-                        title={detectedPrimaryGitFolder.path}
+                        onClick={() => void handleOpenDesignWorkspace()}
+                        disabled={!sessionId || isOpeningDesignWorkspace}
+                        className={`${controlClassName} ${isDesignWorkspaceOpen ? "bg-terminal-dark text-terminal-cream" : "bg-terminal-dark/5 text-terminal-muted"}`}
+                        title={isDesignWorkspaceOpen ? "Design Workspace Mode is open" : "Open Design Workspace Mode"}
+                        aria-pressed={isDesignWorkspaceOpen}
                     >
-                        {isEnablingGitMode ? (
+                        {isOpeningDesignWorkspace ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
-                            <GitBranchIcon className="h-3.5 w-3.5" />
+                            <Palette className="h-3.5 w-3.5" />
                         )}
-                        <span>{isEnablingGitMode ? "Enabling Git Mode..." : `Enable Git Mode · ${detectedPrimaryGitFolder.branch}`}</span>
+                        <span>{isOpeningDesignWorkspace ? "Opening Design..." : "Design"}</span>
                     </button>
-                ) : showDetecting ? (
-                    <div className="inline-flex items-center gap-2 rounded-md border border-terminal-dark/10 bg-terminal-dark/5 px-3 py-1.5 text-xs font-mono text-terminal-muted">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        <span>Checking git repos...</span>
-                    </div>
-                ) : null}
+                </div>
             </div>
         );
     };
@@ -1833,7 +1879,7 @@ export default function ChatInterface({
                     {renderChatCore(
                         { height: "100%", display: "flex", flexDirection: "column" },
                         <div className="flex h-full min-h-0 flex-col">
-                            {renderGitWorkspaceHeader(false, "flex")}
+                            {renderWorkspaceControls(false, "flex")}
                             {renderActiveRunBanner()}
                             {renderAvatarBlock()}
                             <div className="min-h-0 flex-1">
@@ -1850,7 +1896,7 @@ export default function ChatInterface({
                         onClose={() => setIsDiffPanelOpen(false)}
                     />
                 )}
-                <DesignWorkspace sessionId={sessionId} />
+                <DesignWorkspace sessionId={sessionId} characterId={character.id} />
                 <ThemeChooserModal open={showThemeChooser} onClose={handleThemeChooserClose} />
             </div>
         );
@@ -1901,7 +1947,7 @@ export default function ChatInterface({
                     flexDirection: "column",
                 },
                 <div className="flex h-full min-h-0 flex-col gap-3">
-                    {renderGitWorkspaceHeader(true, "flex flex-shrink-0")}
+                    {renderWorkspaceControls(true, "flex flex-shrink-0")}
                     {renderActiveRunBanner()}
                     {renderAvatarBlock()}
                     {renderThread()}
@@ -1915,7 +1961,7 @@ export default function ChatInterface({
                     onClose={() => setIsDiffPanelOpen(false)}
                 />
             )}
-            <DesignWorkspace sessionId={sessionId} />
+            <DesignWorkspace sessionId={sessionId} characterId={character.id} />
             <ThemeChooserModal open={showThemeChooser} onClose={handleThemeChooserClose} />
         </Shell>
     );

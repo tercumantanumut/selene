@@ -56,16 +56,17 @@ Run shell commands with a single shell string.
 - \`{ command: "cd app && npm test" }\`
 - \`{ command: "npm run dev", run_in_background: true }\`
 
-**Safety:**
-- Commands still run only within synced folders/worktrees
-- Removal commands and path traversal are blocked
+**Execution scope:**
+- Commands default to synced folders/worktrees
+- \`SELENE_UNSAFE_AGENT_PERMISSIONS=true\` allows broader local filesystem access
 - Prefer dedicated file/search tools when they are a better fit`,
-      loading: { alwaysLoad: true },
+      loading: { deferLoading: true },
       requiresSession: true,
     } satisfies ToolMetadata,
-    ({ sessionId, characterId, onExecuteCommandProgress }) =>
+    ({ sessionId, userId, characterId, onExecuteCommandProgress }) =>
       createBashTool({
         sessionId: sessionId || "UNSCOPED",
+        userId,
         characterId: characterId ?? null,
         onProgress: onExecuteCommandProgress,
       })
@@ -96,10 +97,10 @@ Run shell commands with a single shell string.
       ],
       searchHint: "execute shell commands with explicit command and args",
       shortDescription:
-        "Execute shell commands safely within synced directories",
+        "Execute shell commands within the agent execution scope",
       fullInstructions: `## Execute Command
 
-Run shell commands safely within synced folders. Dangerous commands (rm, sudo, format) are blocked.
+Run shell commands in synced folders by default. \`SELENE_UNSAFE_AGENT_PERMISSIONS=true\` allows broader local filesystem access.
 
 **Key rules:**
 - \`command\` = executable only (e.g., "npm"), NOT a full shell line
@@ -110,12 +111,13 @@ Run shell commands safely within synced folders. Dangerous commands (rm, sudo, f
 - If using shell listings, always self-limit output (e.g., \`head\`, \`Select-Object -First\`)
 - Python inline: \`{ command: "python", args: ["-c", "print('hello')"] }\`
 - 30s default timeout (max 5min)`,
-      loading: { deferLoading: true },
+      loading: { alwaysLoad: true },
       requiresSession: true,
     } satisfies ToolMetadata,
-    ({ sessionId, characterId, onExecuteCommandProgress }) =>
+    ({ sessionId, userId, characterId, onExecuteCommandProgress }) =>
       createExecuteCommandTool({
         sessionId: sessionId || "UNSCOPED",
+        userId,
         characterId: characterId ?? null,
         onProgress: onExecuteCommandProgress,
       })

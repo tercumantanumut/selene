@@ -1,4 +1,5 @@
 import type { InspectMessageContext } from "@/lib/design/workspace/inspect-context";
+import type { DesignMessageContext } from "@/lib/design/workspace/design-context";
 
 export interface LivePromptEntry {
   id: string;
@@ -9,7 +10,13 @@ export interface LivePromptEntry {
     kind?: "generic" | "delegation_completion";
     delegationId?: string;
     delegateName?: string;
+    resultVersion?: number;
+    deliveryId?: string;
+    resultHash?: string;
+    /** Legacy: pre-unification design payload covering inspect-only context. */
     inspectContext?: InspectMessageContext | null;
+    /** Unified design-workspace payload (inspect + measurements + colors). */
+    designContext?: DesignMessageContext | null;
   };
 }
 
@@ -18,6 +25,28 @@ const globalForLivePromptQueue = globalThis as typeof globalThis & {
   livePromptSessionIndex?: Map<string, string>; // sessionId → runId
   livePromptQueueWaiters?: Map<string, Set<() => void>>;
 };
+
+function appendUniqueQueueEntry(queue: LivePromptEntry[], entry: LivePromptEntry): boolean {
+  if (queue.some((queuedEntry) => queuedEntry.id === entry.id)) {
+    return false;
+  }
+
+  queue.push(entry);
+  return true;
+}
+
+function dedupeDrainedEntries(entries: LivePromptEntry[]): LivePromptEntry[] {
+  if (entries.length === 0) return [];
+
+  const seenIds = new Set<string>();
+  const uniqueEntries: LivePromptEntry[] = [];
+  for (const entry of entries) {
+    if (seenIds.has(entry.id)) continue;
+    seenIds.add(entry.id);
+    uniqueEntries.push(entry);
+  }
+  return uniqueEntries;
+}
 
 function getQueueMap(): Map<string, LivePromptEntry[]> {
   if (!globalForLivePromptQueue.livePromptQueues) {
@@ -178,7 +207,9 @@ export function appendToLivePromptQueue(
 ): boolean {
   const queue = getQueueMap().get(runId);
   if (!queue) return false;
-  queue.push({ ...entry, timestamp: Date.now() });
+  const appended = appendUniqueQueueEntry(queue, { ...entry, timestamp: Date.now() });
+  if (!appended) return true;
+
   const waiters = getWaiterMap().get(runId);
   if (waiters) {
     for (const notify of [...waiters]) {
@@ -210,7 +241,8 @@ export function appendToLivePromptQueueBySession(
 export function drainLivePromptQueue(runId: string): LivePromptEntry[] {
   const queue = getQueueMap().get(runId);
   if (!queue || queue.length === 0) return [];
-  return queue.splice(0, queue.length);
+  const drained = queue.splice(0, queue.length);
+  return dedupeDrainedEntries(drained);
 }
 
 /** Returns true if an active queue exists for this runId. */
@@ -302,8 +334,12 @@ export function removeFromQueueByDelegationId(sessionId: string, delegationId: s
 
 /** Call in onFinish, onAbort, and error cleanup paths to release memory. */
 export function removeLivePromptQueue(runId: string, sessionId: string): void {
-  getQueueMap().delete(runId);
-  getSessionIndex().delete(sessionId);
+  const queueMap = getQueueMap();
+  queueMap.delete(runId);
+  const sessionIndex = getSessionIndex();
+  if (sessionIndex.get(sessionId) === runId) {
+    sessionIndex.delete(sessionId);
+  }
   const waiters = getWaiterMap().get(runId);
   if (waiters) {
     for (const notify of [...waiters]) {

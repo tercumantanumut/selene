@@ -10,7 +10,8 @@
  *   percentage: number;      // Usage percentage (0-100)
  *   status: string;          // "safe" | "warning" | "critical" | "exceeded"
  *   currentTokens: number;   // Current token count
- *   maxTokens: number;       // Maximum tokens for the model
+ *   maxInputTokens: number;  // Provider-enforced input budget for request safety
+ *   maxTokens: number;       // Maximum advertised context tokens for the model
  *   formatted: {
  *     current: string;       // e.g., "150.2K"
  *     max: string;           // e.g., "200K"
@@ -69,7 +70,9 @@ export async function GET(
       percentage: status.usagePercentage * 100,
       status: status.status,
       currentTokens: status.currentTokens,
+      maxInputTokens: status.maxInputTokens,
       maxTokens: status.maxTokens,
+      maxOutputTokens: status.maxOutputTokens,
       formatted: status.formatted,
       thresholds: status.thresholds,
       shouldCompact: status.shouldCompact,
@@ -132,14 +135,23 @@ export async function POST(
         percentage: result.beforeStatus.usagePercentage * 100,
         status: result.beforeStatus.status,
         currentTokens: result.beforeStatus.currentTokens,
+        maxInputTokens: result.beforeStatus.maxInputTokens,
+        maxTokens: result.beforeStatus.maxTokens,
+        maxOutputTokens: result.beforeStatus.maxOutputTokens,
         formatted: result.beforeStatus.formatted,
       },
       status: {
         percentage: result.afterStatus.usagePercentage * 100,
         status: result.afterStatus.status,
         currentTokens: result.afterStatus.currentTokens,
+        maxInputTokens: result.afterStatus.maxInputTokens,
         maxTokens: result.afterStatus.maxTokens,
+        maxOutputTokens: result.afterStatus.maxOutputTokens,
         formatted: result.afterStatus.formatted,
+        thresholds: result.afterStatus.thresholds,
+        shouldCompact: result.afterStatus.shouldCompact,
+        mustCompact: result.afterStatus.mustCompact,
+        recommendedAction: result.afterStatus.recommendedAction,
       },
     });
   } catch (error) {

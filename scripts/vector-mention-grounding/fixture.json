@@ -1,0 +1,92 @@
+{
+  "comment": "Grounding fixture for the @-mention v2 feature. Each case is a query a user might type after `@` in the composer. v1 (substring LIKE on relativePath) cannot satisfy these — the queries have ZERO literal overlap with any filename in the indexed folder. v2 (hybrid vector + lexical search over chunks) should rank the listed `expectIncludes` paths in the top-K results. Keep the queries short enough that a real user might type them.",
+  "characterId": "bd2821ed-4e46-4945-937e-157dab604953",
+  "characterName": "Selene",
+  "folderPath": "/Users/ogkai/Desktop/apps/new-selene/selene",
+  "topK": 8,
+  "cases": [
+    {
+      "id": "model-switching",
+      "query": "how does the AI switch models mid-conversation",
+      "expectIncludes": [
+        "app/api/chat/route.ts",
+        "lib/ai/providers/claudecode-provider.ts"
+      ],
+      "expectAnyOf": [
+        "lib/ai/providers",
+        "settings-manager",
+        "model-selector"
+      ]
+    },
+    {
+      "id": "context-window-limits",
+      "query": "token budget and context window limits per provider",
+      "expectIncludes": [
+        "lib/context-window/provider-limits.ts"
+      ],
+      "expectAnyOf": [
+        "lib/context-window",
+        "lib/config/vector-search.ts",
+        "providers"
+      ]
+    },
+    {
+      "id": "indexing-retry",
+      "query": "background folder indexing retry and error recovery",
+      "expectIncludes": [
+        "lib/vectordb/sync-service.ts"
+      ],
+      "expectAnyOf": [
+        "lib/vectordb",
+        "background-sync",
+        "indexing"
+      ]
+    },
+    {
+      "id": "skill-catalog",
+      "query": "agent skill definition and bundled catalog structure",
+      "expectIncludes": [
+        "lib/skills/catalog/agency-agents.ts"
+      ],
+      "expectAnyOf": [
+        "lib/skills/catalog",
+        "lib/skills/validation.ts",
+        "skills/catalog/bundled"
+      ]
+    },
+    {
+      "id": "voice-pipeline",
+      "query": "real-time transcription and voice input pipeline",
+      "expectIncludes": [
+        "lib/audio/transcription.ts"
+      ],
+      "expectAnyOf": [
+        "lib/audio",
+        "voice",
+        "transcription"
+      ]
+    },
+    {
+      "id": "composer-attachment-flow",
+      "query": "how files become content parts on the user message before the LLM call",
+      "expectIncludes": [
+        "app/api/chat/content-extractor.ts"
+      ],
+      "expectAnyOf": [
+        "app/api/chat",
+        "content-extractor",
+        "experimental_attachments"
+      ]
+    },
+    {
+      "id": "chunk-storage-schema",
+      "query": "where chunks are stored with their embeddings and line ranges",
+      "expectAnyOf": [
+        "lib/vectordb/indexing.ts",
+        "lib/vectordb/search.ts",
+        "lib/vectordb/v2",
+        "lib/vectordb/client.ts"
+      ]
+    }
+  ]
+}

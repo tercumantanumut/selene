@@ -1,11 +1,11 @@
 import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
-import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
-import { getActiveWorktreePath, isOtherWorktreePath } from "@/lib/ai/filesystem";
+import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import {
   executeCommandWithValidation,
   startBackgroundProcess,
   getBackgroundProcess,
-  killBackgroundProcess,
+  markBackgroundProcessObserved,
   listBackgroundProcesses,
   cleanupBackgroundProcesses,
 } from "@/lib/command-execution";
@@ -14,7 +14,13 @@ import {
   setPersistedCommandCwd,
 } from "@/lib/command-execution/cwd-state";
 import { validateExecutionDirectory, validateShellCommand } from "@/lib/command-execution/validator";
+import { saveTerminalLog } from "@/lib/command-execution/log-manager";
 import { registerBackgroundTask } from "@/app/api/chat/delegation-waiting";
+import {
+  handleBackgroundProcessSettled,
+  killTrackedBackgroundProcess,
+  registerBackgroundProcessTask,
+} from "@/lib/background-tasks/background-process-task";
 import type {
   ExecuteCommandProgressUpdate,
   ExecuteCommandToolOptions,
@@ -49,6 +55,7 @@ type BashToolResult = {
   isTruncated?: boolean;
   /** Inline diff payload when apply_patch is detected in the command */
   inlineDiff?: string;
+  aborted?: boolean;
 };
 
 
@@ -66,6 +73,80 @@ function normalizeTimeout(timeout?: number): number {
     return DEFAULT_BASH_TIMEOUT_MS;
   }
   return Math.min(Math.floor(timeout), MAX_BASH_TIMEOUT_MS);
+}
+
+function logRetrievalGuidance(logId?: string): string {
+  return logId
+    ? ` Use executeCommand({ command: "readLog", logId: "${logId}" }) for full output.`
+    : "";
+}
+
+function formatBackgroundListMetadata(processInfo: {
+  logId?: string;
+  exitCode?: number | null;
+  startedAt?: string;
+  settledAt?: string;
+  cwd?: string;
+}): string {
+  const metadata: string[] = [];
+  if (processInfo.logId) metadata.push(`logId=${processInfo.logId}`);
+  if (processInfo.exitCode !== undefined) metadata.push(`exitCode=${processInfo.exitCode}`);
+  if (processInfo.startedAt) metadata.push(`startedAt=${processInfo.startedAt}`);
+  if (processInfo.settledAt) metadata.push(`settledAt=${processInfo.settledAt}`);
+  if (processInfo.cwd) metadata.push(`cwd=${processInfo.cwd}`);
+  return metadata.length > 0 ? ` ${metadata.join(" ")}` : "";
+}
+
+function formatBashResult(result: {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  executionTime?: number;
+  startedAt?: string;
+  error?: string;
+  logId?: string;
+  isTruncated?: boolean;
+  aborted?: boolean;
+}, cleanedStdout?: string): BashToolResult {
+  const status = result.success ? "success" : result.error?.includes("blocked") ? "blocked" : "error";
+  const fullStdout = cleanedStdout ?? result.stdout;
+
+  // Bash no longer applies a character-based inline cap. The downstream
+  // `guardToolResultForStreaming` (lib/ai/tool-result-stream-guard.ts) is the
+  // single source of truth for output sizing, using token-based tiers
+  // (≤10K tokens passthrough, 10K–25K preview+stub, >25K stub-only).
+  //
+  // We only persist a terminal log here when the *executor itself* truncated
+  // the output (timeout or 1MB process-level cap). In that case the result
+  // already carries `isTruncated: true` and ideally a `logId`. We mint a logId
+  // only as a fallback if the executor didn't supply one. For below-cap runs,
+  // the stream-guard owns the storeFullContent fallback path.
+  const executorTruncated =
+    result.isTruncated || result.error === "Process terminated due to timeout or output limit";
+
+  let logId = result.logId;
+  if (!logId && executorTruncated) {
+    logId = saveTerminalLog(fullStdout, result.stderr);
+  }
+
+  const message = executorTruncated
+    ? `Process terminated by executor (timeout or output cap).${logRetrievalGuidance(logId)}`
+    : undefined;
+
+  return {
+    status,
+    stdout: fullStdout,
+    stderr: result.stderr,
+    exitCode: result.exitCode,
+    executionTime: result.executionTime,
+    startedAt: result.startedAt,
+    error: result.error,
+    message,
+    logId,
+    isTruncated: executorTruncated,
+    aborted: result.aborted,
+  };
 }
 
 /**
@@ -135,13 +216,12 @@ __selene_exit=$?
 printf '\n${CWD_MARKER}%s\n' "$(pwd -P)"
 exit $__selene_exit`;
 
-  // Pass the script via stdin instead of -c to avoid heredoc/quote parsing
-  // issues. Shells read stdin line-by-line, so heredocs, triple quotes,
-  // backticks, and f-strings all work naturally without escaping.
+  // Run the script through `-c` instead of piping it on stdin. Login shells can
+  // source profile scripts that read stdin, which steals the command payload and
+  // leaves the child hanging without ever reaching our exit marker.
   return {
     command: "/bin/sh",
-    args: ["-l"],
-    stdin: wrapped,
+    args: ["-lc", wrapped],
   };
 }
 
@@ -184,10 +264,9 @@ async function resolveExecutionContext(
 > {
   let syncedFolders: string[];
   try {
-    const folders = await getAccessibleSyncFolders(characterId);
-    syncedFolders = folders.map((folder) => folder.folderPath);
+    syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
 
-    if (syncedFolders.length === 0) {
+    if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
       return {
         error: {
           status: "no_folders",
@@ -205,24 +284,13 @@ async function resolveExecutionContext(
     };
   }
 
-  const worktreePath = await getActiveWorktreePath(sessionId);
-  if (worktreePath && !syncedFolders.includes(worktreePath)) {
-    syncedFolders = [worktreePath, ...syncedFolders];
-  }
-
-  if (worktreePath) {
-    syncedFolders = syncedFolders.filter(
-      (folderPath) => !isOtherWorktreePath(folderPath, worktreePath)
-    );
-  }
-
   const persistedCwd = await getPersistedCommandCwd(sessionId);
-  const preferredExecutionDir = persistedCwd || worktreePath || syncedFolders[0];
+  const preferredExecutionDir = persistedCwd || syncedFolders[0] || process.cwd();
   const preferredValidation = await validateExecutionDirectory(preferredExecutionDir, syncedFolders);
 
   const executionDir = preferredValidation.valid
     ? preferredValidation.resolvedPath ?? preferredExecutionDir
-    : worktreePath || syncedFolders[0];
+    : syncedFolders[0] || process.cwd();
 
   return {
     syncedFolders,
@@ -238,7 +306,7 @@ const bashSchema = jsonSchema<BashInput>({
     command: {
       type: "string",
       description:
-        "Shell command string to execute. This tool preserves working directory across calls.",
+        "Shell command string to execute. Preserves working directory across calls.",
     },
     timeout: {
       type: "number",
@@ -256,13 +324,13 @@ const bashSchema = jsonSchema<BashInput>({
     processId: {
       type: "string",
       description:
-        "ID of a background process to check or manage. Only use with processes started via run_in_background. Do NOT set this for regular commands.",
+        "ID of a background process started via run_in_background.",
     },
     action: {
       type: "string",
       enum: ["status", "kill", "list"],
       description:
-        "Background process management ONLY. Do NOT set this when running a command — just provide 'command' alone. 'status' checks a process by processId, 'kill' stops it, 'list' shows all background processes.",
+        "Background process action: status, kill, or list.",
     },
   },
   required: [],
@@ -270,7 +338,7 @@ const bashSchema = jsonSchema<BashInput>({
 });
 
 export function createBashTool(options: ExecuteCommandToolOptions) {
-  const { characterId, sessionId, onProgress } = options;
+  const { characterId, sessionId, userId, onProgress } = options;
 
   return tool({
     description: `Run shell commands with a single command string and a persistent working directory.
@@ -293,9 +361,14 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
 - Use \`action: "list"\` to inspect all background processes
 - For regular commands, just provide \`command\` — never set \`action\` or \`processId\`
 
+**Logs:**
+- Results may include a \`logId\` for persisted output
+- Retrieve full logs with \`executeCommand({ command: "readLog", logId: "..." })\`
+- Use \`executeCommand({ command: "readLog", logId: "...", tail: 100 })\`, \`range\`, or \`grep\` for slices
+
 **Safety:**
 - Commands still run only from synced folders/worktrees
-- Removal commands inside the shell string are blocked
+- \`SELENE_UNSAFE_AGENT_PERMISSIONS=true\` allows broader local filesystem access
 - Prefer \`localGrep\`, \`readFile\`, \`editFile\`, and \`writeFile\` for direct codebase operations when possible`,
     inputSchema: bashSchema,
     execute: async (
@@ -339,7 +412,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           .map((processInfo) => {
             const originalCommand = bashBackgroundCommands.get(processInfo.id) || processInfo.command;
             const elapsed = Math.round(processInfo.elapsed / 1000);
-            return `[${processInfo.id}] ${processInfo.running ? "RUNNING" : "DONE"} (${elapsed}s) ${originalCommand}`;
+            return `[${processInfo.id}] ${processInfo.running ? "RUNNING" : "DONE"} (${elapsed}s) ${originalCommand}${formatBackgroundListMetadata(processInfo)}`;
           })
           .join("\n");
 
@@ -351,9 +424,9 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
       }
 
       if (input.processId && action === "kill") {
-        const killed = killBackgroundProcess(input.processId);
-        if (!killed) {
-          return { status: "error", error: `No background process found with ID '${input.processId}'.` };
+        const result = killTrackedBackgroundProcess(input.processId, userId);
+        if (!result.ok) {
+          return { status: "error", error: result.error ?? `No background process found with ID '${input.processId}'.` };
         }
         bashBackgroundCommands.delete(input.processId);
         return {
@@ -370,9 +443,9 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             error: `No background process found with ID '${input.processId}'. It may have been cleaned up.`,
           };
         }
-
         const cleanedStdout = extractCwdMarker(info.stdout);
         const elapsed = Math.round((Date.now() - info.startedAt) / 1000);
+        markBackgroundProcessObserved(input.processId);
         const originalCommand = bashBackgroundCommands.get(info.id) || info.command;
 
         if (!info.running && cleanedStdout.cwd) {
@@ -386,7 +459,8 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             stdout: cleanedStdout.stdout,
             stderr: info.stderr,
             startedAt: toIsoTimestamp(info.startedAt),
-            message: `Process '${originalCommand}' still running (${elapsed}s elapsed).`,
+            message: `Process '${originalCommand}' still running (${elapsed}s elapsed).${logRetrievalGuidance(info.logId)}`,
+            logId: info.logId,
           };
         }
 
@@ -399,7 +473,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           exitCode: info.exitCode,
           executionTime: Date.now() - info.startedAt,
           startedAt: toIsoTimestamp(info.startedAt),
-          message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.`,
+          message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.${logRetrievalGuidance(info.logId)}`,
           logId: info.logId,
         };
       }
@@ -408,7 +482,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
       if (!command) {
         return {
           status: "error",
-          error: 'Missing or invalid command. Use: bash({ command: "git status" })',
+          error: 'Missing or invalid command. Use: executeCommand({ command: "git status" })',
         };
       }
 
@@ -437,6 +511,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           cwd: cleanedStdout.cwd ?? update.cwd,
           stdout: cleanedStdout.stdout,
           toolCallId: update.toolCallId ?? toolCallId,
+          toolName: update.toolName ?? "bash",
         });
       };
 
@@ -454,25 +529,14 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             timeout,
             characterId,
             toolCallId,
+            abortSignal: toolCallOptions?.abortSignal,
             onProgress: forwardProgress,
           },
           syncedFolders
         );
 
         return {
-          status: result.success
-            ? "success"
-            : result.error?.includes("blocked")
-              ? "blocked"
-              : "error",
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.exitCode,
-          executionTime: result.executionTime,
-          startedAt: result.startedAt,
-          error: result.error,
-          logId: result.logId,
-          isTruncated: result.isTruncated,
+          ...formatBashResult(result),
           inlineDiff: patchHeredoc.patchText,
         };
       }
@@ -489,6 +553,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
             timeout,
             characterId,
             windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
+            onBackgroundProcessSettled: handleBackgroundProcessSettled,
           },
           syncedFolders
         );
@@ -501,11 +566,21 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         if (sessionId) {
           registerBackgroundTask(characterId, sessionId, backgroundResult.processId);
         }
+        registerBackgroundProcessTask({
+          processId: backgroundResult.processId,
+          userId,
+          characterId,
+          sessionId,
+          toolName: "bash",
+          command,
+          cwd: executionDir,
+        });
 
         return {
           status: "background_started",
           processId: backgroundResult.processId,
-          message: `Background process started. Use processId '${backgroundResult.processId}' to check status.`,
+          message: `Background process started. Use processId '${backgroundResult.processId}' to check status.${logRetrievalGuidance(backgroundResult.logId)}`,
+          logId: backgroundResult.logId,
         };
       }
 
@@ -518,6 +593,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
           timeout,
           characterId,
           toolCallId,
+          abortSignal: toolCallOptions?.abortSignal,
           onProgress: forwardProgress,
           windowsVerbatimArguments: shellCommand.windowsVerbatimArguments,
         },
@@ -529,21 +605,7 @@ export function createBashTool(options: ExecuteCommandToolOptions) {
         await setPersistedCommandCwd(sessionId, cleanedStdout.cwd);
       }
 
-      return {
-        status: result.success
-          ? "success"
-          : result.error?.includes("blocked")
-            ? "blocked"
-            : "error",
-        stdout: cleanedStdout.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        executionTime: result.executionTime,
-        startedAt: result.startedAt,
-        error: result.error,
-        logId: result.logId,
-        isTruncated: result.isTruncated,
-      };
+      return formatBashResult(result, cleanedStdout.stdout);
     },
   });
 }

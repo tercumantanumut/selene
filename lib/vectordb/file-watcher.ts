@@ -135,6 +135,15 @@ const emfileRetryCounts = new Map<string, number>();
 const MAX_EMFILE_RETRIES = 3;
 const EMFILE_BACKOFF_MS = [3000, 10000, 30000];
 
+// Cap concurrent recursive watchers. macOS Electron utilityProcess hits FD
+// pressure long before chokidar's per-subdirectory FDs from a 4th large tree
+// would spill the budget; once exhausted, every spawn() in the host process
+// fails with EBADF (MCP servers, node probes), not just the watcher.
+const MAX_CONCURRENT_RECURSIVE_WATCHERS = process.platform === "darwin" ? 3 : 8;
+const recursiveWatcherPaths = new Set<string>();
+const READY_TIMEOUT_MS = 15000;
+const pathReadyPromises = new Map<string, Promise<void>>();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -155,13 +164,21 @@ async function pauseFolderWithError(folderId: string, lastError: string): Promis
  */
 async function safeClosePathWatcher(resolvedPath: string): Promise<void> {
   const watcher = pathWatchers.get(resolvedPath);
-  if (!watcher) return;
+  if (!watcher) {
+    // Still drop any tracking state in case the watcher was registered before
+    // its readyPromise rejected.
+    pathReadyPromises.delete(resolvedPath);
+    recursiveWatcherPaths.delete(resolvedPath);
+    return;
+  }
   try {
     await watcher.close();
   } catch (err) {
     console.error(`[FileWatcher] Error closing watcher for ${resolvedPath}, force-removing:`, err);
   }
   pathWatchers.delete(resolvedPath);
+  pathReadyPromises.delete(resolvedPath);
+  recursiveWatcherPaths.delete(resolvedPath);
 }
 
 /**
@@ -447,10 +464,15 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
   }
 
   // --- 6. FD budget check ---
+  // Hard-fail at >= budget. At >= warn threshold, defer rather than fall back
+  // to polling: chokidar's polling mode still allocates FDs (it stat-cycles
+  // every watched file), so it doesn't actually relieve pressure.
   const fdBudget = getWatcherFdBudget();
   const fdWarnThreshold = getWatcherFdWarnThreshold(fdBudget);
   const openFdCount = await getOpenFileDescriptorCount();
-  if (typeof openFdCount === "number") {
+  const fdMeasured = typeof openFdCount === "number";
+  const underFdPressure = fdMeasured && openFdCount >= fdWarnThreshold;
+  if (fdMeasured) {
     if (openFdCount >= fdBudget) {
       const lastError =
         `Paused: this sync would exceed the watcher file descriptor budget (${openFdCount}/${fdBudget} open). ` +
@@ -460,13 +482,26 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
       return;
     }
 
-    if (openFdCount >= fdWarnThreshold && configForcePolling !== true) {
-      configForcePolling = true;
-      console.warn(
-        `[FileWatcher] High file descriptor pressure detected (${openFdCount}/${fdBudget} open) for ${folderPath}. ` +
-        `Starting watcher in polling mode to reduce FD usage.`
-      );
+    if (underFdPressure) {
+      const lastError =
+        `Deferred: high file descriptor pressure (${openFdCount}/${fdBudget} open). ` +
+        `Reduce synced folders or exclude large trees, then re-enable this folder.`;
+      console.error(`[FileWatcher] ${lastError} Folder: ${folderPath}`);
+      await teardownPathFatally(resolvedPath, lastError);
+      return;
     }
+  }
+
+  // --- 6b. Concurrent-recursive-watcher cap ---
+  // Second-line guard that doesn't depend on /dev/fd accuracy. Recursive
+  // watchers on large trees are what drive the FD count up in the first place.
+  if (recursive && recursiveWatcherPaths.size >= MAX_CONCURRENT_RECURSIVE_WATCHERS) {
+    const lastError =
+      `Deferred: max concurrent recursive watchers reached (${MAX_CONCURRENT_RECURSIVE_WATCHERS}). ` +
+      `Sync fewer large trees or sync a smaller subfolder.`;
+    console.error(`[FileWatcher] ${lastError} Folder: ${folderPath}`);
+    await teardownPathFatally(resolvedPath, lastError);
+    return;
   }
 
   // --- 7. Create chokidar watcher ---
@@ -475,8 +510,10 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
   // On macOS, Node.js fs.watch() uses native FSEvents through libuv — no need
   // for polling even on large project roots.  Only force polling on Linux where
   // inotify has per-user watch limits that large codebases can exhaust.
+  // Skip the project-root probe (up to 8 access() calls) when we're already
+  // under FD pressure — it consumes the FDs we're trying to preserve.
   const isLinux = process.platform === "linux";
-  const isProjectRoot = isLinux && await isProjectRootDirectory(folderPath);
+  const isProjectRoot = isLinux && !underFdPressure && await isProjectRootDirectory(folderPath);
   const forcedPolling = pollingModePaths.has(resolvedPath);
   const usePolling = isProjectRoot || forcedPolling || configForcePolling === true;
 
@@ -506,11 +543,48 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
     binaryInterval: usePolling ? 5000 : undefined,
   });
 
+  // --- 7a. Track readiness so callers can serialize watcher startup ---
+  // chokidar.watch returns synchronously but its initial recursive scan (which
+  // is what allocates FDs) runs async. Without awaiting "ready", a serialized
+  // outer loop's FD-pressure check still races the previous watcher's scan.
+  const readyPromise = new Promise<void>((resolveReady, rejectReady) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      rejectReady(new Error(`Watcher ready timeout (${READY_TIMEOUT_MS}ms) for ${folderPath}`));
+    }, READY_TIMEOUT_MS);
+    if (typeof timeout === "object" && "unref" in timeout) {
+      (timeout as NodeJS.Timeout).unref();
+    }
+    watcher.once("ready", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (recursive) {
+        recursiveWatcherPaths.add(resolvedPath);
+      }
+      resolveReady();
+    });
+    watcher.once("error", (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      rejectReady(err instanceof Error ? err : new Error(String(err)));
+    });
+  });
+  pathReadyPromises.set(resolvedPath, readyPromise);
+  // Prevent "unhandled rejection" warnings — the rejection is observed below
+  // at the end of startWatching, but Node logs the warning before that await
+  // runs if the error fires synchronously.
+  readyPromise.catch(() => {});
+
   // --- 7b. Confirm watcher is operational ---
   watcher.on("ready", () => {
     console.error(
       `[FileWatcher] ✓ Watcher READY for ${folderPath} (owner: ${folderId}, ` +
-      `polling: ${usePolling}, subscribers: ${getSubscribers(resolvedPath).length})`
+      `polling: ${usePolling}, subscribers: ${getSubscribers(resolvedPath).length}, ` +
+      `recursiveActive: ${recursiveWatcherPaths.size}/${MAX_CONCURRENT_RECURSIVE_WATCHERS})`
     );
   });
 
@@ -713,6 +787,26 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
     `[FileWatcher] Watcher stored for ${folderPath}. ` +
     `Total active path watchers: ${pathWatchers.size}, subscribers: ${folderSubscribers.size}`
   );
+
+  // --- 9. Wait for chokidar's initial scan to complete before returning ---
+  // This is the load-bearing line for serialized startup: it ensures the next
+  // caller's FD-pressure check sees this watcher's allocations.
+  try {
+    await readyPromise;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[FileWatcher] Watcher failed to become ready for ${folderPath}: ${message}`);
+    // The chokidar "error" handler below already runs teardownPathFatally for
+    // EMFILE / permission errors. Only run it ourselves if the watcher is
+    // still registered (e.g., on ready timeout, the error handler never fires).
+    if (pathWatchers.has(resolvedPath)) {
+      const lastError =
+        `Deferred: watcher did not become ready (${message}). ` +
+        `Reduce synced folders or sync a smaller subfolder.`;
+      await teardownPathFatally(resolvedPath, lastError);
+    }
+    throw err;
+  }
 
   // Watcher started successfully — reset EMFILE retry state
   emfileRetryCounts.delete(resolvedPath);
@@ -1016,6 +1110,8 @@ export async function stopAllWatchers(): Promise<void> {
   pollingModePaths.clear();
   permissionErrorCounts.clear();
   emfileRetryCounts.clear();
+  pathReadyPromises.clear();
+  recursiveWatcherPaths.clear();
 }
 
 /**

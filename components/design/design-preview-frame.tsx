@@ -1,14 +1,44 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useDesignWorkspaceStore } from "@/lib/design/workspace/store";
 import { DESIGN_BREAKPOINTS } from "@/lib/design/workspace/types";
 import { computeDesignPreviewFrameLayout } from "@/lib/design/workspace/viewport";
 import { rehydrateComponentCode } from "@/components/design/design-workspace-bridge";
+import { TOOLS_SCRIPT } from "@/lib/design/workspace/tools-script";
 import { Button } from "@/components/ui/button";
-import { Monitor, Tablet, Smartphone, Crosshair, Maximize, Sun, Moon, SunMoon } from "lucide-react";
-import type { DesignPreviewTheme } from "@/lib/design/workspace/types";
-import type { InspectedElement } from "@/lib/design/workspace/types";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Monitor,
+  Tablet,
+  Smartphone,
+  Crosshair,
+  Maximize,
+  Sun,
+  Moon,
+  SunMoon,
+  Ruler,
+  Pipette,
+  MessageSquare,
+} from "lucide-react";
+import type {
+  DesignComment,
+  DesignPreviewTheme,
+  Measurement,
+  PickedColor,
+} from "@/lib/design/workspace/types";
+import {
+  validateIframeMessage,
+  validateMeasurementsSync,
+} from "@/lib/design/workspace/iframe-messages";
 
 const BREAKPOINT_ICONS: Record<string, ReactNode> = {
   responsive: <Maximize className="h-4 w-4" />,
@@ -74,295 +104,20 @@ function escapeForHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
-// ---------------------------------------------------------------------------
-// Inspector script — injected into the iframe when inspector mode is active.
-// Self-contained, no external deps. Communicates via postMessage.
-// ---------------------------------------------------------------------------
-const INSPECTOR_SCRIPT = `
-(function() {
-  if (window.__seleneInspector) return;
-  window.__seleneInspector = true;
-
-  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  // Overlay canvas
-  var overlay = document.createElement('div');
-  overlay.id = '__selene-inspector-overlay';
-  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483646;';
-  document.documentElement.appendChild(overlay);
-
-  // Tooltip
-  var tooltip = document.createElement('div');
-  tooltip.id = '__selene-inspector-tooltip';
-  tooltip.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;background:rgba(0,0,0,0.85);color:#fff;font:11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;padding:4px 8px;border-radius:4px;white-space:nowrap;display:none;max-width:360px;overflow:hidden;text-overflow:ellipsis;';
-  document.documentElement.appendChild(tooltip);
-
-  // Box-model highlight elements
-  var marginBox = document.createElement('div');
-  marginBox.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483645;background:rgba(246,178,107,0.3);';
-  var paddingBox = document.createElement('div');
-  paddingBox.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483645;background:rgba(147,196,125,0.3);';
-  var contentBox = document.createElement('div');
-  contentBox.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483645;background:rgba(111,168,220,0.3);';
-  document.documentElement.appendChild(marginBox);
-  document.documentElement.appendChild(paddingBox);
-  document.documentElement.appendChild(contentBox);
-
-  var hoveredEl = null;
-
-  function getCssSelector(el) {
-    if (!(el instanceof Element)) return '';
-    if (el.id) return '#' + CSS.escape(el.id);
-    var parts = [];
-    var current = el;
-    while (current && current !== document.documentElement) {
-      var tag = current.tagName.toLowerCase();
-      if (current.id) { parts.unshift('#' + CSS.escape(current.id)); break; }
-      var parent = current.parentElement;
-      if (parent) {
-        var siblings = Array.from(parent.children).filter(function(c) { return c.tagName === current.tagName; });
-        if (siblings.length > 1) {
-          var idx = siblings.indexOf(current) + 1;
-          tag += ':nth-of-type(' + idx + ')';
-        }
-      }
-      parts.unshift(tag);
-      current = parent;
-    }
-    return parts.join(' > ');
-  }
-
-  function parseNum(v) { return parseFloat(v) || 0; }
-
-  function highlight(el) {
-    if (!el || el === document.documentElement || el === document.body) {
-      hideHighlight();
-      return;
-    }
-    var rect = el.getBoundingClientRect();
-    var cs = getComputedStyle(el);
-    var mt = parseNum(cs.marginTop), mr = parseNum(cs.marginRight), mb = parseNum(cs.marginBottom), ml = parseNum(cs.marginLeft);
-    var pt = parseNum(cs.paddingTop), pr = parseNum(cs.paddingRight), pb = parseNum(cs.paddingBottom), pl = parseNum(cs.paddingLeft);
-
-    // Margin box
-    marginBox.style.top = (rect.top - mt) + 'px';
-    marginBox.style.left = (rect.left - ml) + 'px';
-    marginBox.style.width = (rect.width + ml + mr) + 'px';
-    marginBox.style.height = (rect.height + mt + mb) + 'px';
-    marginBox.style.display = 'block';
-
-    // Padding box (same as border box here)
-    paddingBox.style.top = rect.top + 'px';
-    paddingBox.style.left = rect.left + 'px';
-    paddingBox.style.width = rect.width + 'px';
-    paddingBox.style.height = rect.height + 'px';
-    paddingBox.style.display = 'block';
-
-    // Content box
-    contentBox.style.top = (rect.top + pt) + 'px';
-    contentBox.style.left = (rect.left + pl) + 'px';
-    contentBox.style.width = (rect.width - pl - pr) + 'px';
-    contentBox.style.height = (rect.height - pt - pb) + 'px';
-    contentBox.style.display = 'block';
-  }
-
-  function hideHighlight() {
-    marginBox.style.display = 'none';
-    paddingBox.style.display = 'none';
-    contentBox.style.display = 'none';
-    tooltip.style.display = 'none';
-  }
-
-  function showTooltip(el, x, y) {
-    var rect = el.getBoundingClientRect();
-    var cs = getComputedStyle(el);
-    var tag = el.tagName.toLowerCase();
-    var cls = el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\\s+/).join('.') : '';
-    var idStr = el.id ? '#' + el.id : '';
-    var dims = Math.round(rect.width) + ' x ' + Math.round(rect.height);
-    tooltip.textContent = tag + idStr + cls + '  ' + dims;
-    tooltip.style.display = 'block';
-
-    // Position: prefer below-right of cursor, flip if needed
-    var tx = x + 12;
-    var ty = y + 12;
-    if (tx + tooltip.offsetWidth > window.innerWidth) tx = x - tooltip.offsetWidth - 4;
-    if (ty + tooltip.offsetHeight > window.innerHeight) ty = y - tooltip.offsetHeight - 4;
-    tooltip.style.left = tx + 'px';
-    tooltip.style.top = ty + 'px';
-  }
-
-  function buildPayload(el) {
-    var rect = el.getBoundingClientRect();
-    var cs = getComputedStyle(el);
-    var text = (el.textContent || '').trim();
-    if (text.length > 120) text = text.slice(0, 120) + '...';
-    return {
-      type: 'selene-inspector-select',
-      element: {
-        tagName: el.tagName.toLowerCase(),
-        id: el.id || '',
-        className: (typeof el.className === 'string') ? el.className : '',
-        textContent: text,
-        selector: getCssSelector(el),
-        boundingRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        computedStyles: {
-          width: cs.width,
-          height: cs.height,
-          padding: cs.padding,
-          margin: cs.margin,
-          display: cs.display,
-          position: cs.position,
-          color: cs.color,
-          backgroundColor: cs.backgroundColor,
-          fontSize: cs.fontSize,
-          fontFamily: cs.fontFamily
-        }
-      }
-    };
-  }
-
-  function isInspectorElement(el) {
-    return el === overlay || el === tooltip || el === marginBox || el === paddingBox || el === contentBox;
-  }
-
-  function onMouseMove(e) {
-    var target = e.target;
-    if (!target || isInspectorElement(target)) return;
-    // Skip SVG internal elements — highlight the nearest SVGSVGElement
-    if (target instanceof SVGElement && !(target instanceof SVGSVGElement)) {
-      target = target.closest('svg') || target;
-    }
-    hoveredEl = target;
-    highlight(target);
-    showTooltip(target, e.clientX, e.clientY);
-  }
-
-  // --- Persistent selection overlays ---
-  var selectedOverlays = [];
-
-  function createSelectionOverlay(el) {
-    var rect = el.getBoundingClientRect();
-    var box = document.createElement('div');
-    box.className = '__selene-selection-overlay';
-    box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483644;border:2px solid #3b82f6;background:rgba(59,130,246,0.08);border-radius:2px;';
-    box.style.top = rect.top + 'px';
-    box.style.left = rect.left + 'px';
-    box.style.width = rect.width + 'px';
-    box.style.height = rect.height + 'px';
-    box.dataset.selector = getCssSelector(el);
-    document.documentElement.appendChild(box);
-    return box;
-  }
-
-  function refreshSelectionOverlays() {
-    selectedOverlays.forEach(function(entry) {
-      if (!entry.el || !entry.el.isConnected) { entry.box.remove(); return; }
-      var rect = entry.el.getBoundingClientRect();
-      entry.box.style.top = rect.top + 'px';
-      entry.box.style.left = rect.left + 'px';
-      entry.box.style.width = rect.width + 'px';
-      entry.box.style.height = rect.height + 'px';
-    });
-  }
-
-  function addSelection(el) {
-    var selector = getCssSelector(el);
-    var exists = selectedOverlays.some(function(entry) { return entry.selector === selector; });
-    if (exists) return;
-    if (selectedOverlays.length >= 8) return; // MAX_INSPECT_SELECTIONS
-    var box = createSelectionOverlay(el);
-    selectedOverlays.push({ el: el, box: box, selector: selector });
-  }
-
-  function removeSelection(selector) {
-    selectedOverlays = selectedOverlays.filter(function(entry) {
-      if (entry.selector === selector) { entry.box.remove(); return false; }
-      return true;
-    });
-  }
-
-  function clearSelections() {
-    selectedOverlays.forEach(function(entry) { entry.box.remove(); });
-    selectedOverlays = [];
-  }
-
-  function isSelected(el) {
-    var selector = getCssSelector(el);
-    return selectedOverlays.some(function(entry) { return entry.selector === selector; });
-  }
-
-  function onClick(e) {
-    if (!hoveredEl || isInspectorElement(e.target)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-
-    var isMulti = e.ctrlKey || e.metaKey || e.shiftKey;
-    var payload = buildPayload(hoveredEl);
-    payload.multiSelect = isMulti;
-
-    if (isMulti) {
-      // Toggle selection
-      var selector = getCssSelector(hoveredEl);
-      if (isSelected(hoveredEl)) {
-        removeSelection(selector);
-        payload.action = 'remove';
-      } else {
-        addSelection(hoveredEl);
-        payload.action = 'add';
-      }
-    } else {
-      // Single select — replace
-      clearSelections();
-      addSelection(hoveredEl);
-      payload.action = 'replace';
-    }
-
-    window.parent.postMessage(payload, '*');
-  }
-
-  // Refresh overlay positions on scroll/resize
-  var rafPending = false;
-  function scheduleRefresh() {
-    if (rafPending) return;
-    rafPending = true;
-    requestAnimationFrame(function() { rafPending = false; refreshSelectionOverlays(); });
-  }
-  window.addEventListener('scroll', scheduleRefresh, true);
-  window.addEventListener('resize', scheduleRefresh);
-
-  document.addEventListener('mousemove', onMouseMove, true);
-  document.addEventListener('click', onClick, true);
-
-  // Listen for cleanup message from parent
-  window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'selene-inspector-cleanup') {
-      document.removeEventListener('mousemove', onMouseMove, true);
-      document.removeEventListener('click', onClick, true);
-      window.removeEventListener('scroll', scheduleRefresh, true);
-      window.removeEventListener('resize', scheduleRefresh);
-      hideHighlight();
-      clearSelections();
-      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-      if (tooltip.parentNode) tooltip.parentNode.removeChild(tooltip);
-      if (marginBox.parentNode) marginBox.parentNode.removeChild(marginBox);
-      if (paddingBox.parentNode) paddingBox.parentNode.removeChild(paddingBox);
-      if (contentBox.parentNode) contentBox.parentNode.removeChild(contentBox);
-      window.__seleneInspector = false;
-    }
-  });
-})();
-`;
-
 /**
- * Inject inspector script into preview HTML when inspector mode is enabled.
- * Appends a <script> tag before the closing </body> or </html> tag.
+ * Inject the tools script into preview HTML UNCONDITIONALLY.
+ *
+ * The bootstrap seeds `window.__seleneActiveTool = null`; the parent then
+ * activates a specific tool via the `selene-tool-set-active` postMessage on
+ * mount (handled by `handleIframeLoad`) and on every subsequent tool switch.
+ *
+ * Critically, this function does NOT branch on the current active tool — if
+ * it did, the `previewSrcDoc` memo would invalidate on every tool switch and
+ * remount the entire iframe, defeating the postMessage bus and clobbering
+ * any in-iframe state (scroll position, form inputs, etc.).
  */
-function injectInspectorScript(html: string, enabled: boolean): string {
-  if (!enabled) return html;
-  const scriptTag = `<script>${INSPECTOR_SCRIPT}<\/script>`;
-  // Insert before </body> if present, else before </html>, else append
+function injectInspectorScript(html: string): string {
+  const scriptTag = `<script>window.__seleneActiveTool = null;</script><script>${TOOLS_SCRIPT}<\/script>`;
   if (html.includes("</body>")) {
     return html.replace("</body>", `${scriptTag}</body>`);
   }
@@ -431,7 +186,13 @@ function useCompileTailwindPreview() {
     fetch("/api/design/compile-preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: requestCode, name: component.name }),
+      body: JSON.stringify({
+        code: requestCode,
+        name: component.name,
+        characterId: useDesignWorkspaceStore.getState().characterId,
+        sessionId: useDesignWorkspaceStore.getState().sessionId,
+        resolvedSourcePath: component.resolvedSourcePath,
+      }),
       signal: controller.signal,
     })
       .then(async (res) => {
@@ -514,18 +275,178 @@ function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
   return size;
 }
 
+function makeId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Window during which a burst of comment changes is coalesced into one diff. */
+const COMMENTS_SYNC_DEBOUNCE_MS = 50;
+
+/** Window during which a burst of measurement changes is coalesced. */
+const MEASUREMENTS_SYNC_DEBOUNCE_MS = 50;
+
+/** Compute the diff between the parent's current `comments` and the iframe's
+ * last-synced view of that list. */
+function diffComments(
+  current: DesignComment[],
+  previous: Map<string, DesignComment>,
+): {
+  added: DesignComment[];
+  removed: string[];
+  updated: DesignComment[];
+} {
+  const added: DesignComment[] = [];
+  const updated: DesignComment[] = [];
+  const seen = new Set<string>();
+  for (const comment of current) {
+    seen.add(comment.id);
+    const prev = previous.get(comment.id);
+    if (!prev) {
+      added.push(comment);
+    } else if (
+      prev.text !== comment.text ||
+      prev.elementSelector !== comment.elementSelector ||
+      prev.resolved !== comment.resolved ||
+      prev.orphaned !== comment.orphaned
+    ) {
+      updated.push(comment);
+    }
+  }
+  const removed: string[] = [];
+  previous.forEach((_, id) => {
+    if (!seen.has(id)) removed.push(id);
+  });
+  return { added, removed, updated };
+}
+
+/**
+ * Compute the diff between the parent's current `measurements` and the
+ * iframe's last-synced view. Mirrors `diffComments`. A measurement is
+ * considered "updated" when either endpoint selector or any distance value
+ * changes — we re-anchor in-place rather than removing+adding.
+ */
+export function diffMeasurements(
+  current: Measurement[],
+  previous: Map<string, Measurement>,
+): {
+  added: Measurement[];
+  removed: string[];
+  updated: Measurement[];
+} {
+  const added: Measurement[] = [];
+  const updated: Measurement[] = [];
+  const seen = new Set<string>();
+  for (const measurement of current) {
+    seen.add(measurement.id);
+    const prev = previous.get(measurement.id);
+    if (!prev) {
+      added.push(measurement);
+    } else if (
+      prev.from.selector !== measurement.from.selector ||
+      prev.to.selector !== measurement.to.selector ||
+      prev.distances.dx !== measurement.distances.dx ||
+      prev.distances.dy !== measurement.distances.dy ||
+      prev.distances.horizontal !== measurement.distances.horizontal ||
+      prev.distances.vertical !== measurement.distances.vertical ||
+      prev.distances.euclidean !== measurement.distances.euclidean ||
+      prev.orphaned !== measurement.orphaned
+    ) {
+      updated.push(measurement);
+    }
+  }
+  const removed: string[] = [];
+  previous.forEach((_, id) => {
+    if (!seen.has(id)) removed.push(id);
+  });
+  return { added, removed, updated };
+}
+
+/**
+ * Toolbar density tiers — narrower than the chosen threshold collapses
+ * controls progressively. Tailwind v3 (this codebase) has no
+ * `@container` queries, so we drive the breakpoints with a ResizeObserver
+ * over the toolbar's own clientWidth.
+ *
+ *   roomy   (>= 720px)        — full labels everywhere (default)
+ *   compact (>= 480, < 720)   — chrome (breakpoint + theme) labels stay,
+ *                               tools become icon-only
+ *   tight   (< 480 OR overflow) — chrome collapses into dropdowns AND
+ *                                 tools stay icon-only
+ *
+ * Threshold rationale:
+ *   The toolbar uses `flex-wrap`, so the absolute `clientWidth < 480` check
+ *   alone misses the case where a wider toolbar (e.g. ~600px preview column
+ *   with both sidebars open) wraps to a second row instead of collapsing.
+ *   We add a `scrollWidth > clientWidth + 4` overflow fallback (4px slop for
+ *   sub-pixel rounding): when overflow is observed we promote to at least
+ *   `compact`, and if the absolute width is also below 600px we promote to
+ *   `tight`. This catches the wrap case without requiring a full content-
+ *   width measurement pass in `roomy` mode.
+ */
+type ToolbarDensity = "roomy" | "compact" | "tight";
+
+function useToolbarDensity(): {
+  density: ToolbarDensity;
+  ref: React.RefObject<HTMLDivElement | null>;
+} {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [density, setDensity] = useState<ToolbarDensity>("roomy");
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const compute = (clientWidth: number, scrollWidth: number): ToolbarDensity => {
+      // Absolute-width tiers — same as before.
+      let next: ToolbarDensity =
+        clientWidth < 480 ? "tight" : clientWidth < 720 ? "compact" : "roomy";
+      // Overflow fallback — when flex-wrap kicks in (or content would
+      // overflow), force at least `compact`. If the toolbar is also narrower
+      // than ~600px, force `tight` so chrome collapses to dropdowns instead
+      // of wrapping onto a second row.
+      const overflowing = scrollWidth > clientWidth + 4;
+      if (overflowing) {
+        if (clientWidth < 600) {
+          next = "tight";
+        } else if (next === "roomy") {
+          next = "compact";
+        }
+      }
+      return next;
+    };
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const target = entry.target as HTMLElement;
+      const next = compute(entry.contentRect.width, target.scrollWidth);
+      setDensity((prev) => (prev === next ? prev : next));
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, []);
+
+  return { density, ref };
+}
+
 export function DesignPreviewFrame() {
   const activeComponentId = useDesignWorkspaceStore((s) => s.activeComponentId);
   const previewHtml = useDesignWorkspaceStore((s) => s.previewHtml);
   const selectedBreakpoint = useDesignWorkspaceStore((s) => s.selectedBreakpoint);
   const setBreakpoint = useDesignWorkspaceStore((s) => s.setBreakpoint);
-  const inspectorEnabled = useDesignWorkspaceStore((s) => s.inspectorEnabled);
-  const toggleInspector = useDesignWorkspaceStore((s) => s.toggleInspector);
+  const activeTool = useDesignWorkspaceStore((s) => s.activeTool);
+  const setActiveTool = useDesignWorkspaceStore((s) => s.setActiveTool);
   const previewTheme = useDesignWorkspaceStore((s) => s.previewTheme);
   const setPreviewTheme = useDesignWorkspaceStore((s) => s.setPreviewTheme);
-  const setSelectedElement = useDesignWorkspaceStore((s) => s.setSelectedElement);
   const toggleSelectedElement = useDesignWorkspaceStore((s) => s.toggleSelectedElement);
   const setSelectedElements = useDesignWorkspaceStore((s) => s.setSelectedElements);
+  const addMeasurement = useDesignWorkspaceStore((s) => s.addMeasurement);
+  const addPickedColor = useDesignWorkspaceStore((s) => s.addPickedColor);
+  const addComment = useDesignWorkspaceStore((s) => s.addComment);
+  const markCommentsOrphaned = useDesignWorkspaceStore((s) => s.markCommentsOrphaned);
+  const markMeasurementsOrphaned = useDesignWorkspaceStore((s) => s.markMeasurementsOrphaned);
+  const comments = useDesignWorkspaceStore((s) => s.comments);
+  const measurements = useDesignWorkspaceStore((s) => s.measurements);
 
   // Auto-compile Tailwind components when switching or on first load
   useCompileTailwindPreview();
@@ -534,28 +455,320 @@ export function DesignPreviewFrame() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const available = useContainerSize(containerRef);
 
-  // Listen for inspector postMessage from the iframe — validate source
+  const postToIframe = useCallback((message: unknown) => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage(message, "*");
+  }, []);
+
+  // The iframe's view of the comments list. Keyed by id so diffing is O(n).
+  // Reset to empty whenever the iframe rebuilds (handleIframeLoad) and updated
+  // after every successful diff post.
+  const lastSyncedCommentsRef = useRef<Map<string, DesignComment>>(new Map());
+  const commentsSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCommentsRef = useRef<DesignComment[] | null>(null);
+
+  // Same pattern for measurements — see comment-sync block above.
+  const lastSyncedMeasurementsRef = useRef<Map<string, Measurement>>(new Map());
+  const measurementsSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingMeasurementsRef = useRef<Measurement[] | null>(null);
+
+  const flushCommentsDiff = useCallback(() => {
+    commentsSyncTimerRef.current = null;
+    const next = pendingCommentsRef.current;
+    pendingCommentsRef.current = null;
+    if (!next) return;
+    const diff = diffComments(next, lastSyncedCommentsRef.current);
+    if (diff.added.length === 0 && diff.removed.length === 0 && diff.updated.length === 0) {
+      return;
+    }
+    postToIframe({ type: "selene-tool-comments-sync", diff });
+    // After successful post, snapshot the new state.
+    const snapshot = new Map<string, DesignComment>();
+    for (const c of next) snapshot.set(c.id, c);
+    lastSyncedCommentsRef.current = snapshot;
+  }, [postToIframe]);
+
+  const scheduleCommentsDiff = useCallback(
+    (next: DesignComment[]) => {
+      pendingCommentsRef.current = next;
+      if (commentsSyncTimerRef.current !== null) {
+        clearTimeout(commentsSyncTimerRef.current);
+      }
+      commentsSyncTimerRef.current = setTimeout(flushCommentsDiff, COMMENTS_SYNC_DEBOUNCE_MS);
+    },
+    [flushCommentsDiff],
+  );
+
+  // Send a full bootstrap of the current comments list (used on iframe rebuild).
+  // Drops any pending debounce so we don't immediately overwrite the bootstrap
+  // with a partial diff against an empty `lastSyncedCommentsRef`.
+  const bootstrapCommentsToIframe = useCallback(
+    (list: DesignComment[]) => {
+      if (commentsSyncTimerRef.current !== null) {
+        clearTimeout(commentsSyncTimerRef.current);
+        commentsSyncTimerRef.current = null;
+      }
+      pendingCommentsRef.current = null;
+      lastSyncedCommentsRef.current = new Map();
+      postToIframe({ type: "selene-tool-comments-sync", bootstrap: list });
+      const snapshot = new Map<string, DesignComment>();
+      for (const c of list) snapshot.set(c.id, c);
+      lastSyncedCommentsRef.current = snapshot;
+    },
+    [postToIframe],
+  );
+
+  // --- Measurements sync (mirrors comments) ---
+  const flushMeasurementsDiff = useCallback(() => {
+    measurementsSyncTimerRef.current = null;
+    const next = pendingMeasurementsRef.current;
+    pendingMeasurementsRef.current = null;
+    if (!next) return;
+    const diff = diffMeasurements(next, lastSyncedMeasurementsRef.current);
+    if (diff.added.length === 0 && diff.removed.length === 0 && diff.updated.length === 0) {
+      return;
+    }
+    // Defence-in-depth: assert the envelope shape before posting so we
+    // never send a malformed sync that the iframe handler would silently
+    // drop. Skip the post (and the snapshot update) on validation miss so
+    // the next diff cycle retries against the same baseline.
+    const envelope = { type: "selene-tool-measurements-sync" as const, diff };
+    if (!validateMeasurementsSync(envelope)) {
+      console.warn("[DesignPreviewFrame] dropped invalid measurements-sync diff");
+      return;
+    }
+    postToIframe(envelope);
+    const snapshot = new Map<string, Measurement>();
+    for (const m of next) snapshot.set(m.id, m);
+    lastSyncedMeasurementsRef.current = snapshot;
+  }, [postToIframe]);
+
+  const scheduleMeasurementsDiff = useCallback(
+    (next: Measurement[]) => {
+      pendingMeasurementsRef.current = next;
+      if (measurementsSyncTimerRef.current !== null) {
+        clearTimeout(measurementsSyncTimerRef.current);
+      }
+      measurementsSyncTimerRef.current = setTimeout(
+        flushMeasurementsDiff,
+        MEASUREMENTS_SYNC_DEBOUNCE_MS,
+      );
+    },
+    [flushMeasurementsDiff],
+  );
+
+  const bootstrapMeasurementsToIframe = useCallback(
+    (list: Measurement[]) => {
+      if (measurementsSyncTimerRef.current !== null) {
+        clearTimeout(measurementsSyncTimerRef.current);
+        measurementsSyncTimerRef.current = null;
+      }
+      pendingMeasurementsRef.current = null;
+      lastSyncedMeasurementsRef.current = new Map();
+      // Same defence-in-depth as `flushMeasurementsDiff`: validate the
+      // bootstrap envelope before posting. On miss, skip the send and
+      // leave `lastSyncedMeasurementsRef` empty so the next diff cycle
+      // resyncs against an empty baseline (matching the iframe's view).
+      const envelope = { type: "selene-tool-measurements-sync" as const, bootstrap: list };
+      if (!validateMeasurementsSync(envelope)) {
+        console.warn("[DesignPreviewFrame] dropped invalid measurements-sync bootstrap");
+        return;
+      }
+      postToIframe(envelope);
+      const snapshot = new Map<string, Measurement>();
+      for (const m of list) snapshot.set(m.id, m);
+      lastSyncedMeasurementsRef.current = snapshot;
+    },
+    [postToIframe],
+  );
+
+  // Listen for tool postMessages from the iframe — validate source AND payload.
+  // The state-machine gate inside each branch reads the active tool via
+  // `getState()` so we don't have to re-subscribe the listener whenever
+  // `activeTool` flips; the listener stays mounted for the lifetime of the
+  // component and reacts to whichever tool is active when the event fires.
   useEffect(() => {
     function handleMessage(e: MessageEvent) {
-      // Only accept messages from our own iframe, not arbitrary windows
       if (e.source !== iframeRef.current?.contentWindow) return;
-      if (e.data?.type === "selene-inspector-select" && e.data.element) {
-        const element = e.data.element as InspectedElement;
-        const action = e.data.action as string | undefined;
+      const message = validateIframeMessage(e.data);
+      if (!message) return;
 
-        if (action === "add") {
-          toggleSelectedElement(element);
-        } else if (action === "remove") {
-          toggleSelectedElement(element);
+      if (message.type === "selene-inspector-select") {
+        const action = message.action;
+        if (action === "add" || action === "remove") {
+          toggleSelectedElement(message.element);
         } else {
-          // replace — single selection
-          setSelectedElements([element]);
+          setSelectedElements([message.element]);
         }
+        return;
+      }
+
+      if (message.type === "selene-tool-measure") {
+        const active = useDesignWorkspaceStore.getState().activeTool;
+        if (active !== "measure") {
+          console.warn(
+            `[design-preview] rejecting stale selene-tool-measure — activeTool=${String(active)}`,
+          );
+          return;
+        }
+        const measurement: Measurement = {
+          id: makeId("m"),
+          from: message.from,
+          to: message.to,
+          distances: message.distances,
+          createdAt: Date.now(),
+        };
+        addMeasurement(measurement);
+        return;
+      }
+
+      if (message.type === "selene-tool-color-pick") {
+        const active = useDesignWorkspaceStore.getState().activeTool;
+        if (active !== "eyedropper") {
+          console.warn(
+            `[design-preview] rejecting stale selene-tool-color-pick — activeTool=${String(active)}`,
+          );
+          return;
+        }
+        // Selection of which channel's RGB/hex/hsl to record:
+        // - foreground (Shift-click) → message.foreground
+        // - border / gradient / svg-* / pseudo-* → message.picked, since the
+        //   detected paint is the picked colour in those tiers (the iframe
+        //   already wrote the same rgba to .picked).
+        // - background → message.background (legacy default).
+        const sourceData =
+          message.source === "foreground"
+            ? message.foreground
+            : message.source === "background"
+              ? message.background
+              : message.picked;
+        const picked: PickedColor = {
+          id: makeId("c"),
+          hex: sourceData.hex,
+          rgb: sourceData.rgb,
+          hsl: sourceData.hsl,
+          source: message.source,
+          element: message.element,
+          createdAt: Date.now(),
+        };
+        addPickedColor(picked);
+        return;
+      }
+
+      if (message.type === "selene-tool-comment") {
+        const active = useDesignWorkspaceStore.getState().activeTool;
+        if (active !== "comment") {
+          console.warn(
+            `[design-preview] rejecting stale selene-tool-comment — activeTool=${String(active)}`,
+          );
+          return;
+        }
+        const comment: DesignComment = {
+          id: makeId("cm"),
+          elementSelector: message.elementSelector,
+          text: message.text,
+          createdAt: message.createdAt,
+          resolved: false,
+        };
+        addComment(comment);
+        // The `comments` effect below re-syncs to the iframe whenever the
+        // list changes — no explicit sync needed here (would double-roundtrip).
+        return;
+      }
+
+      if (message.type === "selene-tool-comments-resolved") {
+        markCommentsOrphaned(message.unresolved, message.resolved);
+        return;
+      }
+
+      if (message.type === "selene-tool-measurements-resolved") {
+        markMeasurementsOrphaned(message.unresolved, message.resolved);
+        return;
       }
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [setSelectedElements, toggleSelectedElement]);
+  }, [
+    addComment,
+    addMeasurement,
+    addPickedColor,
+    markCommentsOrphaned,
+    markMeasurementsOrphaned,
+    setSelectedElements,
+    toggleSelectedElement,
+  ]);
+
+  // When activeTool changes, tell the iframe to switch modes without rebuilding.
+  // On the transition to `null`, also send an explicit cleanup as a defensive
+  // double-tap so any transient overlay (measure anchor, comment composer,
+  // hover highlight) is reset. The in-iframe handler treats cleanup as a soft
+  // deactivate — it does NOT remove the listeners, so the bus stays live for
+  // the next activation without needing an iframe remount.
+  useEffect(() => {
+    postToIframe({ type: "selene-tool-set-active", tool: activeTool });
+    if (activeTool === null) {
+      postToIframe({ type: "selene-tools-cleanup" });
+    }
+  }, [activeTool, postToIframe]);
+
+  // Re-sync comments to the iframe whenever the list changes — but as a
+  // diff against the iframe's last-synced view, debounced to coalesce
+  // rapid-fire edits within ~50ms.
+  useEffect(() => {
+    scheduleCommentsDiff(comments);
+  }, [comments, scheduleCommentsDiff]);
+
+  // Same loop for measurements.
+  useEffect(() => {
+    scheduleMeasurementsDiff(measurements);
+  }, [measurements, scheduleMeasurementsDiff]);
+
+  // Cancel any pending debounce when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (commentsSyncTimerRef.current !== null) {
+        clearTimeout(commentsSyncTimerRef.current);
+        commentsSyncTimerRef.current = null;
+      }
+      if (measurementsSyncTimerRef.current !== null) {
+        clearTimeout(measurementsSyncTimerRef.current);
+        measurementsSyncTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Workspace-level keyboard shortcuts: V/M/I/C
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      // If the iframe currently has focus (e.g. user is typing in the in-iframe
+      // comment input), don't hijack keys here.
+      if (document.activeElement === iframeRef.current) return;
+      // Skip when typing in form fields in the parent document.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
+        if (target.closest && target.closest('[contenteditable="true"]')) return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "v") {
+        setActiveTool(null);
+      } else if (key === "m") {
+        setActiveTool(activeTool === "measure" ? null : "measure");
+      } else if (key === "i") {
+        setActiveTool(activeTool === "eyedropper" ? null : "eyedropper");
+      } else if (key === "c") {
+        setActiveTool(activeTool === "comment" ? null : "comment");
+      } else {
+        return;
+      }
+      e.preventDefault();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeTool, setActiveTool]);
 
   // Apply selected theme to the preview HTML
   const themedPreviewHtml = applyPreviewTheme(previewHtml, previewTheme);
@@ -568,10 +781,45 @@ export function DesignPreviewFrame() {
       }),
     [selectedBreakpoint, available.width, available.height],
   );
+  // The injected script is independent of `activeTool` — tool switches go
+  // through the `selene-tool-set-active` postMessage bus, never through a
+  // srcDoc rebuild. Keeping `activeTool` out of the deps here is what makes
+  // measure → eyedropper → comment toggling preserve iframe identity.
   const previewSrcDoc = useMemo(
-    () => injectInspectorScript(themedPreviewHtml, inspectorEnabled),
-    [themedPreviewHtml, inspectorEnabled],
+    () => injectInspectorScript(themedPreviewHtml),
+    [themedPreviewHtml],
   );
+
+  // After the iframe rebuilds (srcDoc change), re-sync state once it has
+  // booted the tools script: re-broadcast the active tool and the full
+  // comment list so persistent pins reappear on every rebuild. The bootstrap
+  // resets `lastSyncedCommentsRef` so subsequent diffs are computed against
+  // the freshly-seeded iframe view.
+  const handleIframeLoad = useCallback(() => {
+    const state = useDesignWorkspaceStore.getState();
+    postToIframe({ type: "selene-tool-set-active", tool: state.activeTool });
+    bootstrapCommentsToIframe(state.comments);
+    // Bootstrap measurements after comments — resolve order is deterministic
+    // for the iframe ack pipeline.
+    bootstrapMeasurementsToIframe(state.measurements);
+  }, [postToIframe, bootstrapCommentsToIframe, bootstrapMeasurementsToIframe]);
+
+  const inspectorEnabled = activeTool === "inspect";
+  const { density: toolbarDensity, ref: toolbarRef } = useToolbarDensity();
+  // Tool buttons (Inspect / Measure / Pick / Comment) drop labels at compact
+  // — they're recognisable from their icons. Chrome controls (breakpoint +
+  // theme) keep labels through compact (they're text-driven choices) and
+  // only collapse to dropdowns at tight. See the JSDoc on
+  // `useToolbarDensity` for the full tier matrix.
+  const showToolLabels = toolbarDensity === "roomy";
+  const showChromeLabels = toolbarDensity !== "tight";
+  const collapseToDropdowns = toolbarDensity === "tight";
+
+  // Resolve the current theme + breakpoint metadata for dropdown trigger labels.
+  const activeThemeOption =
+    PREVIEW_THEME_OPTIONS.find((o) => o.value === previewTheme) ?? PREVIEW_THEME_OPTIONS[0];
+  const activeBreakpointMeta = selectedBreakpoint;
+  const activeBreakpointIcon = BREAKPOINT_ICONS[selectedBreakpoint.name];
 
   if (!activeComponentId) {
     return (
@@ -583,51 +831,196 @@ export function DesignPreviewFrame() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Breakpoint toolbar */}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2" role="tablist" aria-label="Preview breakpoints">
-        {DESIGN_BREAKPOINTS.map((bp) => (
+      {/* Toolbar — responsive density tiers:
+            roomy (>=720px)        — full labels everywhere
+            compact (>=480, <720)  — chrome (breakpoint+theme) labels stay,
+                                     tools become icon-only
+            tight (<480 or overflow) — chrome collapses to dropdowns AND
+                                       tools stay icon-only */}
+      <div
+        ref={toolbarRef}
+        className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2"
+        role="toolbar"
+        aria-label="Design preview toolbar"
+      >
+        {/* Breakpoints */}
+        {collapseToDropdowns ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                aria-label={`Breakpoint: ${activeBreakpointMeta.name}`}
+                title={`Breakpoint: ${activeBreakpointMeta.name}`}
+              >
+                {activeBreakpointIcon}
+                <span className="capitalize">{activeBreakpointMeta.name}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" aria-label="Preview breakpoints">
+              <DropdownMenuLabel>Breakpoint</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup
+                value={selectedBreakpoint.name}
+                onValueChange={(value) => {
+                  const next = DESIGN_BREAKPOINTS.find((bp) => bp.name === value);
+                  if (next) setBreakpoint(next);
+                }}
+              >
+                {DESIGN_BREAKPOINTS.map((bp) => (
+                  <DropdownMenuRadioItem key={bp.name} value={bp.name} className="gap-1.5">
+                    {BREAKPOINT_ICONS[bp.name]}
+                    <span className="capitalize">{bp.name}</span>
+                    {bp.width > 0 && (
+                      <span className="ml-auto text-xs opacity-60">{bp.width}px</span>
+                    )}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div
+            className="flex items-center gap-2"
+            role="group"
+            aria-label="Preview breakpoints"
+          >
+            {DESIGN_BREAKPOINTS.map((bp) => (
+              <Button
+                key={bp.name}
+                variant={selectedBreakpoint.name === bp.name ? "default" : "ghost"}
+                size="sm"
+                aria-pressed={selectedBreakpoint.name === bp.name}
+                aria-label={bp.width ? `${bp.name} breakpoint (${bp.width}px)` : `${bp.name} mode`}
+                title={bp.width ? `${bp.name} (${bp.width}px)` : bp.name}
+                onClick={() => setBreakpoint(bp)}
+                className="gap-1.5"
+              >
+                {BREAKPOINT_ICONS[bp.name]}
+                {showChromeLabels && <span className="capitalize">{bp.name}</span>}
+                {showChromeLabels && bp.width > 0 && (
+                  <span className="text-xs opacity-60">{bp.width}px</span>
+                )}
+              </Button>
+            ))}
+          </div>
+        )}
+
+        <div className="mx-1 h-5 w-px bg-border" />
+
+        {/* Tools — always rendered as buttons (never collapsed into a dropdown);
+            labels drop below `roomy` (icon-only at compact + tight). */}
+        <div className="flex items-center gap-2" role="group" aria-label="Design tools">
           <Button
-            key={bp.name}
-            variant={selectedBreakpoint.name === bp.name ? "default" : "ghost"}
+            variant={inspectorEnabled ? "default" : "ghost"}
             size="sm"
-            role="tab"
-            aria-selected={selectedBreakpoint.name === bp.name}
-            aria-label={bp.width ? `${bp.name} breakpoint (${bp.width}px)` : `${bp.name} mode`}
-            onClick={() => setBreakpoint(bp)}
+            aria-label="Toggle element inspector"
+            aria-pressed={inspectorEnabled}
+            title="Inspect"
+            onClick={() => setActiveTool(activeTool === "inspect" ? null : "inspect")}
             className="gap-1.5"
           >
-            {BREAKPOINT_ICONS[bp.name]}
-            <span className="capitalize">{bp.name}</span>
-            {bp.width > 0 && <span className="text-xs opacity-60">{bp.width}px</span>}
+            <Crosshair className="h-4 w-4" />
+            {showToolLabels && <span>Inspect</span>}
           </Button>
-        ))}
-        <div className="mx-1 h-5 w-px bg-border" />
-        <Button
-          variant={inspectorEnabled ? "default" : "ghost"}
-          size="sm"
-          aria-label="Toggle element inspector"
-          aria-pressed={inspectorEnabled}
-          onClick={toggleInspector}
-          className="gap-1.5"
-        >
-          <Crosshair className="h-4 w-4" />
-          <span>Inspect</span>
-        </Button>
-        <div className="mx-1 h-5 w-px bg-border" />
-        {PREVIEW_THEME_OPTIONS.map((option) => (
           <Button
-            key={option.value}
-            variant={previewTheme === option.value ? "default" : "ghost"}
+            variant={activeTool === "measure" ? "default" : "ghost"}
             size="sm"
-            aria-label={`${option.label} preview theme`}
-            aria-pressed={previewTheme === option.value}
-            onClick={() => setPreviewTheme(option.value)}
+            aria-label="Measure (M)"
+            aria-pressed={activeTool === "measure"}
+            title="Measure (M)"
+            onClick={() => setActiveTool(activeTool === "measure" ? null : "measure")}
             className="gap-1.5"
           >
-            {option.icon}
-            <span>{option.label}</span>
+            <Ruler className="h-4 w-4" />
+            {showToolLabels && <span>Measure</span>}
           </Button>
-        ))}
+          <Button
+            variant={activeTool === "eyedropper" ? "default" : "ghost"}
+            size="sm"
+            aria-label="Pick color (I)"
+            aria-pressed={activeTool === "eyedropper"}
+            title="Pick color (I)"
+            onClick={() => setActiveTool(activeTool === "eyedropper" ? null : "eyedropper")}
+            className="gap-1.5"
+          >
+            <Pipette className="h-4 w-4" />
+            {showToolLabels && <span>Pick</span>}
+          </Button>
+          <Button
+            variant={activeTool === "comment" ? "default" : "ghost"}
+            size="sm"
+            aria-label="Comment (C)"
+            aria-pressed={activeTool === "comment"}
+            title="Comment (C)"
+            onClick={() => setActiveTool(activeTool === "comment" ? null : "comment")}
+            className="gap-1.5"
+          >
+            <MessageSquare className="h-4 w-4" />
+            {showToolLabels && <span>Comment</span>}
+          </Button>
+        </div>
+
+        <div className="mx-1 h-5 w-px bg-border" />
+
+        {/* Theme selector */}
+        {collapseToDropdowns ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5"
+                aria-label={`Preview theme: ${activeThemeOption.label}`}
+                title={`Theme: ${activeThemeOption.label}`}
+              >
+                {activeThemeOption.icon}
+                <span>{activeThemeOption.label}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" aria-label="Preview theme">
+              <DropdownMenuLabel>Preview theme</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup
+                value={previewTheme}
+                onValueChange={(value) => {
+                  const next = PREVIEW_THEME_OPTIONS.find((o) => o.value === value);
+                  if (next) setPreviewTheme(next.value);
+                }}
+              >
+                {PREVIEW_THEME_OPTIONS.map((option) => (
+                  <DropdownMenuRadioItem
+                    key={option.value}
+                    value={option.value}
+                    className="gap-1.5"
+                  >
+                    {option.icon}
+                    <span>{option.label}</span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div className="flex items-center gap-2" role="group" aria-label="Preview theme">
+            {PREVIEW_THEME_OPTIONS.map((option) => (
+              <Button
+                key={option.value}
+                variant={previewTheme === option.value ? "default" : "ghost"}
+                size="sm"
+                aria-label={`${option.label} preview theme`}
+                aria-pressed={previewTheme === option.value}
+                title={`${option.label} theme`}
+                onClick={() => setPreviewTheme(option.value)}
+                className="gap-1.5"
+              >
+                {option.icon}
+                {showChromeLabels && <span>{option.label}</span>}
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Preview area — measured container */}
@@ -657,6 +1050,7 @@ export function DesignPreviewFrame() {
               className="h-full w-full border-0"
               style={{ background: "transparent" }}
               title="Design preview"
+              onLoad={handleIframeLoad}
             />
           </div>
         </div>

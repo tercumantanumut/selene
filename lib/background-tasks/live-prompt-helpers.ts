@@ -1,18 +1,27 @@
 import type { LivePromptEntry } from "./live-prompt-queue-registry";
 import {
-  buildInspectPromptText,
   sanitizeInspectMessageContext,
 } from "@/lib/design/workspace/inspect-context";
+import {
+  formatDesignContextPrompt,
+  mergeDesignContext,
+  sanitizeDesignContext,
+} from "@/lib/design/workspace/design-context";
 
 function sanitizeDelegationCompletionEntry(entry: LivePromptEntry): string {
   // The entry content already contains the full <delegation-result> XML
   // with the subagent's actual response — pass it through directly.
   // The model can read the result inline without calling observe().
+  const deliveryNote = entry.metadata?.deliveryId
+    ? `Delivery metadata: deliveryId=${entry.metadata.deliveryId}, resultVersion=${entry.metadata.resultVersion ?? 1}, resultHash=${entry.metadata.resultHash ?? "unknown"}`
+    : undefined;
   return [
     `[Delegation result delivered — integrate this into your response]`,
+    deliveryNote,
     entry.content,
+    "Do not call observe for this delivered delegation unless you need pending prompts, missing output, or an explicit refresh.",
     "If other delegations are still running, wait for them. Once all are complete, synthesize a final response.",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildDelegationCompletionInstruction(entries: LivePromptEntry[]): string {
@@ -20,13 +29,20 @@ function buildDelegationCompletionInstruction(entries: LivePromptEntry[]): strin
 }
 
 function buildGenericInstructionText(entry: LivePromptEntry, index: number): string {
-  const inspectContext = sanitizeInspectMessageContext(entry.metadata?.inspectContext);
-  const inspectPromptText = buildInspectPromptText(inspectContext);
+  // Merge the unified `designContext` (inspect + measurements + colours)
+  // with any legacy standalone `inspectContext`. A measurements-only design
+  // payload would otherwise silently drop a populated legacy inspect when
+  // both fields co-exist.
+  const sanitizedDesign = sanitizeDesignContext(entry.metadata?.designContext);
+  const legacyInspect = sanitizeInspectMessageContext(entry.metadata?.inspectContext);
+  const designContext = mergeDesignContext(sanitizedDesign, { inspect: legacyInspect });
+  const sidecarText = formatDesignContextPrompt(designContext);
+
   const messageText = sanitizeLivePromptContent(entry.content);
   const lines = [`Instruction ${index + 1}:`];
 
-  if (inspectPromptText) {
-    lines.push(inspectPromptText);
+  if (sidecarText) {
+    lines.push(sidecarText);
   }
 
   lines.push(`Message: ${messageText}`);
@@ -76,14 +92,13 @@ export function hasStopIntent(content: string): boolean {
 
 /**
  * Sanitize user-provided content before injecting into the model context.
- * Strips prompt-injection attempts and caps length.
+ * Strips prompt-injection attempts without truncating the user's message.
  */
 export function sanitizeLivePromptContent(content: string): string {
   return content
     .replace(/\[SYSTEM:/gi, "[USER-INJECTED:")
     .replace(/<\/?system>/gi, "")
-    .trim()
-    .slice(0, 2000);
+    .trim();
 }
 
 /**

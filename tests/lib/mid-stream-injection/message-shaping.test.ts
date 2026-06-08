@@ -66,7 +66,7 @@ describe("findOrphanToolCalls", () => {
     );
     const parts = [{ type: "tool-call", toolCallId: "tx" }];
     expect(findOrphanToolCalls(parts)).toEqual([
-      { toolCallId: "tx", toolName: "tool" },
+      { toolCallId: "tx", toolName: "__unknown_tool__" },
     ]);
   });
 
@@ -145,7 +145,7 @@ describe("buildSyntheticModelToolResults", () => {
       [{ toolCallId: "tx", toolName: "" as unknown as string }],
       "cancelled",
     );
-    expect(results[0].toolName).toBe("tool");
+    expect(results[0].toolName).toBe("__unknown_tool__");
   });
 });
 
@@ -177,5 +177,105 @@ describe("integration: orphan detection → synthetic results", () => {
     expect(shim).toHaveLength(1);
     expect(shim[0].toolCallId).toBe("b");
     expect((shim[0].output as { value: Record<string, unknown> }).value.error).toBe(reason);
+  });
+});
+
+describe("insertSyntheticToolResultsAfterMatchingAssistant", () => {
+  function toolResultIds(message: { content: unknown }) {
+    return Array.isArray(message.content)
+      ? message.content
+          .filter((part): part is { type: string; toolCallId: string } =>
+            typeof part === "object" &&
+            part !== null &&
+            (part as { type?: unknown }).type === "tool-result" &&
+            typeof (part as { toolCallId?: unknown }).toolCallId === "string",
+          )
+          .map((part) => part.toolCallId)
+      : [];
+  }
+
+  it("places synthetic tool_results immediately after the owning assistant, before injected user text", async () => {
+    const { insertSyntheticToolResultsAfterMatchingAssistant } = await import(
+      "@/lib/ai/providers/message-shaping"
+    );
+
+    const messages = [
+      { role: "user" as const, content: "Original request" },
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "text", text: "I will inspect that." },
+          { type: "tool-call", toolCallId: "toolu_orphan", toolName: "readFile" },
+        ],
+      },
+      { role: "assistant" as const, content: "Partial continuation already in step messages." },
+    ];
+
+    const shaped = insertSyntheticToolResultsAfterMatchingAssistant(
+      messages as never,
+      [{ toolCallId: "toolu_orphan", toolName: "readFile" }],
+      "Cancelled — user interjected with a new message",
+    );
+
+    expect(shaped.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+    ]);
+    expect(toolResultIds(shaped[2] as { content: unknown })).toEqual(["toolu_orphan"]);
+  });
+
+  it("does not append impossible tool_results when the matching assistant is absent", async () => {
+    const { insertSyntheticToolResultsAfterMatchingAssistant } = await import(
+      "@/lib/ai/providers/message-shaping"
+    );
+
+    const messages = [
+      { role: "user" as const, content: "Original request" },
+      { role: "assistant" as const, content: "No tool call is present in this request frame." },
+    ];
+
+    const shaped = insertSyntheticToolResultsAfterMatchingAssistant(
+      messages as never,
+      [{ toolCallId: "toolu_missing", toolName: "readFile" }],
+      "Cancelled — user interjected with a new message",
+    );
+
+    expect(shaped).toEqual(messages);
+  });
+
+  it("does not duplicate a synthetic result when the tool call is already resolved", async () => {
+    const { insertSyntheticToolResultsAfterMatchingAssistant } = await import(
+      "@/lib/ai/providers/message-shaping"
+    );
+
+    const messages = [
+      { role: "user" as const, content: "Original request" },
+      {
+        role: "assistant" as const,
+        content: [{ type: "tool-call", toolCallId: "toolu_done", toolName: "readFile" }],
+      },
+      {
+        role: "tool" as const,
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "toolu_done",
+            toolName: "readFile",
+            output: { type: "json", value: { ok: true } },
+          },
+        ],
+      },
+    ];
+
+    const shaped = insertSyntheticToolResultsAfterMatchingAssistant(
+      messages as never,
+      [{ toolCallId: "toolu_done", toolName: "readFile" }],
+      "Cancelled — user interjected with a new message",
+    );
+
+    expect(shaped).toEqual(messages);
+    expect(toolResultIds(shaped[2] as { content: unknown })).toEqual(["toolu_done"]);
   });
 });

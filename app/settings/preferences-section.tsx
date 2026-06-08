@@ -10,11 +10,13 @@ import { THEME_PRESETS } from "@/lib/personalization/theme-presets";
 import { WALLPAPERS, WALLPAPER_CATEGORIES, type BackgroundConfig } from "@/lib/personalization/wallpapers";
 import { VIDEO_WALLPAPERS, VIDEO_WALLPAPER_CATEGORIES, getVideoWallpaperById } from "@/lib/personalization/video-wallpapers";
 import { Check, X, Image as ImageIcon, Play, Globe } from "lucide-react";
+import { invalidateSettingsCache } from "@/lib/hooks/use-settings";
 import type { FormState } from "./settings-types";
 
 interface PreferencesSectionProps {
   formState: FormState;
   updateField: <K extends keyof FormState>(key: K, value: FormState[K]) => void;
+  reloadSettings: () => Promise<void>;
 }
 
 function CategoryFilterBar({
@@ -79,7 +81,7 @@ function NoneOptionButton({
   );
 }
 
-export function PreferencesSection({ formState, updateField }: PreferencesSectionProps) {
+export function PreferencesSection({ formState, updateField, reloadSettings }: PreferencesSectionProps) {
   const t = useTranslations("settings");
   const router = useRouter();
   const currentLocale = useLocale() as Locale;
@@ -114,6 +116,13 @@ export function PreferencesSection({ formState, updateField }: PreferencesSectio
           toast.error(errorMessage);
           return;
         }
+        // Drop the cached `/api/settings` response before reloading. `reloadSettings`
+        // ultimately calls `fetchSettingsOnce()`, which short-circuits on the
+        // module-level cache; without invalidation, formState.appLanguage stays
+        // pinned to the previous locale and a later regular Save can roll back
+        // the language we just persisted.
+        await invalidateSettingsCache();
+        await reloadSettings();
         // Re-render server components with the new locale — no full page reload,
         // which avoids Electron/Chrome protocol-upgrade edge cases.
         router.refresh();

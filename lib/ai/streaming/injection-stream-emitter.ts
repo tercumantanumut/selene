@@ -123,12 +123,9 @@ export interface InjectionStreamWriter {
 /**
  * Write an injected-user-message data part to the active UIMessageStream.
  *
- * Called from:
- *   - `app/api/chat/route.ts` inside `prepareStep` (non-Claude-Code) AFTER
- *     the DB row is committed and BEFORE the post-injection assistant
- *     content resumes.
- *   - `lib/ai/providers/claudecode-provider.ts` inside the `onQueueMessages`
- *     callback in `pumpLivePromptQueue`.
+ * Called from `app/api/chat/route.ts` inside both injection paths (non-CC
+ * `prepareStep` and the Claude Code primary-injection branch) AFTER the DB
+ * row is committed and BEFORE the post-injection assistant content resumes.
  *
  * The `transient: false` flag keeps the frame in the message `parts[]` for
  * debugging and reconnect-idempotency. The client transport intercepts

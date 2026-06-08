@@ -9,10 +9,9 @@
  * arrays and the injected user row is never visible.
  *
  * Root cause (see Phase 1 report): the AI SDK v5 `UIMessageChunk` wire
- * protocol as emitted from `app/api/chat/route.ts:1798` has NO frame that
+ * protocol as emitted from `app/api/chat/route.ts` has NO frame that
  * tells the client "a new user turn appeared". The server persists the row
- * to DB (route.ts:1253 / claudecode-provider.ts:837) but emits nothing on
- * the active stream.
+ * to DB but emits nothing on the active stream.
  *
  * Contract this test enforces (what Phase 4 must implement):
  *   1. A module `@/lib/ai/streaming/injection-stream-emitter` exports a
@@ -21,8 +20,8 @@
  *      detectable wire chunk to the active UIMessageStream writer.
  *   2. A module `@/lib/ai/streaming/injection-handler` exports
  *      `handleInjectedPromptsNonCC` and `handleInjectedPromptsCC` which
- *      encapsulate the injection flow currently duplicated inline at
- *      route.ts:1219–1265 and claudecode-provider.ts:808–849. They must:
+ *      encapsulate the injection flows from `app/api/chat/route.ts`. Both
+ *      handlers must:
  *        a) seal the pre-injection assistant partial (syncStreamingMessage(true))
  *        b) rotate the assistant message ID + reset streaming state
  *        c) persist each injected user row via createMessage() with a fresh
@@ -98,7 +97,7 @@ function makeRecordingWriter() {
 }
 
 /**
- * Mirror of the streaming state object used in route.ts/claudecode-provider.
+ * Mirror of the streaming state object used in `app/api/chat/route.ts`.
  * Only the fields the injection handler touches.
  */
 function makeStreamingState(messageId: string) {
@@ -430,7 +429,7 @@ describe("handleInjectedPromptsNonCC — covers route.ts:1219–1265", () => {
 // Suite 3 — Claude Code injection handler
 // ============================================================================
 
-describe("handleInjectedPromptsCC — covers claudecode-provider.ts:808–849", () => {
+describe("handleInjectedPromptsCC — covers the Claude Code injection branch in app/api/chat/route.ts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     let next = 200;

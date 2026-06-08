@@ -5,6 +5,7 @@
  * that may have mismatched indentation or line endings.
  */
 
+import { calculateChangedLineCount } from "./diff-utils";
 
 export interface FileEdit {
   oldString: string;
@@ -90,7 +91,7 @@ export function applyFileEdits(
       }
       
       content = content.slice(0, exactIndex) + newString + content.slice(exactIndex + oldString.length);
-      totalLinesChanged += Math.max(oldString.split("\n").length, newString.split("\n").length);
+      totalLinesChanged += calculateChangedLineCount(oldString, newString);
       continue;
     }
 
@@ -225,9 +226,16 @@ export function applyFileEdits(
     });
     
     // Replace the lines
+    const matchedLines = contentLines.slice(
+      matchIndex,
+      matchIndex + searchLines.length
+    );
     contentLines.splice(matchIndex, searchLines.length, ...finalizedNewLines);
     content = contentLines.join("\n");
-    totalLinesChanged += Math.max(searchLines.length, finalizedNewLines.length);
+    totalLinesChanged += calculateChangedLineCount(
+      matchedLines.join("\n"),
+      finalizedNewLines.join("\n")
+    );
   }
 
   // Restore original line endings if the file used CRLF

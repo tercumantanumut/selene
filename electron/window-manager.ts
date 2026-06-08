@@ -11,6 +11,9 @@ import {
 import * as path from "path";
 import * as fs from "fs";
 import { debugLog, debugError, debugVerbose, debugWarn, setLogRendererWindow } from "./debug-logger";
+import { buildPersistedLocaleCookie } from "@/lib/i18n/persisted-locale";
+import { getSetting } from "@/lib/settings/settings-manager";
+import { isElectronInternalUrl } from "./local-url-policy";
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -201,6 +204,9 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
     debugLog("[Window] Windows icon path:", windowsIconPath ?? "not found");
   }
   const themePreference = getElectronThemePreferenceFromSettings(opts.dataDir);
+  const initialUrl = opts.isDev
+    ? opts.devServerUrl
+    : `${opts.prodUseHttps ? "https" : "http"}://127.0.0.1:${opts.prodServerPort}`;
 
   currentElectronThemePreference = themePreference;
   nativeTheme.themeSource = themePreference;
@@ -259,6 +265,10 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
 
   debugLog("[Window] BrowserWindow created");
   registerThemeListener();
+
+  const localeCookie = buildPersistedLocaleCookie(initialUrl, {
+    appLanguage: getSetting("appLanguage"),
+  });
 
   // Expose window reference to the logger so log entries can be streamed
   setLogRendererWindow(mainWindow);
@@ -372,14 +382,18 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
   if (opts.isDev) {
     // In development, load from Next.js dev server
     debugLog("[Window] Loading development URL:", opts.devServerUrl);
-    mainWindow.loadURL(opts.devServerUrl);
+    try {
+      await session.defaultSession.cookies.set(localeCookie);
+    } catch (error) {
+      debugError("[Window] Failed to seed persisted locale cookie:", error);
+    }
+    mainWindow.loadURL(initialUrl);
 
     // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
     // In production, load from embedded Next.js server (via HTTP/2 proxy if available)
-    const protocol = opts.prodUseHttps ? "https" : "http";
-    const serverUrl = `${protocol}://127.0.0.1:${opts.prodServerPort}`;
+    const serverUrl = initialUrl;
 
     debugLog("[Window] Production mode - checking server health before loading");
 
@@ -390,6 +404,12 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
       debugLog("[Window] Server is ready, loading URL:", serverUrl);
     } else {
       debugError("[Window] Server health check failed, attempting to load anyway:", serverUrl);
+    }
+
+    try {
+      await session.defaultSession.cookies.set(localeCookie);
+    } catch (error) {
+      debugError("[Window] Failed to seed persisted locale cookie:", error);
     }
 
     mainWindow.loadURL(serverUrl);
@@ -423,8 +443,9 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
 
   // Handle external links - open in default browser
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
-    // Allow same-origin navigation (HTTP or HTTPS localhost)
-    if (targetUrl.startsWith("http://localhost") || targetUrl.startsWith("https://localhost") || targetUrl.startsWith("file://")) {
+    // Keep Selene-owned local URLs inside Electron. Electron trusts Selene's
+    // self-signed loopback certificate, but the system browser does not.
+    if (isElectronInternalUrl(targetUrl)) {
       return { action: "allow" };
     }
     // Open external links in default browser
@@ -435,12 +456,9 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
   // Handle navigation for external links
   mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
     debugLog("[Window] will-navigate:", targetUrl);
-    const parsedUrl = new URL(targetUrl);
-    // Allow localhost and file protocol
-    if (
-      parsedUrl.hostname === "localhost" ||
-      parsedUrl.protocol === "file:"
-    ) {
+    // Keep Selene-owned local URLs inside Electron. This includes the production
+    // app origin https://127.0.0.1:3456 and generated /api/media links.
+    if (isElectronInternalUrl(targetUrl)) {
       return;
     }
     // Block and open external URLs in default browser

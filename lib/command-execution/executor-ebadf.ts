@@ -78,7 +78,11 @@ export async function runEBADFFallback(
             error: fb.timedOut ? "Process terminated due to timeout" : undefined,
             executionTime,
             logId,
-            isTruncated: false,
+            // `fb.truncated` is true when the child was killed by timeout OR
+            // its raw output exceeded maxOutputSize and got clamped during
+            // read-back (see lib/spawn-utils.ts). Both cases must be surfaced
+            // so stream-guard / UI truncation indicators can react honestly.
+            isTruncated: fb.truncated,
             searchMetadata: fallbackReason
                 ? buildExecuteSearchMetadata({
                     originalCommand: command,

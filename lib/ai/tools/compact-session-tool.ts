@@ -61,7 +61,9 @@ async function executeCompactSession(
     },
     before: {
       tokens: result.beforeStatus.currentTokens,
+      maxInputTokens: result.beforeStatus.maxInputTokens,
       maxTokens: result.beforeStatus.maxTokens,
+      maxOutputTokens: result.beforeStatus.maxOutputTokens,
       percentage: result.beforeStatus.usagePercentage,
       formatted: result.beforeStatus.formatted,
       thresholds: result.beforeStatus.thresholds,
@@ -69,7 +71,9 @@ async function executeCompactSession(
     },
     after: {
       tokens: result.afterStatus.currentTokens,
+      maxInputTokens: result.afterStatus.maxInputTokens,
       maxTokens: result.afterStatus.maxTokens,
+      maxOutputTokens: result.afterStatus.maxOutputTokens,
       percentage: result.afterStatus.usagePercentage,
       formatted: result.afterStatus.formatted,
       thresholds: result.afterStatus.thresholds,

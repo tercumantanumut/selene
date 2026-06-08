@@ -18,10 +18,14 @@ import {
   sealDanglingToolCalls,
   shouldKeepDelegatedToolCallPending,
   appendReasoningPartToState,
+  recordToolInputStart,
+  recordToolInputDelta,
+  recordStructuredToolCall,
+  recordToolResultChunk,
   MAX_ARGS_TEXT_BYTES,
   type StreamingMessageState,
 } from "@/app/api/chat/streaming-state";
-import type { DBContentPart } from "@/lib/messages/converter";
+import type { DBContentPart, DBToolCallPart } from "@/lib/messages/converter";
 
 function makeState(parts: DBContentPart[]): StreamingMessageState {
   return {
@@ -385,7 +389,7 @@ describe("shouldKeepDelegatedToolCallPending", () => {
   });
 
   it("does not keep projected delegated calls pending once the active hint is stale", () => {
-    const staleTimestamp = new Date(Date.now() - (61 * 60 * 1000)).toISOString();
+    const staleTimestamp = new Date(Date.now() - (8 * 24 * 60 * 60 * 1000)).toISOString();
 
     expect(
       shouldKeepDelegatedToolCallPending({
@@ -467,5 +471,151 @@ describe("appendReasoningPartToState", () => {
     expect(appendReasoningPartToState(state, "")).toBe(false);
     expect(appendReasoningPartToState(state, undefined)).toBe(false);
     expect(state.parts).toHaveLength(beforeLen);
+  });
+});
+
+/**
+ * Regression: GPT-5/Codex over the OpenAI Responses API occasionally streams
+ * `tool-input-start` chunks without a `toolName`. Previously we substituted
+ * the literal string "tool" as a fallback, which round-tripped to the model
+ * on the next turn as a phantom function call named `tool`, producing
+ * confused reasoning summaries. The fix defers part creation until a real
+ * toolName arrives, buffering any deltas in the meantime.
+ */
+describe("unnamed tool-call handling", () => {
+  beforeEach(() => {
+    mockActiveDelegations.clear();
+  });
+
+  it("does not create a phantom part when tool-input-start lacks a toolName", () => {
+    const state = makeState([]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const changed = recordToolInputStart(state, "call-1", undefined);
+
+    expect(changed).toBe(false);
+    expect(state.parts).toHaveLength(0);
+    expect(state.toolCallParts.size).toBe(0);
+    expect(state.loggedIncompleteToolCalls.has("unnamed:call-1")).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Deferring tool-input-start without toolName for call-1")
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it("buffers tool-input deltas that arrive before a toolName, then drops them silently if none arrives", () => {
+    const state = makeState([]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    recordToolInputStart(state, "call-1", undefined);
+    expect(recordToolInputDelta(state, "call-1", '{"path":')).toBe(false);
+    expect(recordToolInputDelta(state, "call-1", '"a.ts"}')).toBe(false);
+
+    expect(state.parts).toHaveLength(0);
+    expect(state.toolCallParts.size).toBe(0);
+    expect(state.pendingArgsDeltas?.get("call-1")).toBe('{"path":"a.ts"}');
+
+    // sealDanglingToolCalls must not synthesize a phantom-named result.
+    sealDanglingToolCalls(state);
+    expect(state.parts.filter((p) => p.type === "tool-result")).toHaveLength(0);
+
+    warnSpy.mockRestore();
+  });
+
+  it("flushes buffered deltas into the part once a real toolName arrives via tool-call", () => {
+    const state = makeState([]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    recordToolInputStart(state, "call-1", undefined);
+    recordToolInputDelta(state, "call-1", '{"path":');
+    recordToolInputDelta(state, "call-1", '"a.ts"}');
+
+    const created = recordStructuredToolCall(state, "call-1", "Read", { path: "a.ts" });
+
+    expect(created).toBe(true);
+    expect(state.parts).toHaveLength(1);
+    const part = state.parts[0] as DBToolCallPart;
+    expect(part).toMatchObject({
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "Read",
+      args: { path: "a.ts" },
+      state: "input-available",
+    });
+    expect(part.argsText).toBe('{"path":"a.ts"}');
+    // pending buffer is consumed
+    expect(state.pendingArgsDeltas?.get("call-1")).toBeUndefined();
+
+    warnSpy.mockRestore();
+  });
+
+  it("recovers when the corrective tool-input-start arrives after deltas (deltas-before-name path)", () => {
+    const state = makeState([]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // delta arrives before any start chunk at all
+    recordToolInputDelta(state, "call-1", '{"q":1}');
+    expect(state.parts).toHaveLength(0);
+    expect(state.pendingArgsDeltas?.get("call-1")).toBe('{"q":1}');
+
+    // later, a properly-named start arrives
+    expect(recordToolInputStart(state, "call-1", "Search")).toBe(true);
+    expect(state.parts).toHaveLength(1);
+    const part = state.parts[0] as DBToolCallPart;
+    expect(part.toolName).toBe("Search");
+    expect(part.argsText).toBe('{"q":1}');
+    expect(state.pendingArgsDeltas?.get("call-1")).toBeUndefined();
+
+    warnSpy.mockRestore();
+  });
+
+  it("drops a tool-result chunk that has no toolName when no prior named call exists", () => {
+    const state = makeState([]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const recorded = recordToolResultChunk(state, "call-1", "", { ok: true });
+
+    expect(recorded).toBe(false);
+    expect(state.parts).toHaveLength(0);
+    expect(state.toolCallParts.size).toBe(0);
+    expect(state.loggedIncompleteToolCalls.has("unnamed-result:call-1")).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
+  it("attaches a tool-result to an existing named call even if the chunk's toolName is empty", () => {
+    const state = makeState([]);
+    recordStructuredToolCall(state, "call-1", "Read", { path: "a.ts" });
+
+    const recorded = recordToolResultChunk(state, "call-1", "", { contents: "..." });
+
+    expect(recorded).toBe(true);
+    const result = state.parts.find((p) => p.type === "tool-result");
+    expect(result).toMatchObject({
+      type: "tool-result",
+      toolCallId: "call-1",
+      toolName: "Read",
+    });
+  });
+
+  it("does not seal an unnamed tool-call part as a phantom-named tool-result", () => {
+    // Construct a state that simulates pre-fix poison: a part with empty toolName
+    // already on state.parts. sealDanglingToolCalls must skip it instead of
+    // synthesizing a `toolName: "tool"` result.
+    const poisoned: DBToolCallPart = {
+      type: "tool-call",
+      toolCallId: "call-poisoned",
+      toolName: "",
+      args: {},
+      state: "input-available",
+    };
+    const state = makeState([poisoned]);
+
+    const changed = sealDanglingToolCalls(state);
+
+    expect(changed).toBe(false);
+    expect(state.parts).toHaveLength(1);
+    expect(state.parts.find((p) => p.type === "tool-result")).toBeUndefined();
   });
 });

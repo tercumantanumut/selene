@@ -13,10 +13,6 @@
 
 import { generateText } from "ai";
 import {
-  getEnhancementSession,
-  getSessionMemorySignature,
-  setSessionMemorySignature,
-  addSessionMessage,
   buildEnhancementRequest,
   ENHANCEMENT_SYSTEM_PROMPT,
 } from "./prompt-enhancement-llm";
@@ -81,6 +77,16 @@ export interface LLMEnhancementResult {
 const DEFAULT_TIMEOUT_MS = 135000; // 135 seconds — allows for search + LLM synthesis pipeline
 const MAX_SEARCH_RESULTS = 25;
 const MIN_SEARCH_SCORE = 0.05;
+
+/**
+ * Maximum session history messages sent to the enhancement LLM.
+ *
+ * History contract: messages arrive in ascending `orderingIndex` order
+ * (oldest → newest), as curated by `app/api/chat/route.ts`'s `nextOrderingIndex`
+ * and the route-layer pair-walk. We cap at 6 to keep the enhancer prompt
+ * bounded while preserving the last 3 user/assistant turns.
+ */
+const MAX_HISTORY_MESSAGES = 6;
 
 // =============================================================================
 // Helper Functions
@@ -351,11 +357,13 @@ export async function enhancePromptWithLLM(
     // Determine if we can do semantic search (requires characterId, vectorDB, and indexed files)
     const canDoSemanticSearch = characterId && isVectorDBEnabled() && await hasIndexedFiles(characterId);
 
-    // Session key must include the session/chat identity to prevent cross-session leakage.
-    const sessionKey = options.sessionId
+    // sessionId is retained for logging/telemetry continuity only. The enhancer
+    // is fully stateless: every call builds a fresh request, with no in-memory
+    // accumulator. This prevents prior enhance turns from leaking into the next
+    // rewrite and guarantees the composer text is the sole enhancement target.
+    const sessionLogKey = options.sessionId
       ? `enhance:${options.sessionId}`
       : `enhance:${characterId || "__global__"}`;
-    const session = getEnhancementSession(sessionKey);
 
     let searchResults: { hits: VectorSearchHit[]; filesFound: number } | null = null;
     let fileTree: Awaited<ReturnType<typeof getFileTreeForAgent>> = [];
@@ -387,28 +395,26 @@ export async function enhancePromptWithLLM(
 
     const fileTreeMarkdown = formatFileTreeCompact(fileTree);
     const searchResultsFormatted = searchResults ? formatSearchResultsForLLM(searchResults.hits) : "";
-    // Prefer server-side DB messages (authoritative) over client-side thread snapshot
-    const recentMessages = (options.dbMessages && options.dbMessages.length > 0)
-      ? options.dbMessages.slice(-3)
-      : (options.conversationContext?.slice(-3) || []);
 
-    const memoryInjection = decideMemoryInjection(
-      memories.markdown,
-      getSessionMemorySignature(sessionKey)
-    );
+    // History contract: callers (route + client composer) provide messages in
+    // ascending `orderingIndex` order (oldest → newest). We cap defensively but
+    // never reorder — the route pre-sorts and the client's thread snapshot
+    // is inherently chronological. Server-side `dbMessages` is authoritative
+    // when present; `conversationContext` is a client-side fallback.
+    const historySource = (options.dbMessages && options.dbMessages.length > 0)
+      ? options.dbMessages
+      : (options.conversationContext ?? []);
+    const recentMessages = historySource.slice(-MAX_HISTORY_MESSAGES);
 
-    if (memoryInjection.signature !== null) {
-      setSessionMemorySignature(sessionKey, memoryInjection.signature);
-    }
+    // Stateless memory injection: every call evaluates memories fresh, with no
+    // cross-call signature cache. This is slightly less token-optimal than the
+    // old session-scoped dedup but avoids any shared state between enhance clicks.
+    const memoryInjection = decideMemoryInjection(memories.markdown, null);
 
     if (memoryInjection.dedupedMemoryLineCount > 0) {
       console.log(
         `[PromptEnhancementV2] Deduplicated ${memoryInjection.dedupedMemoryLineCount} duplicate memory entries`
       );
-    }
-
-    if (!memoryInjection.shouldInject && memoryInjection.signature) {
-      console.log("[PromptEnhancementV2] Skipping unchanged memory payload for this session");
     }
 
     if (memoryInjection.tokenEstimateBeforeDedup > 0) {
@@ -441,15 +447,19 @@ export async function enhancePromptWithLLM(
       sessionTitle: options.sessionTitle,
     });
 
-    // Stage 2: LLM refinement with timeout
-    console.log(`[PromptEnhancementV2] Calling LLM with ${timeoutMs}ms timeout...`);
+    // Stage 2: LLM refinement with timeout.
+    // Stateless: exactly one user message per call. The full request payload is
+    // rebuilt every time from the composer text + reference context, with no
+    // accumulator from prior enhance clicks.
+    console.log(
+      `[PromptEnhancementV2] Calling LLM with ${timeoutMs}ms timeout (stateless, ${sessionLogKey})`
+    );
 
     const llmResult = await Promise.race([
       generateText({
         model: await resolveSessionUtilityModelForSession(options.sessionMetadata),
         system: ENHANCEMENT_SYSTEM_PROMPT,
         messages: [
-          ...session.messages,
           { role: "user" as const, content: enhancementRequest },
         ],
         maxOutputTokens: 3000,
@@ -508,10 +518,6 @@ export async function enhancePromptWithLLM(
         error: "Enhancement model returned empty response — try a different model or provider",
       };
     }
-
-    // Store messages in session for continuity
-    addSessionMessage(sessionKey, { role: "user", content: enhancementRequest });
-    addSessionMessage(sessionKey, { role: "assistant", content: llmResult.text });
 
     return {
       enhanced: true,

@@ -28,6 +28,7 @@ const {
     executeCommand,
     startBackgroundProcess,
     getBackgroundProcess,
+    markBackgroundProcessObserved,
     killBackgroundProcess,
     listBackgroundProcesses,
     cleanupBackgroundProcesses,
@@ -38,11 +39,41 @@ const {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Wait until `fn()` returns truthy, polling every `interval` ms. */
-async function waitFor(fn: () => boolean, timeout = 10_000, interval = 100) {
+async function waitFor(fn: () => boolean | Promise<boolean>, timeout = 10_000, interval = 100) {
     const start = Date.now();
-    while (!fn()) {
+    while (!(await fn())) {
         if (Date.now() - start > timeout) throw new Error("waitFor timed out");
         await new Promise((r) => setTimeout(r, interval));
+    }
+}
+
+async function findProcessIdsByMarker(marker: string): Promise<number[]> {
+    if (process.platform === "win32") return [];
+    const { execFileSync } = await import("child_process");
+    const output = execFileSync("ps", ["-axo", "pid,command"], { encoding: "utf8" });
+    return output
+        .split("\n")
+        .filter((line) => line.includes(marker))
+        .map((line) => Number(line.trim().split(/\s+/, 1)[0]))
+        .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+}
+
+async function killProcessesByMarker(marker: string): Promise<void> {
+    const pids = await findProcessIdsByMarker(marker);
+    for (const pid of pids) {
+        try {
+            process.kill(pid, "SIGTERM");
+        } catch {
+            // Already gone.
+        }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    for (const pid of await findProcessIdsByMarker(marker)) {
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch {
+            // Already gone.
+        }
     }
 }
 
@@ -116,11 +147,65 @@ describe("Smart timeout defaults", () => {
             args: ["-e", "setTimeout(() => console.log('done'), 5000)"],
             cwd: process.cwd(),
             characterId: "test",
-            timeout: 500, // 0.5s → will timeout
+            timeout: 500, // 0.5s -> will timeout
         });
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("timeout");
+    });
+
+    it("aborts foreground execution when the caller abort signal fires", async () => {
+        const controller = new AbortController();
+        const startedAt = Date.now();
+        const pending = executeCommand({
+            command: "node",
+            args: ["-e", "setInterval(() => {}, 1000)"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 30_000,
+            abortSignal: controller.signal,
+        });
+
+        setTimeout(() => controller.abort(), 100);
+        const result = await pending;
+
+        expect(result.success).toBe(false);
+        expect(result.aborted).toBe(true);
+        expect(result.error).toBe("Process cancelled by abort signal");
+        expect(Date.now() - startedAt).toBeLessThan(10_000);
+    });
+
+    it("settles shell-wrapped timeouts whose grandchildren inherit stdio", async () => {
+        if (process.platform === "win32") return;
+
+        const marker = `selene_pg_timeout_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const command = `node -e "setInterval(() => {}, 1000)" ${marker}`;
+        const pending = executeCommand({
+            command: "/bin/sh",
+            args: ["-lc", command],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 300,
+        });
+
+        try {
+            const result = await Promise.race([
+                pending,
+                new Promise<never>((_, reject) => {
+                    setTimeout(() => reject(new Error("shell-wrapped timeout did not settle")), 5000);
+                }),
+            ]);
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Process terminated due to timeout or output limit");
+            await waitFor(async () => (await findProcessIdsByMarker(marker)).length === 0, 5000, 100);
+        } finally {
+            await killProcessesByMarker(marker);
+            await Promise.race([
+                pending.catch(() => undefined),
+                new Promise((resolve) => setTimeout(resolve, 1000)),
+            ]);
+        }
     });
 });
 
@@ -195,6 +280,21 @@ describe("Background process management", () => {
         expect(info).not.toBeNull();
         expect(info!.running).toBe(true);
         expect(info!.command).toBe("node");
+    });
+
+    it("should record when a running background process has been observed", async () => {
+        const { processId } = await startBackgroundProcess({
+            command: "node",
+            args: ["-e", "setTimeout(() => console.log('alive'), 2000)"],
+            cwd: process.cwd(),
+            characterId: "test",
+        }, [process.cwd()]);
+
+        const info = markBackgroundProcessObserved(processId);
+
+        expect(info).not.toBeNull();
+        expect(info!.observedWhileRunning).toBe(true);
+        expect(info!.lastObservedAt).toEqual(expect.any(Number));
     });
 
     it("should capture stdout from background process after completion", async () => {
@@ -297,6 +397,49 @@ describe("Background process management", () => {
         expect(getBackgroundProcess(processId)).toBeNull();
     });
 
+
+
+    it("should expose metadata and log snapshots in background listings", async () => {
+        const { processId } = await startBackgroundProcess({
+            command: "node",
+            args: ["-e", "console.log('metadata-log')"],
+            cwd: process.cwd(),
+            characterId: "test",
+        }, [process.cwd()]);
+
+        await waitFor(() => !getBackgroundProcess(processId)!.running);
+
+        const listed = listBackgroundProcesses().find((p) => p.id === processId);
+        expect(listed).toMatchObject({
+            id: processId,
+            running: false,
+            exitCode: 0,
+            cwd: process.cwd(),
+        });
+        expect(listed!.logId).toEqual(expect.any(String));
+        expect(listed!.startedAt).toEqual(expect.any(String));
+        expect(listed!.settledAt).toEqual(expect.any(String));
+    });
+
+    it("should keep finished long-running processes until aged from settledAt", async () => {
+        const { processId } = await startBackgroundProcess({
+            command: "node",
+            args: ["-e", "console.log('cleanup-age')"],
+            cwd: process.cwd(),
+            characterId: "test",
+        }, [process.cwd()]);
+
+        await waitFor(() => !getBackgroundProcess(processId)!.running);
+        const info = getBackgroundProcess(processId)!;
+        info.startedAt = Date.now() - 60_000;
+        info.settledAt = Date.now();
+
+        cleanupBackgroundProcesses(30_000);
+
+        expect(getBackgroundProcess(processId)).not.toBeNull();
+    });
+
+
     it("should reject blocked commands in background mode", async () => {
         const result = await startBackgroundProcess({
             command: "rm",
@@ -330,16 +473,15 @@ describe("Background process management", () => {
 // ── Command validation in executor ───────────────────────────────────────────
 
 describe("Command validation in executor", () => {
-    it("should block dangerous commands", async () => {
+    it("should allow removal commands through validation", async () => {
       const result = await executeCommand({
         command: "rm",
-        args: ["-rf", "/"],
+        args: [],
         cwd: process.cwd(),
         characterId: "test",
       });
 
-      expect(result.success).toBe(false);
-      expect(result.error).toContain("requires explicit confirmation");
+      expect(result.error ?? "").not.toContain("requires explicit confirmation");
     });
 
     it("should not fail validation just because command contains shell characters", async () => {
@@ -386,6 +528,60 @@ describe("isEBADFError", () => {
 
     it("returns false for a generic error", () => {
         expect(isEBADFError(new Error("something went wrong"))).toBe(false);
+    });
+});
+
+// ── executeCommand truncation flag (end-to-end) ───────────────────────────────
+
+describe("executeCommand isTruncated flag", () => {
+    it("sets isTruncated=true when a command exceeds maxOutputSize", async () => {
+        // Write ~10 KB of stdout but cap the executor at 1 KB. The executor
+        // detects this mid-stream, kills the child with SIGTERM, and must
+        // surface the event via isTruncated so tool-result-stream-guard,
+        // tool-result-utils and UI indicators can act on it. Previously this
+        // flag was hardcoded to false, causing silent data loss.
+        const result = await executeCommand({
+            command: "node",
+            args: ["-e", "setInterval(() => process.stdout.write('x'.repeat(1024)), 5)"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 5000,
+            maxOutputSize: 1024,
+        });
+
+        expect(result.isTruncated).toBe(true);
+        // Process was terminated, so the command didn't succeed cleanly.
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+    });
+
+    it("sets isTruncated=true when a command is killed by timeout", async () => {
+        // Short timeout forces a SIGTERM — the `killed` flag covers both
+        // timeout and size-overrun kills, so isTruncated must be true here too.
+        const result = await executeCommand({
+            command: "node",
+            args: ["-e", "setInterval(() => {}, 10_000)"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 300,
+        });
+
+        expect(result.isTruncated).toBe(true);
+        expect(result.success).toBe(false);
+    });
+
+    it("sets isTruncated=false for a normal completed command", async () => {
+        const result = await executeCommand({
+            command: "node",
+            args: ["-e", "console.log('clean')"],
+            cwd: process.cwd(),
+            characterId: "test",
+            timeout: 5000,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.stdout).toBe("clean");
+        expect(result.isTruncated).toBe(false);
     });
 });
 
@@ -447,6 +643,32 @@ describe("spawnWithFileCapture", () => {
             process.cwd(), env, 10_000, 50,
         );
         expect(result.stdout.length).toBeLessThanOrEqual(50);
+        // Regression: size-based clamping must be reported honestly so
+        // tool-result-stream-guard / UI indicators can react.
+        expect(result.truncated).toBe(true);
+        // `timedOut` is a separate cause; size-only truncation must not flip it.
+        expect(result.timedOut).toBe(false);
+    });
+
+    it("reports truncated=true when the child is killed by timeout", async () => {
+        const result = await spawnWithFileCapture(
+            "node", ["-e", "setInterval(() => {}, 10_000)"],
+            process.cwd(), env, 300 /* 300 ms */, 1048576,
+        );
+        expect(result.timedOut).toBe(true);
+        // Regression: timeout is a form of truncation — callers need a single
+        // authoritative signal without having to OR the two causes themselves.
+        expect(result.truncated).toBe(true);
+    });
+
+    it("reports truncated=false for a clean run under all limits", async () => {
+        const result = await spawnWithFileCapture(
+            "node", ["-e", "console.log('ok')"],
+            process.cwd(), env, 10_000, 1048576,
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.truncated).toBe(false);
+        expect(result.timedOut).toBe(false);
     });
 
     it("cleans up temp files after execution", async () => {

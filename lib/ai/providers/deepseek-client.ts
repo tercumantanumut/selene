@@ -17,6 +17,7 @@ import {
   DEEPSEEK_CONFIG,
   deepseekModelHasThinkingEnabled,
   deepseekModelHasThinkingDisabled,
+  deepseekModelSupportsToolChoice,
 } from "@/lib/auth/deepseek-models";
 import { getAppUrl } from "./openrouter-client";
 
@@ -51,6 +52,11 @@ async function deepseekCustomFetch(
     try {
       const body = JSON.parse(init.body);
       const modelId = typeof body.model === "string" ? body.model : "";
+
+      if (!deepseekModelSupportsToolChoice(modelId)) {
+        delete body.tool_choice;
+        delete body.toolChoice;
+      }
 
       if (deepseekModelHasThinkingEnabled(modelId)) {
         // Thinking-enabled models: surface reasoning with high effort budget.

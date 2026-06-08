@@ -18,7 +18,7 @@
 import { spawn, ChildProcess } from "child_process";
 import { validateCommand, validateExecutionDirectory } from "./validator";
 import { commandLogger } from "./logger";
-import { saveTerminalLog } from "./log-manager";
+import { saveTerminalLog, updateTerminalLog } from "./log-manager";
 import { isEBADFError, spawnWithFileCapture } from "@/lib/spawn-utils";
 import { getResolvedShellEnvironment } from "@/lib/shell-env/resolver";
 import { shouldUseRTK } from "@/lib/rtk";
@@ -56,7 +56,35 @@ export { isEBADFError, spawnWithFileCapture } from "@/lib/spawn-utils";
 // ── Background Process Registry ──────────────────────────────────────────────
 const backgroundProcesses = new Map<string, BackgroundProcessInfo>();
 const MAX_BACKGROUND_OUTPUT = 1048576; // 1MB per stream
+const ESCALATION_DELAY_MS = 5000;
+const BACKGROUND_LOG_SNAPSHOT_INTERVAL_MS = 5000;
 let bgIdCounter = 0;
+
+type TerminationReason = "timeout" | "output_limit" | "abort";
+
+function hasMeaningfulOutput(stdout?: string, stderr?: string): boolean {
+    return Boolean(stdout?.trim() || stderr?.trim());
+}
+
+function saveBackgroundLogSnapshot(info: BackgroundProcessInfo, force = false): string | undefined {
+    if (!hasMeaningfulOutput(info.stdout, info.stderr)) {
+        return info.logId;
+    }
+
+    const now = Date.now();
+    if (!force && info.logId && info.lastLogSnapshotAt && now - info.lastLogSnapshotAt < BACKGROUND_LOG_SNAPSHOT_INTERVAL_MS) {
+        return info.logId;
+    }
+
+    const logId = info.logId
+        ? updateTerminalLog(info.logId, info.stdout, info.stderr)
+        : saveTerminalLog(info.stdout, info.stderr);
+    if (logId) {
+        info.logId = logId;
+        info.lastLogSnapshotAt = now;
+    }
+    return info.logId;
+}
 
 function nextBgId(): string {
     return `bg-${Date.now()}-${++bgIdCounter}`;
@@ -64,6 +92,50 @@ function nextBgId(): string {
 
 function isUnixLikePlatform(): boolean {
     return process.platform === "darwin" || process.platform === "linux";
+}
+
+function terminationMessage(reason: TerminationReason): string {
+    if (reason === "abort") return "Process cancelled by abort signal";
+    return "Process terminated due to timeout or output limit";
+}
+
+function terminateChildProcess(
+    child: ChildProcess | null | undefined,
+    _reason: TerminationReason,
+    onSignalError?: (error: unknown) => void,
+    useProcessGroup = false,
+): void {
+    if (!child) return;
+    signalChildProcess(child, "SIGTERM", useProcessGroup, onSignalError);
+    setTimeout(() => {
+        signalChildProcess(child, "SIGKILL", useProcessGroup, onSignalError);
+    }, ESCALATION_DELAY_MS);
+}
+
+function signalChildProcess(
+    child: ChildProcess,
+    signal: NodeJS.Signals,
+    useProcessGroup: boolean,
+    onSignalError?: (error: unknown) => void,
+): void {
+    if (useProcessGroup && child.pid && isUnixLikePlatform()) {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+                onSignalError?.(error);
+            }
+        }
+    }
+
+    try {
+        child.kill(signal);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+            onSignalError?.(error);
+        }
+    }
 }
 
 function shellQuote(value: string): string {
@@ -136,6 +208,7 @@ function buildShellRetryOptions(options: ExecuteOptions, resolvedCommandLine?: s
     };
 }
 
+
 /**
  * Start a command in the background. Returns immediately with a process ID.
  * The process continues running; call `getBackgroundProcess` to poll for output.
@@ -150,8 +223,9 @@ export async function startBackgroundProcess(
 ): Promise<{
     processId: string;
     error?: string;
+    logId?: string;
 }> {
-    const { command, args, stdin, cwd, characterId, confirmRemoval, windowsVerbatimArguments } = options;
+    const { command, args, stdin, cwd, characterId, windowsVerbatimArguments, onBackgroundProcessSettled } = options;
     const timeout = options.timeout ?? BACKGROUND_TIMEOUT;
     const maxOutputSize = options.maxOutputSize ?? MAX_BACKGROUND_OUTPUT;
     const shouldRetryThroughShellOnMessage = (message: string): boolean => {
@@ -161,7 +235,7 @@ export async function startBackgroundProcess(
     };
 
     // Validate command
-    const cmdValidation = validateCommand(command, args, { confirmRemoval });
+    const cmdValidation = validateCommand(command, args);
     if (!cmdValidation.valid) {
         return { processId: "", error: cmdValidation.error };
     }
@@ -180,11 +254,13 @@ export async function startBackgroundProcess(
     const { finalCommand, finalArgs, finalEnv } = resolveCommandRuntime(command, args, baseEnv);
 
     const id = nextBgId();
+    const useProcessGroup = isUnixLikePlatform();
 
     try {
         const child = spawn(finalCommand, finalArgs, {
             cwd: resolvedCwd,
             shell: needsWindowsShell(finalCommand),
+            detached: useProcessGroup,
             // Use "pipe" for stdin rather than "ignore".  On macOS inside
             // Electron's utilityProcess "ignore" can itself trigger EBADF; we
             // close stdin immediately below to give the child EOF instead.
@@ -210,6 +286,7 @@ export async function startBackgroundProcess(
             args,
             cwd,
             startedAt: Date.now(),
+            settledAt: null,
             running: true,
             stdout: "",
             stderr: "",
@@ -239,15 +316,23 @@ export async function startBackgroundProcess(
             }
         });
 
+        let backgroundProcessSettledNotified = false;
+        const settleBackgroundProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId">> = {}) => {
+            if (info.timeoutId) { clearTimeout(info.timeoutId); info.timeoutId = null; }
+            if (!info.settledAt) info.settledAt = Date.now();
+            info.running = false;
+            Object.assign(info, updates);
+            if (!backgroundProcessSettledNotified) {
+                backgroundProcessSettledNotified = true;
+                onBackgroundProcessSettled?.(info);
+            }
+        };
+
         // Handle completion
         child.on("close", (code, signal) => {
-            if (info.timeoutId) clearTimeout(info.timeoutId);
-            info.running = false;
-            info.exitCode = code;
-            info.signal = signal;
-
             // Save full log for background process too
-            info.logId = saveTerminalLog(info.stdout, info.stderr);
+            saveBackgroundLogSnapshot(info, true);
+            settleBackgroundProcess({ exitCode: code, signal });
 
             commandLogger.logExecutionComplete(
                 command, code, Date.now() - info.startedAt,
@@ -274,22 +359,26 @@ export async function startBackgroundProcess(
                         maxOutputSize,
                         stdin,
                     );
-                    info.running = false;
-                    info.exitCode = fb.exitCode;
-                    info.signal = fb.signal;
-                    info.stdout = fb.stdout;
-                    info.stderr = fb.timedOut
+                    const stderr = fb.timedOut
                         ? fb.stderr + "\n[Background process timed out]"
                         : fb.stderr;
-                    info.logId = saveTerminalLog(info.stdout, info.stderr);
+                    const logId = saveTerminalLog(fb.stdout, stderr);
+                    settleBackgroundProcess({
+                        exitCode: fb.exitCode,
+                        signal: fb.signal,
+                        stdout: fb.stdout,
+                        stderr,
+                        logId,
+                    });
                     commandLogger.logExecutionComplete(
                         command, fb.exitCode, Date.now() - info.startedAt,
                         { stdout: info.stdout.length, stderr: info.stderr.length },
                         { characterId },
                     );
                 } catch (fbErr) {
-                    info.running = false;
                     info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
+                    const logId = saveBackgroundLogSnapshot(info, true);
+                    settleBackgroundProcess({ stderr: info.stderr, logId });
                     commandLogger.logExecutionError(command, info.stderr, { characterId });
                 }
                 return;
@@ -297,7 +386,7 @@ export async function startBackgroundProcess(
 
             if (shouldRetryThroughShellOnMessage(error.message) && isShellRetryEligibleCommand(command)) {
                 const retryResult = await retryThroughShell();
-                info.running = false;
+                settleBackgroundProcess();
                 if (retryResult.processId) {
                     const retriedInfo = backgroundProcesses.get(retryResult.processId);
                     if (retriedInfo) {
@@ -311,21 +400,19 @@ export async function startBackgroundProcess(
                 return;
             }
 
-            if (info.timeoutId) clearTimeout(info.timeoutId);
-            info.running = false;
             info.stderr += `\n[Spawn error] ${error.message}`;
+            const logId = saveBackgroundLogSnapshot(info, true);
+            settleBackgroundProcess({ stderr: info.stderr, logId });
             commandLogger.logExecutionError(command, error.message, { characterId });
         });
 
         // Background timeout
         info.timeoutId = setTimeout(() => {
             if (info.running) {
-                info.running = false;
                 info.stderr += "\n[Background process timed out]";
-                try { child.kill("SIGTERM"); } catch { /* already dead */ }
-                setTimeout(() => {
-                    try { child.kill("SIGKILL"); } catch { /* already dead */ }
-                }, 5000);
+                const logId = saveBackgroundLogSnapshot(info, true);
+                settleBackgroundProcess({ stderr: info.stderr, logId });
+                terminateChildProcess(child, "timeout", undefined, useProcessGroup);
             }
         }, timeout);
 
@@ -344,6 +431,7 @@ export async function startBackgroundProcess(
                 args,
                 cwd,
                 startedAt: Date.now(),
+                settledAt: null,
                 running: true,
                 stdout: "",
                 stderr: "",
@@ -355,6 +443,17 @@ export async function startBackgroundProcess(
             backgroundProcesses.set(id, info);
             commandLogger.logExecutionStart(command, args, cwd, { characterId });
 
+            let fallbackProcessSettledNotified = false;
+            const settleFallbackProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId">> = {}) => {
+                if (!info.settledAt) info.settledAt = Date.now();
+                info.running = false;
+                Object.assign(info, updates);
+                if (!fallbackProcessSettledNotified) {
+                    fallbackProcessSettledNotified = true;
+                    onBackgroundProcessSettled?.(info);
+                }
+            };
+
             // Run asynchronously; the caller gets the processId immediately.
             spawnWithFileCapture(
                 finalCommand,
@@ -365,31 +464,38 @@ export async function startBackgroundProcess(
                 maxOutputSize,
                 stdin,
             ).then((fb) => {
-                info.running = false;
-                info.exitCode = fb.exitCode;
-                info.signal = fb.signal;
-                info.stdout = fb.stdout;
-                info.stderr = fb.timedOut
+                const stderr = fb.timedOut
                     ? fb.stderr + "\n[Background process timed out]"
                     : fb.stderr;
-                info.logId = saveTerminalLog(info.stdout, info.stderr);
+                const logId = saveTerminalLog(fb.stdout, stderr);
+                settleFallbackProcess({
+                    exitCode: fb.exitCode,
+                    signal: fb.signal,
+                    stdout: fb.stdout,
+                    stderr,
+                    logId,
+                });
                 commandLogger.logExecutionComplete(
                     command, fb.exitCode, Date.now() - info.startedAt,
                     { stdout: info.stdout.length, stderr: info.stderr.length },
                     { characterId },
                 );
             }).catch((fbErr) => {
-                info.running = false;
                 info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
+                const logId = saveBackgroundLogSnapshot(info, true);
+                settleFallbackProcess({ stderr: info.stderr, logId });
                 commandLogger.logExecutionError(command, info.stderr, { characterId });
             });
 
             return { processId: id };
         }
 
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const logId = errorMessage ? saveTerminalLog("", errorMessage) : undefined;
         return {
             processId: "",
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessage,
+            logId,
         };
     }
 }
@@ -398,7 +504,25 @@ export async function startBackgroundProcess(
  * Get background process status and output.
  */
 export function getBackgroundProcess(processId: string): BackgroundProcessInfo | null {
-    return backgroundProcesses.get(processId) ?? null;
+    const info = backgroundProcesses.get(processId) ?? null;
+    if (info?.running) {
+        saveBackgroundLogSnapshot(info);
+    }
+    return info;
+}
+
+/**
+ * Record that a background process has been observed by a tool call.
+ */
+export function markBackgroundProcessObserved(processId: string): BackgroundProcessInfo | null {
+    const info = backgroundProcesses.get(processId) ?? null;
+    if (!info) return null;
+
+    info.lastObservedAt = Date.now();
+    if (info.running) {
+        info.observedWhileRunning = true;
+    }
+    return info;
 }
 
 /**
@@ -409,14 +533,11 @@ export function killBackgroundProcess(processId: string): boolean {
     if (!info) return false;
     if (!info.running) return true; // already done
 
+    saveBackgroundLogSnapshot(info, true);
     info.running = false;
+    info.settledAt = Date.now();
     if (info.timeoutId) clearTimeout(info.timeoutId);
-    try {
-        info.process.kill("SIGTERM");
-        setTimeout(() => {
-            try { info.process.kill("SIGKILL"); } catch { /* already dead */ }
-        }, 3000);
-    } catch { /* already dead */ }
+    terminateChildProcess(info.process, "abort", undefined, isUnixLikePlatform());
     return true;
 }
 
@@ -428,14 +549,29 @@ export function listBackgroundProcesses(): Array<{
     command: string;
     running: boolean;
     elapsed: number;
+    logId?: string;
+    exitCode?: number | null;
+    startedAt?: string;
+    settledAt?: string;
+    cwd?: string;
 }> {
     const now = Date.now();
-    return Array.from(backgroundProcesses.values()).map((p) => ({
-        id: p.id,
-        command: `${p.command} ${p.args.join(" ")}`,
-        running: p.running,
-        elapsed: now - p.startedAt,
-    }));
+    return Array.from(backgroundProcesses.values()).map((p) => {
+        if (p.running) {
+            saveBackgroundLogSnapshot(p);
+        }
+        return {
+            id: p.id,
+            command: `${p.command} ${p.args.join(" ")}`,
+            running: p.running,
+            elapsed: now - p.startedAt,
+            logId: p.logId,
+            exitCode: p.exitCode,
+            startedAt: new Date(p.startedAt).toISOString(),
+            settledAt: p.settledAt ? new Date(p.settledAt).toISOString() : undefined,
+            cwd: p.cwd,
+        };
+    });
 }
 
 /**
@@ -444,7 +580,8 @@ export function listBackgroundProcesses(): Array<{
 export function cleanupBackgroundProcesses(maxAge = 600_000): void {
     const now = Date.now();
     for (const [id, info] of Array.from(backgroundProcesses.entries())) {
-        if (!info.running && now - info.startedAt > maxAge) {
+        const ageFrom = info.settledAt ?? info.startedAt;
+        if (!info.running && now - ageFrom > maxAge) {
             backgroundProcesses.delete(id);
         }
     }
@@ -460,7 +597,6 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         stdin,
         cwd,
         characterId,
-        confirmRemoval,
         maxOutputSize = DEFAULT_MAX_OUTPUT_SIZE,
         forceDirectExecution = false,
         forceShellExecution = false,
@@ -470,6 +606,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         toolCallId,
         onProgress,
         windowsVerbatimArguments,
+        abortSignal,
     } = options;
 
     const timeout = resolveTimeout(command, options.timeout);
@@ -502,7 +639,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
     commandLogger.logExecutionStart(command, args, cwd, context);
 
-    const cmdValidation = validateCommand(command, args, { confirmRemoval });
+    const cmdValidation = validateCommand(command, args);
     commandLogger.logValidation(cmdValidation.valid, command, cmdValidation.error, { characterId, cwd });
 
     if (!cmdValidation.valid) {
@@ -512,6 +649,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
             reason: cmdValidation.error,
         }, context);
 
+        const logId = cmdValidation.error ? saveTerminalLog("", cmdValidation.error) : undefined;
         return {
             success: false,
             stdout: "",
@@ -520,6 +658,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
             signal: null,
             error: cmdValidation.error,
             executionTime: Date.now() - startTime,
+            logId,
         };
     }
 
@@ -528,10 +667,31 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         let stderr = "";
         let outputSize = 0;
         let killed = false;
+        let terminationReason: TerminationReason | null = null;
         let timeoutId: NodeJS.Timeout | null = null;
-        let child: ChildProcess;
+        let child: ChildProcess | undefined;
+        const useProcessGroup = isUnixLikePlatform();
+
+        const terminate = (reason: TerminationReason): void => {
+            if (terminationReason) return;
+            killed = true;
+            terminationReason = reason;
+            terminateChildProcess(child, reason, undefined, useProcessGroup);
+        };
+
+        const onAbort = () => terminate("abort");
+        const cleanupAbortListener = () => {
+            abortSignal?.removeEventListener("abort", onAbort);
+        };
+
+        if (abortSignal?.aborted) {
+            onAbort();
+        } else {
+            abortSignal?.addEventListener("abort", onAbort, { once: true });
+        }
 
         const retryThroughShell = (): void => {
+            cleanupAbortListener();
             void executeCommand(buildShellRetryOptionsFromCurrentState()).then(resolve);
         };
 
@@ -560,6 +720,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                 && (fallbackReason === "rtk_unrecognized_subcommand" || fallbackReason === "rtk_unknown_command");
 
             if (shouldRetryDirect) {
+                cleanupAbortListener();
                 void executeCommand({
                     ...options,
                     forceDirectExecution: true,
@@ -601,8 +762,8 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
         try {
             child = spawn(finalCommand, finalArgs, {
                 cwd,
-                timeout,
                 shell: needsWindowsShell(finalCommand),
+                detached: useProcessGroup,
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
                 windowsVerbatimArguments: windowsVerbatimArguments ?? false,
@@ -614,18 +775,12 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                 child.stdin?.end();
             }
 
+            if (abortSignal?.aborted) {
+                onAbort();
+            }
+
             timeoutId = setTimeout(() => {
-                if (!killed) {
-                    killed = true;
-                    child.kill("SIGTERM");
-                    setTimeout(() => {
-                        try {
-                            child.kill("SIGKILL");
-                        } catch {
-                            // Process already dead
-                        }
-                    }, 5000);
-                }
+                terminate("timeout");
             }, timeout);
 
             emitProgress({ message: runningMessage });
@@ -636,14 +791,13 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
                 if (outputSize > maxOutputSize) {
                     if (!killed) {
-                        killed = true;
-                        child.kill("SIGTERM");
+                        terminate("output_limit");
                         stderr += "\n[Output size limit exceeded]";
                         emitProgress({
                             stderr,
                             status: "error",
                             message: failedMessage,
-                            error: "Process terminated due to timeout or output limit",
+                            error: terminationMessage("output_limit"),
                         });
                     }
                 } else {
@@ -663,6 +817,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
             child.on("close", (code, signal) => {
                 if (timeoutId) clearTimeout(timeoutId);
+                cleanupAbortListener();
 
                 const executionTime = Date.now() - startTime;
 
@@ -679,7 +834,9 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
                 const logId = saveTerminalLog(stdout, stderr);
 
-                const { fallbackReason, retried } = checkRtkRetry({ stderr, wrappedByRTK: wrapped.usingRTK });
+                const { fallbackReason, retried } = terminationReason
+                    ? { fallbackReason: undefined, retried: false }
+                    : checkRtkRetry({ stderr, wrappedByRTK: wrapped.usingRTK });
                 if (retried) return;
 
                 const finalResult: ExecuteResult = {
@@ -688,11 +845,17 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     stderr: stderr.trim(),
                     exitCode: code,
                     signal,
-                    error: killed ? "Process terminated due to timeout or output limit" : undefined,
+                    error: terminationReason ? terminationMessage(terminationReason) : undefined,
                     executionTime,
                     startedAt,
                     logId,
-                    isTruncated: false,
+                    // Reflect the actual outcome: `killed` is set when the child was
+                    // terminated via SIGTERM because it either timed out or exceeded
+                    // `maxOutputSize` (see lines 618 and 638). Both cases are forms of
+                    // truncation that downstream consumers (tool-result-stream-guard,
+                    // tool-result-utils, UI truncation indicators) must learn about.
+                    isTruncated: killed,
+                    aborted: terminationReason === "abort",
                     searchMetadata: fallbackReason
                         ? buildExecuteSearchMetadata({
                             originalCommand: command,
@@ -712,7 +875,8 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                     exitCode: code,
                     error: finalResult.error,
                     logId,
-                    isTruncated: false,
+                    isTruncated: killed,
+                    aborted: terminationReason === "abort",
                     message: finalResult.success ? completedMessage : failedMessage,
                 });
 
@@ -721,6 +885,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
 
             child.on("error", async (error) => {
                 if (timeoutId) clearTimeout(timeoutId);
+                cleanupAbortListener();
 
                 if (isEBADFError(error) && process.platform === "darwin") {
                     console.warn("[Command Executor] spawn EBADF – retrying with file-capture fallback");
@@ -745,6 +910,7 @@ export async function executeCommand(options: ExecuteOptions): Promise<ExecuteRe
                 let errorMessage = error.message;
 
                 if (shouldRetryThroughShellOnMessage(errorMessage)) {
+                    cleanupAbortListener();
                     retryThroughShell();
                     return;
                 }
@@ -769,6 +935,8 @@ ${commandHint}`;
                 const { fallbackReason, retried } = checkRtkRetry({ stderr, error: errorMessage, wrappedByRTK: wrapped.usingRTK });
                 if (retried) return;
 
+                const logId = errorMessage || stderr ? saveTerminalLog(stdout, stderr || errorMessage) : undefined;
+
                 const failedResult: ExecuteResult = {
                     success: false,
                     stdout: stdout.trim(),
@@ -778,6 +946,7 @@ ${commandHint}`;
                     error: errorMessage,
                     executionTime,
                     startedAt,
+                    logId,
                     searchMetadata: fallbackReason
                         ? buildExecuteSearchMetadata({
                             originalCommand: command,
@@ -795,6 +964,7 @@ ${commandHint}`;
                     status: "error",
                     executionTime,
                     error: errorMessage,
+                    logId,
                     message: failedMessage,
                 });
 
@@ -802,6 +972,7 @@ ${commandHint}`;
             });
         } catch (error) {
             if (timeoutId) clearTimeout(timeoutId);
+            cleanupAbortListener();
 
             if (isEBADFError(error) && process.platform === "darwin") {
                 console.warn("[Command Executor] spawn() threw EBADF synchronously – retrying with file-capture fallback");
@@ -826,6 +997,7 @@ ${commandHint}`;
             const errorMessage = error instanceof Error ? error.message : "Unknown error";
 
             if (shouldRetryThroughShellOnMessage(errorMessage)) {
+                cleanupAbortListener();
                 retryThroughShell();
                 return;
             }
@@ -833,6 +1005,8 @@ ${commandHint}`;
             commandLogger.logExecutionError(command, errorMessage, context);
             const { fallbackReason, retried } = checkRtkRetry({ error: errorMessage, wrappedByRTK: wrapped.usingRTK });
             if (retried) return;
+
+            const logId = errorMessage ? saveTerminalLog("", errorMessage) : undefined;
 
             const failedResult: ExecuteResult = {
                 success: false,
@@ -843,6 +1017,7 @@ ${commandHint}`;
                 error: errorMessage,
                 executionTime,
                 startedAt,
+                logId,
                 searchMetadata: fallbackReason
                     ? buildExecuteSearchMetadata({
                         originalCommand: command,
@@ -858,9 +1033,11 @@ ${commandHint}`;
                 status: "error",
                 executionTime,
                 error: errorMessage,
+                logId,
                 message: failedMessage,
             });
 
+            cleanupAbortListener();
             resolve(failedResult);
         }
     });
@@ -885,6 +1062,8 @@ export async function executeCommandWithValidation(
             reason: cwdValidation.error,
         }, { characterId: options.characterId });
 
+        const logId = cwdValidation.error ? saveTerminalLog("", cwdValidation.error) : undefined;
+
         return {
             success: false,
             stdout: "",
@@ -893,6 +1072,7 @@ export async function executeCommandWithValidation(
             signal: null,
             error: cwdValidation.error,
             executionTime: Date.now() - startTime,
+            logId,
             searchMetadata: buildExecuteSearchMetadata({
                 originalCommand: options.command,
                 finalCommand: options.command,

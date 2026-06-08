@@ -128,8 +128,12 @@ type ContextStatus = "safe" | "warning" | "critical" | "exceeded";
 export interface ContextWindowStatus {
   /** Current total tokens in context */
   currentTokens: number;
-  /** Maximum tokens for the model */
+  /** Provider-enforced budget used for request safety decisions */
+  maxInputTokens: number;
+  /** Maximum advertised context tokens for the model */
   maxTokens: number;
+  /** Maximum output budget for the model, when known */
+  maxOutputTokens?: number;
   /** Usage as decimal (0-1) */
   usagePercentage: number;
   /** Status classification */
@@ -274,7 +278,8 @@ export class ContextWindowManager {
     const effectiveTotalTokens = providerReportedTokens !== null
       ? Math.max(usageForDecision.totalTokens, providerReportedTokens)
       : usageForDecision.totalTokens;
-    const usagePercentage = effectiveTotalTokens / config.maxTokens;
+    const decisionMaxTokens = config.maxInputTokens ?? config.maxTokens;
+    const usagePercentage = effectiveTotalTokens / decisionMaxTokens;
 
     // Determine status and actions
     let status: ContextStatus;
@@ -307,7 +312,9 @@ export class ContextWindowManager {
 
     return {
       currentTokens: effectiveTotalTokens,
+      maxInputTokens: decisionMaxTokens,
       maxTokens: config.maxTokens,
+      maxOutputTokens: config.maxOutputTokens,
       usagePercentage,
       status,
       shouldCompact,
@@ -320,7 +327,7 @@ export class ContextWindowManager {
       },
       formatted: {
         current: formatTokenCount(effectiveTotalTokens),
-        max: formatTokenCount(config.maxTokens),
+        max: formatTokenCount(decisionMaxTokens),
         percentage: `${percentage.toFixed(1)}%`,
       },
     };
@@ -381,7 +388,8 @@ export class ContextWindowManager {
       );
 
       const config = getContextWindowConfig(modelId, provider);
-      const targetTokensToFree = status.currentTokens - Math.floor(config.maxTokens * 0.7);
+      const targetMaxTokens = config.maxInputTokens ?? config.maxTokens;
+      const targetTokensToFree = status.currentTokens - Math.floor(targetMaxTokens * 0.7);
       const compactionStartedAt = Date.now();
       const compactionResult = await CompactionService.compact(sessionId, {
         targetTokensToFree: Math.max(0, targetTokensToFree),
@@ -409,7 +417,7 @@ export class ContextWindowManager {
             `[ContextWindowManager] First compaction insufficient, retrying with aggressive strategy (keepRecent=0)`
           );
 
-          const aggressiveTarget = newStatus.currentTokens - Math.floor(config.maxTokens * 0.5);
+          const aggressiveTarget = newStatus.currentTokens - Math.floor(targetMaxTokens * 0.5);
           const retryResult = await CompactionService.compact(sessionId, {
             targetTokensToFree: Math.max(0, aggressiveTarget),
             keepRecentMessages: 0, // Compact ALL messages into summary
@@ -563,7 +571,8 @@ export class ContextWindowManager {
       );
 
       const cwConfig = getContextWindowConfig(modelId, provider);
-      const targetTokensToFree = status.currentTokens - Math.floor(cwConfig.maxTokens * 0.7);
+      const targetMaxTokens = cwConfig.maxInputTokens ?? cwConfig.maxTokens;
+      const targetTokensToFree = status.currentTokens - Math.floor(targetMaxTokens * 0.7);
       const result = await CompactionService.compact(sessionId, {
         targetTokensToFree: Math.max(0, targetTokensToFree),
       });
@@ -620,8 +629,9 @@ export class ContextWindowManager {
     );
 
     const config = getContextWindowConfig(modelId, provider);
+    const targetMaxTokens = config.maxInputTokens ?? config.maxTokens;
     // Target 50% usage after compaction for maximum headroom
-    const targetTokensToFree = beforeStatus.currentTokens - Math.floor(config.maxTokens * 0.5);
+    const targetTokensToFree = beforeStatus.currentTokens - Math.floor(targetMaxTokens * 0.5);
 
     // Run aggressive compaction with keepRecent=2 (keep only the last exchange)
     const compactionResult = await CompactionService.compact(sessionId, {
@@ -643,7 +653,7 @@ export class ContextWindowManager {
           `[ContextWindowManager] Force compaction: first pass at ${midStatus.formatted.percentage}, retrying with keepRecent=0`
         );
         const retryResult = await CompactionService.compact(sessionId, {
-          targetTokensToFree: midStatus.currentTokens - Math.floor(config.maxTokens * 0.5),
+          targetTokensToFree: midStatus.currentTokens - Math.floor(targetMaxTokens * 0.5),
           keepRecentMessages: 0,
         });
         if (retryResult.success) {

@@ -31,7 +31,7 @@ import {
   fetchAntigravityProjectId,
   invalidateAntigravityAuthCache,
 } from "@/lib/auth/antigravity-auth";
-import { isCodexAuthenticated, ensureValidCodexToken } from "@/lib/auth/codex-auth";
+import { isCodexAuthenticated, getCodexAuthStatus } from "@/lib/auth/codex-auth";
 import { isKimiOAuthAuthenticated, ensureValidKimiToken, invalidateKimiAuthCache } from "@/lib/auth/kimi-auth";
 import { CODEX_MODEL_IDS } from "@/lib/auth/codex-models";
 import { KIMI_MODEL_IDS } from "@/lib/auth/kimi-models";
@@ -45,8 +45,8 @@ import {
 import { CLAUDECODE_MODEL_IDS } from "@/lib/auth/claudecode-models";
 import { ANTIGRAVITY_CONFIG } from "@/lib/auth/antigravity-auth";
 import { createAntigravityProvider } from "@/lib/ai/providers/antigravity-provider";
-import { createCodexProvider } from "@/lib/ai/providers/codex-provider";
-import { createClaudeCodeProvider } from "@/lib/ai/providers/claudecode-provider";
+import { createCodexProvider } from "@/lib/ai/providers/codex-client";
+import { createClaudeCodeProvider } from "@/lib/ai/providers/claudecode-client";
 import {
   isModelCompatibleWithProvider as isModelCompatible,
 } from "@/lib/ai/model-validation";
@@ -233,11 +233,15 @@ export async function ensureClaudeCodeTokenValid(): Promise<boolean> {
 }
 
 /**
- * Ensure Codex auth token is valid, refreshing if needed.
+ * Refresh Codex auth status by re-reading the sidecar's credential dir.
+ * Token refresh against OpenAI itself is owned by CLIProxyAPI; selene just
+ * mirrors the resulting auth state into settings.json so the UI stays
+ * in sync.
  */
 export async function ensureCodexTokenValid(): Promise<boolean> {
   invalidateSettingsCache();
-  return ensureValidCodexToken();
+  const status = await getCodexAuthStatus();
+  return status.authenticated;
 }
 
 /**

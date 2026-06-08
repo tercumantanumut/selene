@@ -287,13 +287,14 @@ describe("stubEphemeralToolResults", () => {
     expect((stub.contentId as string).startsWith("trunc_")).toBe(true);
     expect(stub.truncatedContentId).toBe(stub.contentId);
 
-    // Rich summary must include the contentId + retrieval examples so the
-    // model can act without having to consult another tool.
+    // Rich summary must include one obvious range retrieval example.
     const summary = stub.summary as string;
     expect(summary).toContain(`contentId=${stub.contentId}`);
     expect(summary).toContain("retrieveFullContent");
-    expect(summary).toContain("head:");
-    expect(summary).toContain("grep:");
+    expect(summary).toContain("range:");
+    expect(summary).not.toContain("head:");
+    expect(summary).not.toContain("tail:");
+    expect(summary).not.toContain("grep:");
 
     // And it should actually be retrievable.
     const retrieved = retrieveFullContent(sessionId, stub.contentId as string);

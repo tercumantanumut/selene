@@ -11,6 +11,10 @@ import {
   type DesignSnapshot,
   type DesignPreviewTheme,
   type InspectedElement,
+  type ActiveTool,
+  type Measurement,
+  type PickedColor,
+  type DesignComment,
 } from "./types";
 import {
   DEFAULT_DESIGN_WORKSPACE_CONFIG,
@@ -60,6 +64,24 @@ const sessionCache = new Map<string, DesignWorkspaceSessionState>();
  * generation bursts now survive unchanged.
  */
 export const MAX_HYDRATED_COMPONENTS = 16;
+
+/**
+ * FIFO caps on per-tool collections. Pushing past the cap drops the oldest
+ * entry (lowest index) so long sessions can't accumulate unbounded state.
+ * Comments get a higher cap because they're meant to persist across the
+ * lifetime of a design review.
+ */
+export const MAX_MEASUREMENTS = 200;
+export const MAX_PICKED_COLORS = 200;
+export const MAX_COMMENTS = 500;
+
+function pushFifo<T>(arr: readonly T[], entry: T, cap: number): T[] {
+  if (arr.length >= cap) {
+    // Drop oldest entries to make room for the new one.
+    return [...arr.slice(arr.length - cap + 1), entry];
+  }
+  return [...arr, entry];
+}
 
 /**
  * Tracks the order in which components were most recently hydrated
@@ -178,6 +200,10 @@ function extractSessionState(store: DesignWorkspaceState): DesignWorkspaceSessio
     lastValidation: store.lastValidation,
     lastCompileReport: store.lastCompileReport,
     history: store.history,
+    activeTool: store.activeTool,
+    measurements: store.measurements,
+    pickedColors: store.pickedColors,
+    comments: store.comments,
   };
 }
 
@@ -199,11 +225,16 @@ const initialSessionState: DesignWorkspaceSessionState = {
   lastValidation: null,
   lastCompileReport: null,
   history: null,
+  activeTool: null,
+  measurements: [],
+  pickedColors: [],
+  comments: [],
 };
 
 const initialState = {
   ...initialSessionState,
   sessionId: null as string | null,
+  characterId: null as string | null,
 };
 
 export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) => ({
@@ -386,11 +417,20 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
   },
 
   toggleInspector: () => {
-    const next = !get().inspectorEnabled;
+    const current = get();
+    const next: ActiveTool = current.activeTool === "inspect" ? null : "inspect";
+    get().setActiveTool(next);
+  },
+
+  setActiveTool: (tool: ActiveTool) => {
+    const current = get();
+    const inspectorEnabled = tool === "inspect";
+    // Clear in-progress per-tool state when switching tools.
     set({
-      inspectorEnabled: next,
-      selectedElement: next ? get().selectedElement : null,
-      selectedElements: next ? get().selectedElements : [],
+      activeTool: tool,
+      inspectorEnabled,
+      selectedElement: inspectorEnabled ? current.selectedElement : null,
+      selectedElements: inspectorEnabled ? current.selectedElements : [],
     });
   },
 
@@ -520,7 +560,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     set({ history });
   },
 
-  setActiveSession: (sessionId: string) => {
+  setActiveSession: (sessionId: string, characterId?: string | null) => {
     const current = get();
 
     // Save current session state to cache (if we have a session)
@@ -536,7 +576,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     if (cached) {
       // Move to newest position in cache
       sessionCache.delete(sessionId);
-      set({ ...cached, sessionId });
+      set({ ...cached, sessionId, characterId: characterId ?? current.characterId });
       // Rebuild hydration tracker from the restored component list so
       // eviction accounting matches the visible state.
       const order: string[] = [];
@@ -549,6 +589,7 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
         ...initialSessionState,
         selectedBreakpoint: { ...DESIGN_BREAKPOINTS[0] },
         sessionId,
+        characterId: characterId ?? current.characterId,
       });
       hydrationOrderBySession.set(sessionId, []);
     }
@@ -559,5 +600,110 @@ export const useDesignWorkspaceStore = create<DesignWorkspaceState>((set, get) =
     if (sessionId) hydrationOrderBySession.delete(sessionId);
     else hydrationOrderBySession.delete(NO_SESSION_HYDRATION_KEY);
     set({ ...initialState, selectedBreakpoint: { ...DESIGN_BREAKPOINTS[0] } });
+  },
+
+  addMeasurement: (m: Measurement) => {
+    set({ measurements: pushFifo(get().measurements, m, MAX_MEASUREMENTS) });
+  },
+
+  removeMeasurement: (id: string) => {
+    set({ measurements: get().measurements.filter((entry) => entry.id !== id) });
+  },
+
+  clearMeasurements: () => {
+    set({ measurements: [] });
+  },
+
+  addPickedColor: (c: PickedColor) => {
+    set({ pickedColors: pushFifo(get().pickedColors, c, MAX_PICKED_COLORS) });
+  },
+
+  removePickedColor: (id: string) => {
+    set({ pickedColors: get().pickedColors.filter((entry) => entry.id !== id) });
+  },
+
+  clearPickedColors: () => {
+    set({ pickedColors: [] });
+  },
+
+  addComment: (c: DesignComment) => {
+    set({ comments: pushFifo(get().comments, c, MAX_COMMENTS) });
+  },
+
+  updateComment: (id: string, patch: Partial<Omit<DesignComment, "id">>) => {
+    set({
+      comments: get().comments.map((entry) =>
+        entry.id === id ? { ...entry, ...patch } : entry,
+      ),
+    });
+  },
+
+  removeComment: (id: string) => {
+    set({ comments: get().comments.filter((entry) => entry.id !== id) });
+  },
+
+  resolveComment: (id: string) => {
+    set({
+      comments: get().comments.map((entry) =>
+        entry.id === id ? { ...entry, resolved: !entry.resolved } : entry,
+      ),
+    });
+  },
+
+  clearComments: () => {
+    set({ comments: [] });
+  },
+
+  markCommentsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => {
+    if (unresolvedIds.length === 0 && resolvedIds.length === 0) return;
+    const unresolvedSet = new Set(unresolvedIds);
+    const resolvedSet = new Set(resolvedIds);
+    const current = get().comments;
+    let changed = false;
+    const next = current.map((entry) => {
+      if (unresolvedSet.has(entry.id)) {
+        // Mark stale if the iframe couldn't find a matching DOM node.
+        if (entry.orphaned === true) return entry;
+        changed = true;
+        return { ...entry, orphaned: true };
+      }
+      if (resolvedSet.has(entry.id) && entry.orphaned === true) {
+        // Clear stale flag once the selector resolves again. Set to `false`
+        // explicitly (not `undefined`) so the cleared state round-trips
+        // through the session cache.
+        changed = true;
+        return { ...entry, orphaned: false };
+      }
+      return entry;
+    });
+    // No-op short-circuit — preserve array reference so subscribers don't
+    // re-trigger sync effects on a redundant ack from the iframe (mirrors
+    // `markMeasurementsOrphaned` below).
+    if (!changed) return;
+    set({ comments: next });
+  },
+
+  markMeasurementsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => {
+    if (unresolvedIds.length === 0 && resolvedIds.length === 0) return;
+    const unresolvedSet = new Set(unresolvedIds);
+    const resolvedSet = new Set(resolvedIds);
+    const current = get().measurements;
+    let changed = false;
+    const next = current.map((entry) => {
+      if (unresolvedSet.has(entry.id)) {
+        if (entry.orphaned === true) return entry;
+        changed = true;
+        return { ...entry, orphaned: true };
+      }
+      if (resolvedSet.has(entry.id) && entry.orphaned === true) {
+        changed = true;
+        return { ...entry, orphaned: false };
+      }
+      return entry;
+    });
+    // No-op short-circuit — preserve array reference so subscribers don't
+    // re-trigger sync effects on a redundant ack from the iframe.
+    if (!changed) return;
+    set({ measurements: next });
   },
 }));

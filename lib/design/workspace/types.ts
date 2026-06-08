@@ -22,6 +22,10 @@ export interface DesignComponent {
    * rendering a preview or displaying the code panel.
    */
   codeStripped?: boolean;
+  /** Absolute source file path for imported components.
+   *  The browser preview recompile endpoint uses this to reload the owning
+   *  project's tsconfig aliases after the initial import tool call. */
+  resolvedSourcePath?: string;
 }
 
 export interface DesignSnapshot {
@@ -71,6 +75,118 @@ export interface InspectedElement {
   };
 }
 
+/** Active toolbar mode in the design preview. `null` is the default cursor / no tool. */
+export type ActiveTool = "inspect" | "measure" | "eyedropper" | "comment" | null;
+
+export interface Measurement {
+  id: string;
+  from: { selector: string; rect: { x: number; y: number; width: number; height: number } };
+  to: { selector: string; rect: { x: number; y: number; width: number; height: number } };
+  distances: { dx: number; dy: number; horizontal: number; vertical: number; euclidean: number };
+  createdAt: number;
+  /**
+   * Set to `true` by the parent in response to a `selene-tool-measurements-resolved`
+   * ack from the iframe when one of the endpoints' selectors no longer resolves
+   * to a live DOM node. Mirrors `DesignComment.orphaned` semantics.
+   */
+  orphaned?: boolean;
+}
+
+export interface PickedColor {
+  id: string;
+  hex: string;
+  rgb: { r: number; g: number; b: number; a: number };
+  hsl: { h: number; s: number; l: number; a: number };
+  source:
+    | "background"
+    | "foreground"
+    | "border"
+    | "gradient"
+    | "svg-fill"
+    | "svg-stroke"
+    | "pseudo-before"
+    | "pseudo-after";
+  element: { selector: string; tagName: string };
+  createdAt: number;
+}
+
+export interface DesignComment {
+  id: string;
+  elementSelector: string;
+  text: string;
+  createdAt: number;
+  resolved: boolean;
+  /**
+   * Set to `true` by the parent in response to a `selene-tool-comments-resolved`
+   * ack from the iframe when the comment's `elementSelector` no longer resolves
+   * to a live DOM node. Comments whose selector resolves remain `false` /
+   * undefined. Round-trips through the session cache so the panel's "stale"
+   * badge persists across session switches.
+   */
+  orphaned?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Iframe -> parent postMessage payload types
+// ---------------------------------------------------------------------------
+
+/** Bounding rect carried by inspector / measure payloads. */
+export interface IframeRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Validated payload shape for `selene-tool-measure`. */
+export interface MeasurementPayload {
+  type: "selene-tool-measure";
+  from: { selector: string; rect: IframeRect };
+  to: { selector: string; rect: IframeRect };
+  distances: { dx: number; dy: number; horizontal: number; vertical: number; euclidean: number };
+}
+
+/** Validated payload shape for `selene-tool-color-pick`. */
+export interface ColorPickPayload {
+  type: "selene-tool-color-pick";
+  source: PickedColor["source"];
+  background: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
+  foreground: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
+  picked: { hex: string; rgb: PickedColor["rgb"]; hsl: PickedColor["hsl"] };
+  element: { selector: string; tagName: string };
+}
+
+/** Validated payload shape for `selene-tool-comment`. */
+export interface CommentPayload {
+  type: "selene-tool-comment";
+  tempId: string;
+  elementSelector: string;
+  text: string;
+  createdAt: number;
+}
+
+/** Validated payload shape for `selene-tool-comments-resolved`. */
+export interface CommentsResolvedPayload {
+  type: "selene-tool-comments-resolved";
+  resolved: string[];
+  unresolved: string[];
+}
+
+/** Validated payload shape for `selene-tool-measurements-resolved`. */
+export interface MeasurementsResolvedPayload {
+  type: "selene-tool-measurements-resolved";
+  resolved: string[];
+  unresolved: string[];
+}
+
+/** Validated payload shape for `selene-inspector-select`. */
+export interface InspectorSelectPayload {
+  type: "selene-inspector-select";
+  element: InspectedElement;
+  action?: "add" | "remove" | "replace";
+  multiSelect?: boolean;
+}
+
 /** Serialisable session state that gets cached when switching sessions. */
 export interface DesignWorkspaceSessionState {
   isOpen: boolean;
@@ -90,10 +206,15 @@ export interface DesignWorkspaceSessionState {
   lastValidation: DesignWorkspaceValidationResult | null;
   lastCompileReport: DesignWorkspaceCompileReport | null;
   history: DesignWorkspaceHistory | null;
+  activeTool: ActiveTool;
+  measurements: Measurement[];
+  pickedColors: PickedColor[];
+  comments: DesignComment[];
 }
 
 export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   sessionId: string | null;
+  characterId: string | null;
   open: () => void;
   close: () => void;
   setStatus: (status: DesignWorkspaceStatus) => void;
@@ -120,6 +241,20 @@ export interface DesignWorkspaceState extends DesignWorkspaceSessionState {
   setLastValidation: (validation: DesignWorkspaceValidationResult | null) => void;
   setLastCompileReport: (report: DesignWorkspaceCompileReport | null) => void;
   setHistory: (history: DesignWorkspaceHistory | null) => void;
-  setActiveSession: (sessionId: string) => void;
+  setActiveSession: (sessionId: string, characterId?: string | null) => void;
   reset: () => void;
+  setActiveTool: (tool: ActiveTool) => void;
+  addMeasurement: (m: Measurement) => void;
+  removeMeasurement: (id: string) => void;
+  clearMeasurements: () => void;
+  addPickedColor: (c: PickedColor) => void;
+  removePickedColor: (id: string) => void;
+  clearPickedColors: () => void;
+  addComment: (c: DesignComment) => void;
+  updateComment: (id: string, patch: Partial<Omit<DesignComment, "id">>) => void;
+  removeComment: (id: string) => void;
+  resolveComment: (id: string) => void;
+  clearComments: () => void;
+  markCommentsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => void;
+  markMeasurementsOrphaned: (unresolvedIds: string[], resolvedIds: string[]) => void;
 }

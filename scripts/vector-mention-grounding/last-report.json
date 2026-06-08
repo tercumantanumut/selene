@@ -1,0 +1,129 @@
+{
+  "ranAt": "2026-04-27T12:39:03.014Z",
+  "characterId": "bd2821ed-4e46-4945-937e-157dab604953",
+  "topK": 8,
+  "v1IncludesHit": 0,
+  "v2IncludesHit": 2,
+  "totalIncludes": 7,
+  "v1FullyPass": 0,
+  "v2FullyPass": 2,
+  "cases": [
+    {
+      "id": "model-switching",
+      "query": "how does the AI switch models mid-conversation",
+      "v1Top": [],
+      "v2Top": [
+        "lib/ai/providers/blackboxai-client.ts",
+        "lib/ai/web-browse/orchestrator.ts",
+        "lib/auth/blackboxai-models.ts",
+        "RELEASE_NOTES.md",
+        "lib/ai/providers.ts",
+        "lib/config/model-catalog.ts",
+        "app/settings/models-section.tsx"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 0,
+      "v2AnyOf": true,
+      "expectedIncludes": 2,
+      "hasAnyOf": true
+    },
+    {
+      "id": "context-window-limits",
+      "query": "token budget and context window limits per provider",
+      "v1Top": [],
+      "v2Top": [
+        "lib/context-window/provider-limits.ts",
+        "tests/lib/context-window/context-window-fix-validation.test.ts",
+        "tests/lib/context-window/context-window-manager.test.ts"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 1,
+      "v2AnyOf": true,
+      "expectedIncludes": 1,
+      "hasAnyOf": true
+    },
+    {
+      "id": "indexing-retry",
+      "query": "background folder indexing retry and error recovery",
+      "v1Top": [],
+      "v2Top": [
+        "app/(auth)/signup/page.tsx",
+        "components/vector-search/folder-sync-manager.tsx",
+        "components/chat-provider.tsx"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 0,
+      "v2AnyOf": false,
+      "expectedIncludes": 1,
+      "hasAnyOf": true
+    },
+    {
+      "id": "skill-catalog",
+      "query": "agent skill definition and bundled catalog structure",
+      "v1Top": [],
+      "v2Top": [
+        "lib/skills/catalog/auto-install.ts",
+        "app/api/skills/catalog/install/route.ts",
+        "lib/skills/catalog/index.ts",
+        "app/api/skills/catalog/[id]/content/route.ts"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 0,
+      "v2AnyOf": true,
+      "expectedIncludes": 1,
+      "hasAnyOf": true
+    },
+    {
+      "id": "voice-pipeline",
+      "query": "real-time transcription and voice input pipeline",
+      "v1Top": [],
+      "v2Top": [
+        "components/assistant-ui/thread-composer.tsx"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 0,
+      "v2AnyOf": false,
+      "expectedIncludes": 1,
+      "hasAnyOf": true
+    },
+    {
+      "id": "composer-attachment-flow",
+      "query": "how files become content parts on the user message before the LLM call",
+      "v1Top": [],
+      "v2Top": [
+        "app/api/chat/message-splitter.ts",
+        "lib/auth/codex-input-utils.ts",
+        "app/api/chat/content-extractor.ts",
+        "lib/ai/providers/claudecode-provider.ts",
+        "app/api/chat/route.ts"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 1,
+      "v2AnyOf": true,
+      "expectedIncludes": 1,
+      "hasAnyOf": true
+    },
+    {
+      "id": "chunk-storage-schema",
+      "query": "where chunks are stored with their embeddings and line ranges",
+      "v1Top": [],
+      "v2Top": [
+        "lib/ai/vector-search/synthesizer.ts",
+        "lib/ai/filesystem/diagnostics.ts",
+        "lib/hooks/use-mini-pipeline.ts"
+      ],
+      "v1Includes": 0,
+      "v1AnyOf": false,
+      "v2Includes": 0,
+      "v2AnyOf": false,
+      "expectedIncludes": 0,
+      "hasAnyOf": true
+    }
+  ]
+}

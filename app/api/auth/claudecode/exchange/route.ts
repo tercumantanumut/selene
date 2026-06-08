@@ -1,48 +1,54 @@
 import { NextResponse } from "next/server";
 import { getClaudeCodeAuthStatus } from "@/lib/auth/claudecode-auth";
-import { submitClaudeLoginCode } from "@/lib/auth/claude-login-process";
+import { awaitClaudeLoginCompletion, getClaudeLoginState } from "@/lib/ai/providers/cliproxy/login";
 
 /**
  * POST /api/auth/claudecode/exchange
  *
- * Accepts { code: string } and pipes it to the waiting `claude login` subprocess.
- * Falls back to re-checking SDK auth status if no active process exists
- * (e.g. user already authenticated via terminal).
+ * Blocks (up to ~30s) waiting for the OAuth browser callback to complete
+ * into the active `cliproxyapi -claude-login` subprocess, then returns the
+ * resulting auth status. Idempotent — if no login session is in flight and a
+ * credential already exists, returns the cached state.
+ *
+ * The body shape `{ code }` is accepted for backwards compatibility with the
+ * old Agent-SDK paste flow but the field is ignored — CLIProxyAPI's local
+ * HTTP callback collects the code itself.
  */
-export async function POST(req: Request) {
+export async function POST() {
   try {
-    let code: string | undefined;
-    try {
-      const body = await req.json();
-      if (typeof body?.code === "string") {
-        code = body.code;
-      }
-    } catch {
-      // body may be empty for backwards-compat callers
+    const before = await getClaudeCodeAuthStatus();
+    if (before.authenticated) {
+      return NextResponse.json({
+        success: true,
+        authenticated: true,
+        output: before.output,
+      });
     }
 
-    if (code?.trim()) {
-      const result = await submitClaudeLoginCode(code.trim());
-
-      if (!result.success) {
-        return NextResponse.json(
-          { success: false, error: result.error ?? "Authentication failed" },
-          { status: 400 },
-        );
-      }
+    const loginState = getClaudeLoginState();
+    if (!loginState || !loginState.active) {
+      return NextResponse.json(
+        {
+          success: false,
+          authenticated: false,
+          error:
+            "No active OAuth login. Click 'Login with Claude' to start a new flow.",
+        },
+        { status: 409 },
+      );
     }
 
-    // Verify final auth state via Agent SDK (source of truth).
-    const status = await getClaudeCodeAuthStatus();
+    const final = await awaitClaudeLoginCompletion(30_000);
+    const after = await getClaudeCodeAuthStatus();
 
     return NextResponse.json({
-      success: status.authenticated,
-      authenticated: status.authenticated,
-      error: status.authenticated
+      success: after.authenticated,
+      authenticated: after.authenticated,
+      error: after.authenticated
         ? undefined
-        : "Claude Agent SDK is not authenticated yet. Complete login and try again.",
-      output: status.output,
-      url: status.authUrl ?? null,
+        : final?.errorMessage ?? "OAuth flow did not complete in time. Try again.",
+      output: final?.output ?? after.output,
+      url: final?.url ?? after.authUrl ?? null,
     });
   } catch (error) {
     console.error("[ClaudeCodeExchange] Error:", error);

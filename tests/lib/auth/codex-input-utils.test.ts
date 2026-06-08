@@ -8,6 +8,7 @@ import {
   truncateCodexInput,
   type CodexInputItem,
 } from "@/lib/auth/codex-input-utils";
+import { UNKNOWN_TOOL_NAME } from "@/lib/messages/tool-name-placeholder";
 
 describe("codex-input-utils", () => {
   it("strips item references and transient ids from codex input", () => {
@@ -111,6 +112,48 @@ describe("codex-input-utils", () => {
       name: "executeCommand",
     });
     expect(normalized[1]).toEqual(input[0]);
+  });
+
+  it("synthesizes UNKNOWN_TOOL_NAME (never the literal 'tool') when an orphan output has no name", () => {
+    // Regression: the AI SDK serializes `function_call_output` items WITHOUT a
+    // `name` field (the OpenAI Responses spec does not require one). When the
+    // matching `function_call` is missing (e.g. it was replaced with an
+    // `item_reference` by the AI SDK and stripped by filterCodexInput), we used
+    // to synthesize the call with `name: "tool"`, which made Codex log
+    // `functions.tool` as a missing tool and burn reasoning cycles. The
+    // synthesized name must instead be the sentinel UNKNOWN_TOOL_NAME so
+    // downstream sanitizers can recognize and route it correctly.
+    const input: CodexInputItem[] = [
+      { type: "function_call_output", call_id: "call_orphan", output: { status: "success" } },
+    ];
+
+    const normalized = normalizeOrphanedToolOutputs(input);
+
+    expect(normalized).toHaveLength(2);
+    expect(normalized[0]).toMatchObject({
+      type: "function_call",
+      call_id: "call_orphan",
+      name: UNKNOWN_TOOL_NAME,
+    });
+    expect(normalized[0].name).not.toBe("tool");
+  });
+
+  it("synthesizes UNKNOWN_TOOL_NAME when an orphan call has no name", () => {
+    // Symmetric guard for the reverse case: a `function_call` without `name`
+    // that needs a synthetic `function_call_output` paired to it.
+    const input: CodexInputItem[] = [
+      { type: "function_call", call_id: "call_no_name", arguments: "{}" },
+      { type: "message", role: "user", content: "next" },
+    ];
+
+    const normalized = normalizeOrphanedToolOutputs(input);
+
+    const syntheticOutput = normalized.find(
+      (item) => item.type === "function_call_output" && item.call_id === "call_no_name",
+    );
+    expect(syntheticOutput).toBeDefined();
+    expect(syntheticOutput?.name).toBe(UNKNOWN_TOOL_NAME);
+    expect(syntheticOutput?.name).not.toBe("tool");
   });
 
   it("drops duplicate tool call/output events by call_id", () => {

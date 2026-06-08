@@ -309,6 +309,13 @@ copyNodeDependencies([
     { name: '@napi-rs/canvas', src: '@napi-rs', dest: '@napi-rs' },
 ]);
 
+// 6. Copy lazy runtime dependencies that are intentionally kept out of
+// electron-dist/main.js but loaded from standalone/node_modules when needed.
+copyNodeDependencies([
+    { name: 'gpt-tokenizer', src: 'gpt-tokenizer', dest: 'gpt-tokenizer' },
+    { name: '@huggingface/hub', src: '@huggingface/hub', dest: '@huggingface/hub' },
+]);
+
 // 7. Copy Puppeteer and bundled Chromium for local web scraping
 copyNodeDependencies([
     { name: 'puppeteer', src: 'puppeteer', dest: 'puppeteer' },
@@ -356,6 +363,7 @@ if (systemNpmPath) {
 copyNodeDependencies([
     { name: '@huggingface/transformers', src: '@huggingface/transformers', dest: '@huggingface/transformers' },
     { name: 'onnxruntime-node', src: 'onnxruntime-node', dest: 'onnxruntime-node' },
+    { name: 'onnxruntime-common', src: 'onnxruntime-common', dest: 'onnxruntime-common' },
 ]);
 
 // 9b. Copy design preview compiler dependencies that Next standalone may trim.

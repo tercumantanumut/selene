@@ -34,6 +34,13 @@ const DEEPSEEK_THINKING_ENABLED_MODELS = new Set<string>([
   "deepseek-reasoner",
 ]);
 
+// DeepSeek currently rejects the OpenAI-compatible `tool_choice` field for its
+// reasoning-mode models even though they otherwise support tool calls.
+const DEEPSEEK_MODELS_WITHOUT_TOOL_CHOICE = new Set<string>([
+  "deepseek-v4-pro",
+  "deepseek-reasoner",
+]);
+
 // Models that explicitly disable thinking mode
 const DEEPSEEK_THINKING_DISABLED_MODELS = new Set<string>([
   "deepseek-v4-flash",
@@ -129,6 +136,13 @@ export function deepseekModelSupportsThinking(modelId: string): boolean {
     DEEPSEEK_THINKING_ENABLED_MODELS.has(modelId) ||
     DEEPSEEK_THINKING_DISABLED_MODELS.has(modelId)
   );
+}
+
+/**
+ * Check whether a DeepSeek model accepts OpenAI-compatible `tool_choice`.
+ */
+export function deepseekModelSupportsToolChoice(modelId: string): boolean {
+  return !DEEPSEEK_MODELS_WITHOUT_TOOL_CHOICE.has(modelId);
 }
 
 export type { DeepSeekModelId };

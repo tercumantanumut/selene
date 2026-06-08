@@ -1,11 +1,10 @@
 /**
  * Mid-Stream Injection — Message-Shaping Helpers
  *
- * Narrow helpers shared between the non-Claude-Code route handler
- * (`app/api/chat/route.ts` `prepareStep`) and the Claude Code provider
- * (`lib/ai/providers/claudecode-provider.ts`) for the edge case where a user
- * message is injected WHILE an assistant message still has in-flight tool
- * calls that will never get a natural tool_result.
+ * Narrow helpers shared by both the non-Claude-Code and Claude Code
+ * injection paths in `app/api/chat/route.ts` for the edge case where a
+ * user message is injected WHILE an assistant message still has in-flight
+ * tool calls that will never get a natural tool_result.
  *
  * Two concerns live here:
  *
@@ -34,8 +33,10 @@
  * indistinguishable from the one a later edit/reload would produce.
  */
 
+import type { ModelMessage } from "ai";
 import { toModelToolResultOutput } from "@/app/api/chat/tool-call-utils";
 import type { SyntheticToolResultDescriptor } from "@/lib/ai/streaming/injection-stream-emitter";
+import { toStructuredToolName } from "@/lib/messages/tool-name-placeholder";
 
 /**
  * Minimal shape we walk — intentionally loose so this helper accepts both
@@ -94,10 +95,7 @@ export function findOrphanToolCalls(
     if (!toolCallId) continue;
     if (resolved.has(toolCallId)) continue;
 
-    const toolName =
-      typeof part.toolName === "string" && part.toolName.length > 0
-        ? part.toolName
-        : "tool";
+    const toolName = toStructuredToolName(part.toolName);
     orphans.push({ toolCallId, toolName });
   }
 
@@ -121,10 +119,7 @@ export function buildSyntheticModelToolResults(
   if (!orphans || orphans.length === 0) return [];
 
   return orphans.map((orphan) => {
-    const toolName =
-      typeof orphan.toolName === "string" && orphan.toolName.length > 0
-        ? orphan.toolName
-        : "tool";
+    const toolName = toStructuredToolName(orphan.toolName);
     return {
       type: "tool-result" as const,
       toolCallId: orphan.toolCallId,
@@ -137,4 +132,113 @@ export function buildSyntheticModelToolResults(
       status: "error" as const,
     };
   });
+}
+
+function getMessageParts(message: ModelMessage): Array<Record<string, unknown>> {
+  return Array.isArray(message.content)
+    ? message.content as Array<Record<string, unknown>>
+    : [];
+}
+
+function messageHasToolCall(message: ModelMessage, toolCallId: string): boolean {
+  if (message.role !== "assistant") return false;
+  return getMessageParts(message).some(
+    (part) => part.type === "tool-call" && part.toolCallId === toolCallId,
+  );
+}
+
+function appendResultsToToolMessage(
+  message: ModelMessage,
+  results: SyntheticModelToolResult[],
+): ModelMessage {
+  const existing = getMessageParts(message);
+  return {
+    ...message,
+    content: [...existing, ...results] as ModelMessage["content"],
+  } as ModelMessage;
+}
+
+/**
+ * Insert synthetic `tool-result` blocks into the only Anthropic-valid location:
+ * immediately after the assistant message that emitted the corresponding
+ * `tool-call`/`tool_use` id.
+ *
+ * The mid-stream injection path used to append a synthetic `role:"tool"`
+ * message to the end of `stepMessages`. That is only valid when the final
+ * message is still the owning assistant. Queued user-message injection can run
+ * after the SDK has already added later assistant/user messages to the step
+ * frame; appending there makes Anthropic see a `tool_result` whose previous
+ * message has no matching `tool_use`, producing `unexpected tool_use_id found in
+ * tool_result blocks`.
+ *
+ * This helper skips any orphan that is already resolved in the frame and skips
+ * impossible synthetic results when the matching assistant is absent. A
+ * tool_result with no preceding matching assistant can never be made valid by
+ * appending it later.
+ */
+export function insertSyntheticToolResultsAfterMatchingAssistant(
+  messages: ModelMessage[],
+  orphans: SyntheticToolResultDescriptor[],
+  reason: string,
+): ModelMessage[] {
+  if (!orphans || orphans.length === 0) return messages;
+
+  const resolvedToolCallIds = new Set<string>();
+  for (const message of messages) {
+    for (const part of getMessageParts(message)) {
+      if (part.type === "tool-result" && typeof part.toolCallId === "string") {
+        resolvedToolCallIds.add(part.toolCallId);
+      }
+    }
+  }
+
+  const orphanGroupsByAssistantIndex = new Map<number, SyntheticToolResultDescriptor[]>();
+
+  for (const orphan of orphans) {
+    if (!orphan.toolCallId || resolvedToolCallIds.has(orphan.toolCallId)) {
+      continue;
+    }
+
+    let assistantIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messageHasToolCall(messages[i], orphan.toolCallId)) {
+        assistantIndex = i;
+        break;
+      }
+    }
+
+    if (assistantIndex === -1) {
+      continue;
+    }
+
+    const group = orphanGroupsByAssistantIndex.get(assistantIndex) ?? [];
+    group.push(orphan);
+    orphanGroupsByAssistantIndex.set(assistantIndex, group);
+  }
+
+  if (orphanGroupsByAssistantIndex.size === 0) return messages;
+
+  const shaped: ModelMessage[] = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    shaped.push(message);
+
+    const group = orphanGroupsByAssistantIndex.get(i);
+    if (!group || group.length === 0) continue;
+
+    const syntheticResults = buildSyntheticModelToolResults(group, reason);
+    const next = messages[i + 1];
+    if (next?.role === "tool") {
+      i += 1;
+      shaped.push(appendResultsToToolMessage(next, syntheticResults));
+      continue;
+    }
+
+    shaped.push({
+      role: "tool",
+      content: syntheticResults as ModelMessage["content"],
+    } as ModelMessage);
+  }
+
+  return shaped;
 }

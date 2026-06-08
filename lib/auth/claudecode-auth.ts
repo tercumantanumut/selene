@@ -1,11 +1,32 @@
+/**
+ * Claude Code auth state — backed by the CLIProxyAPI sidecar's credential
+ * dir.
+ *
+ * Selene no longer keeps its own OAuth token storage. The sidecar runs the
+ * OAuth flow and persists `claude-<email>.json` files; we read those to
+ * derive the user-facing auth status and persist a small cached snapshot in
+ * `settings.json` so the UI doesn't flicker between page loads.
+ */
+
 import { loadSettings, saveSettings } from "@/lib/settings/settings-manager";
 import {
-  attemptClaudeAgentSdkLogout,
-  readClaudeAgentSdkAuthStatus,
-  type ClaudeAgentSdkAuthStatus,
-} from "@/lib/auth/claude-agent-sdk-auth";
+  deleteAllClaudeCredentials,
+  listClaudeCredentials,
+} from "@/lib/ai/providers/cliproxy/credentials";
+import { getClaudeLoginState } from "@/lib/ai/providers/cliproxy/login";
 
-const AUTH_STATUS_TIMEOUT_MS = 20_000;
+const TOKEN_SOURCE = "cliproxyapi-oauth";
+
+export interface ClaudeCodeAuthStatus {
+  authenticated: boolean;
+  email?: string;
+  account?: string;
+  tokenSource?: string;
+  apiKeySource?: string;
+  authUrl?: string;
+  output?: string[];
+  error?: string;
+}
 
 interface ClaudeCodeAuthState {
   isAuthenticated: boolean;
@@ -21,11 +42,10 @@ interface ClaudeCodeAuthState {
 
 let cachedAuthState: ClaudeCodeAuthState | null = null;
 
-function buildAuthStateFromSdkStatus(status: ClaudeAgentSdkAuthStatus): ClaudeCodeAuthState {
+function buildAuthStateFromStatus(status: ClaudeCodeAuthStatus): ClaudeCodeAuthState {
   return {
     isAuthenticated: status.authenticated,
     email: status.email,
-    // SDK auth can use CLI/session credentials, so there is no reliable expiresAt value.
     expiresAt: undefined,
     lastRefresh: Date.now(),
     tokenSource: status.tokenSource,
@@ -36,56 +56,13 @@ function buildAuthStateFromSdkStatus(status: ClaudeAgentSdkAuthStatus): ClaudeCo
   };
 }
 
-function isAuthoritativeAuthFailure(status: ClaudeAgentSdkAuthStatus): boolean {
-  if (status.authenticated) return false;
-  const error = status.error?.toLowerCase();
-  if (!error) return false;
-
-  // Explicit auth failures from the SDK
-  if (
-    error.includes("authentication_failed")
-    || error.includes("not_authenticated")
-    || error.includes("login_required")
-  ) {
-    return true;
-  }
-
-  // Subprocess spawn failures (wrong executable, missing binary, fd exhaustion).
-  // These indicate the SDK couldn't even start — the previous auth state is stale.
-  if (
-    error.includes("spawn")
-    || error.includes("enoent")
-    || error.includes("eacces")
-    || error.includes("ebadf")
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-function persistAuthState(status: ClaudeAgentSdkAuthStatus): ClaudeCodeAuthState {
+function persistAuthState(status: ClaudeCodeAuthStatus): ClaudeCodeAuthState {
   const settings = loadSettings();
-  const previousState = settings.claudecodeAuth;
-  let authState = buildAuthStateFromSdkStatus(status);
-
-  // Avoid auth-state flapping when SDK status checks fail transiently.
-  // We only flip to signed-out when the SDK reports an explicit auth failure.
-  if (
-    !authState.isAuthenticated
-    && previousState?.isAuthenticated
-    && !isAuthoritativeAuthFailure(status)
-  ) {
-    authState = {
-      ...authState,
-      isAuthenticated: true,
-      email: authState.email || previousState.email,
-    };
-  }
+  const authState = buildAuthStateFromStatus(status);
 
   settings.claudecodeAuth = authState;
 
-  // Clean up legacy app-managed OAuth fields from old versions.
+  // Drop legacy fields from older Agent-SDK-era versions.
   delete settings.claudecodeToken;
   delete settings.pendingClaudeCodeOAuth;
 
@@ -95,9 +72,7 @@ function persistAuthState(status: ClaudeAgentSdkAuthStatus): ClaudeCodeAuthState
 }
 
 export function getClaudeCodeAuthState(): ClaudeCodeAuthState {
-  if (cachedAuthState) {
-    return cachedAuthState;
-  }
+  if (cachedAuthState) return cachedAuthState;
 
   const settings = loadSettings();
   const state: ClaudeCodeAuthState = {
@@ -111,7 +86,6 @@ export function getClaudeCodeAuthState(): ClaudeCodeAuthState {
     output: settings.claudecodeAuth?.output,
     error: settings.claudecodeAuth?.error,
   };
-
   cachedAuthState = state;
   return state;
 }
@@ -120,10 +94,45 @@ export function invalidateClaudeCodeAuthCache(): void {
   cachedAuthState = null;
 }
 
-export async function getClaudeCodeAuthStatus(
-  timeoutMs = AUTH_STATUS_TIMEOUT_MS,
-): Promise<ClaudeAgentSdkAuthStatus> {
-  const status = await readClaudeAgentSdkAuthStatus({ timeoutMs });
+/**
+ * Re-read upstream credential files and refresh the persisted snapshot.
+ */
+export async function getClaudeCodeAuthStatus(): Promise<ClaudeCodeAuthStatus> {
+  let creds;
+  try {
+    creds = await listClaudeCredentials();
+  } catch (err) {
+    const status: ClaudeCodeAuthStatus = {
+      authenticated: false,
+      tokenSource: TOKEN_SOURCE,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    persistAuthState(status);
+    return status;
+  }
+
+  const loginState = getClaudeLoginState();
+
+  if (creds.length === 0) {
+    const status: ClaudeCodeAuthStatus = {
+      authenticated: false,
+      tokenSource: TOKEN_SOURCE,
+      authUrl: loginState?.url ?? undefined,
+      output: loginState?.output,
+      error: loginState?.errorMessage,
+    };
+    persistAuthState(status);
+    return status;
+  }
+
+  const primary = creds[0];
+  const status: ClaudeCodeAuthStatus = {
+    authenticated: true,
+    email: primary.email,
+    account: primary.email,
+    tokenSource: TOKEN_SOURCE,
+    output: loginState?.output,
+  };
   persistAuthState(status);
   return status;
 }
@@ -133,19 +142,21 @@ export async function isClaudeCodeAuthenticated(): Promise<boolean> {
   return status.authenticated;
 }
 
-export function clearClaudeCodeAuth(): void {
+/**
+ * Delete the sidecar's stored credentials and reset selene's cached snapshot.
+ */
+export async function clearClaudeCodeAuth(): Promise<void> {
+  await deleteAllClaudeCredentials().catch((err) => {
+    console.error("[claudecode-auth] failed to delete credentials:", err);
+  });
+
   const settings = loadSettings();
   settings.claudecodeAuth = {
     isAuthenticated: false,
     lastRefresh: Date.now(),
   };
-
   delete settings.claudecodeToken;
   delete settings.pendingClaudeCodeOAuth;
-
   saveSettings(settings);
   cachedAuthState = settings.claudecodeAuth;
-
-  // Best effort: request logout through the Agent SDK, but don't block local cleanup.
-  void attemptClaudeAgentSdkLogout().catch(() => undefined);
 }

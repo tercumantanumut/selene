@@ -1,55 +1,43 @@
-import crypto from "crypto";
 import { NextResponse } from "next/server";
-import { CODEX_OAUTH } from "@/lib/auth/codex-auth";
-import { ensureCodexOAuthServer, registerCodexOAuthState } from "@/lib/auth/codex-oauth-server";
+import { getCodexAuthStatus } from "@/lib/auth/codex-auth";
+import { startCodexLogin } from "@/lib/ai/providers/cliproxy/login";
 
-function generateState(): string {
-  return crypto.randomBytes(16).toString("hex");
-}
-
-function generatePkce(): { verifier: string; challenge: string } {
-  const verifier = crypto.randomBytes(32).toString("base64url");
-  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-  return { verifier, challenge };
-}
-
-export async function GET(request: Request) {
+/**
+ * GET /api/auth/codex/authorize
+ *
+ * If the sidecar already has a Codex credential, short-circuits with
+ * `authenticated: true`. Otherwise spawns `cliproxyapi -codex-login` and
+ * returns the OAuth URL for the UI to open in a browser. The OAuth callback
+ * fires automatically into the sidecar's local server — there's no
+ * code-paste step in the new flow.
+ */
+export async function GET() {
   try {
-    const { verifier, challenge } = generatePkce();
-    const state = generateState();
-    const origin = new URL(request.url).origin;
-
-    registerCodexOAuthState(state, verifier, origin);
-
-    const serverReady = await ensureCodexOAuthServer();
-    if (!serverReady) {
-      return NextResponse.json(
-        { success: false, error: "Failed to start local OAuth server on port 1455" },
-        { status: 500 }
-      );
+    const status = await getCodexAuthStatus();
+    if (status.authenticated) {
+      return NextResponse.json({
+        success: true,
+        authenticated: true,
+        message: "Codex is already authenticated",
+      });
     }
 
-    const authUrl = new URL(CODEX_OAUTH.AUTH_URL);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("client_id", CODEX_OAUTH.CLIENT_ID);
-    authUrl.searchParams.set("redirect_uri", CODEX_OAUTH.REDIRECT_URI);
-    authUrl.searchParams.set("scope", CODEX_OAUTH.SCOPES);
-    authUrl.searchParams.set("code_challenge", challenge);
-    authUrl.searchParams.set("code_challenge_method", "S256");
-    authUrl.searchParams.set("state", state);
-    authUrl.searchParams.set("id_token_add_organizations", "true");
-    authUrl.searchParams.set("codex_cli_simplified_flow", "true");
-    authUrl.searchParams.set("originator", "codex_cli_rs");
+    const { url, output } = await startCodexLogin();
 
     return NextResponse.json({
       success: true,
-      url: authUrl.toString(),
+      authenticated: false,
+      url: url ?? null,
+      output,
+      message: url
+        ? "Open the provided URL to authenticate; this dialog will refresh when the OAuth callback completes."
+        : "Could not detect the OAuth URL — check that the CLIProxyAPI sidecar is installed.",
     });
   } catch (error) {
-    console.error("[CodexAuthorize] Failed to generate auth URL:", error);
+    console.error("[CodexAuthorize] Failed:", error);
     return NextResponse.json(
-      { success: false, error: "Failed to generate authorization URL" },
-      { status: 500 }
+      { success: false, error: "Failed to prepare authentication" },
+      { status: 500 },
     );
   }
 }

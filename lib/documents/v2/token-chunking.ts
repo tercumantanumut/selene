@@ -3,7 +3,7 @@
  * Reference: docs/vector-search-v2-analysis.md Section 5.2
  */
 
-import { decode, encode } from "gpt-tokenizer";
+import { loadTokenizerRuntime } from "./tokenizer-runtime";
 
 interface MicroChunk {
   index: number;
@@ -31,6 +31,7 @@ export function chunkByTokens(
 
   if (!text.trim()) return [];
 
+  const { decode, encode } = loadTokenizerRuntime();
   const tokens = encode(text);
   const chunks: MicroChunk[] = [];
   const lineStarts = buildLineStartIndex(text);

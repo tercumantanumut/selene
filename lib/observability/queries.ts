@@ -121,6 +121,39 @@ export async function updateAgentRunMetadata(
 }
 
 /**
+ * Refresh durable liveness without writing a full event row.
+ * Long-running providers may be silent for extended periods while still healthy.
+ */
+export async function touchAgentRun(
+  runId: string,
+  metadata?: Record<string, unknown>
+): Promise<AgentRun | undefined> {
+  const run = await db.query.agentRuns.findFirst({
+    where: eq(agentRuns.id, runId),
+  });
+
+  if (!run) {
+    return undefined;
+  }
+
+  const updatedAt = nowISO();
+  const existingMetadata = (run.metadata && typeof run.metadata === "object")
+    ? run.metadata as Record<string, unknown>
+    : {};
+
+  const [updated] = await db
+    .update(agentRuns)
+    .set({
+      updatedAt,
+      ...(metadata ? { metadata: { ...existingMetadata, ...metadata } } : {}),
+    })
+    .where(eq(agentRuns.id, runId))
+    .returning();
+
+  return updated;
+}
+
+/**
  * Get an agent run by ID
  */
 export async function getAgentRun(runId: string): Promise<AgentRun | undefined> {
@@ -447,23 +480,6 @@ export async function markRunAsCancelled(
     .returning();
 
   return updated;
-}
-
-/**
- * Bulk cleanup stale runs
- */
-async function cleanupStaleRuns(
-  thresholdMinutes: number = 30
-): Promise<{ cleaned: number; runIds: string[] }> {
-  const staleRuns = await findStaleRuns(thresholdMinutes);
-  const runIds: string[] = [];
-
-  for (const run of staleRuns) {
-    await markRunAsTimedOut(run.id, "background_cleanup");
-    runIds.push(run.id);
-  }
-
-  return { cleaned: runIds.length, runIds };
 }
 
 // ============================================================================

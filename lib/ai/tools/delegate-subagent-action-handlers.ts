@@ -40,6 +40,7 @@ import {
   removeFromQueueByDelegationId,
 } from "@/lib/background-tasks/live-prompt-queue-registry";
 import { removeDelegationCompletionById } from "./delegation-completion-store";
+import { getDelegationDeliveryRecord } from "./delegation-delivery-registry";
 import {
   hasStopIntent,
   sanitizeLivePromptContent,
@@ -297,6 +298,7 @@ async function handleStart(
       characterId: resolution.candidate.agentId,
       characterName: resolution.candidate.agentName,
       delegationTask: task,
+      initiatorSessionId,
       rootSessionId,
     },
   });
@@ -327,6 +329,7 @@ async function handleStart(
     settled: false,
     executionId: 0,
     lastObservedOrderingIndex: 0,
+    resultVersion: 1,
   };
 
   startBackgroundExecution(delegation, userMessage);
@@ -348,7 +351,7 @@ export async function handleObserve(
   characterId: string,
   initiatorSessionId: string,
 ): Promise<DelegateResult> {
-  const { delegationId, waitSeconds } = input;
+  const { delegationId, waitSeconds, force } = input;
   if (!delegationId) {
     return {
       success: false,
@@ -379,6 +382,33 @@ export async function handleObserve(
   const pendingInteractivePrompts = !delegation.settled && waitValidation.waitMs > 0
     ? await waitForDelegationPausePoint(delegation, waitValidation.waitMs)
     : getDelegationPendingInteractivePrompts(delegation.sessionId);
+
+  const deliveryRecord = delegation.settled
+    ? getDelegationDeliveryRecord(delegationId, delegation.resultVersion)
+    : undefined;
+  if (deliveryRecord && !force && pendingInteractivePrompts.length === 0) {
+    const waitedMs = Date.now() - observeStart;
+    return {
+      success: true,
+      delegationId,
+      sessionId: delegation.sessionId,
+      delegateAgent: delegation.delegateName,
+      running: false,
+      completed: true,
+      elapsed: Date.now() - delegation.startedAt,
+      waitedMs,
+      waitTimedOut: false,
+      deliveryStatus: "already_delivered",
+      deliveryId: deliveryRecord.deliveryId,
+      resultVersion: deliveryRecord.resultVersion,
+      resultHash: deliveryRecord.resultHash,
+      deliveredAt: deliveryRecord.deliveredAt,
+      message:
+        "Delegation result was already auto-delivered as a <delegation-result>. " +
+        "Use the delivered result in context, or call observe with force=true to re-read it.",
+      delegations: buildDelegationsSummary(characterId, initiatorSessionId),
+    };
+  }
 
   // If delegation failed, return the error immediately
   if (delegation.error) {
@@ -438,13 +468,9 @@ export async function handleObserve(
   const isRunning = !delegation.settled;
   const waitedMs = Date.now() - observeStart;
 
-  // ── Prevent duplicate delivery ───────────────────────────────────────────
-  // When observe returns a completed result, the caller already has the full
-  // delegation output. Remove any queued completion notifications from both
-  // the live prompt queue (would be injected as user message in prepareStep)
-  // and the delegation completion store (would appear in system prompt).
-  // Without this, the model sees the result AND a "use observe to read results"
-  // notification, causing it to re-observe or generate a duplicate response.
+  // ── Prevent stale queued delivery ─────────────────────────────────────────
+  // Forced observe intentionally re-reads a result already injected into context.
+  // Drop any stale queued copy so the same completion is not delivered again.
   if (delegation.settled) {
     removeFromQueueByDelegationId(initiatorSessionId, delegationId);
     removeDelegationCompletionById(initiatorSessionId, delegationId);
@@ -468,6 +494,14 @@ export async function handleObserve(
     responsePreviewCount: allResponses.length,
     responsePreviewOmittedCount,
     responsePreviewTruncatedCount,
+    ...(deliveryRecord
+      ? {
+          deliveryId: deliveryRecord.deliveryId,
+          resultVersion: deliveryRecord.resultVersion,
+          resultHash: deliveryRecord.resultHash,
+          deliveredAt: deliveryRecord.deliveredAt,
+        }
+      : {}),
     ...(stepsSince.steps.length > 0
       ? {
           steps: stepsSince.steps.map(({ toolName, summary }) => ({ toolName, summary })),
@@ -623,6 +657,7 @@ export async function handleContinue(
 
   // No active stream to inject into (or queue unavailable): start a new run.
   // The chat route handles message persistence automatically.
+  delegation.resultVersion += 1;
   startBackgroundExecution(delegation, sanitizedFollowUpMessage);
 
   return {

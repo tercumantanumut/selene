@@ -46,8 +46,10 @@ import { toast } from "sonner";
 /** A single part of the multimodal content array sent to threadRuntime.append() */
 export interface ContentPart {
   type: "text" | "image";
+  id?: string;
   text?: string;
   image?: string;
+  displayName?: string;
   contentType?: string;
   localPath?: string;
   filePath?: string;
@@ -287,6 +289,7 @@ export function serializeDocToContentArray(
 
   const parts: ContentPart[] = [];
   let textBuffer = "";
+  let imageIndex = 0;
 
   const flushText = () => {
     const trimmed = textBuffer.trim();
@@ -305,10 +308,13 @@ export function serializeDocToContentArray(
       flushText();
       const attrs = node.attrs as { src?: string } | undefined;
       if (attrs?.src) {
+        imageIndex += 1;
         const metadata = getUploadedImageMetadata(attrs.src);
         parts.push({
           type: "image",
+          id: `editor-inline-image-${imageIndex}`,
           image: attrs.src,
+          displayName: `[Image ${imageIndex}]`,
           contentType: metadata?.contentType,
           localPath: metadata?.localPath,
           filePath: metadata?.filePath,

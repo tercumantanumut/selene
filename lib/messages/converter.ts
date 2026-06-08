@@ -3,6 +3,7 @@ import {
   isInternalAssistantLeakText,
   isInternalToolHistoryLeakText,
 } from "@/lib/messages/internal-tool-history";
+import { isMissingOrPlaceholderToolName } from "@/lib/messages/tool-name-placeholder";
 import type { ContextProvenance } from "@/lib/context-window/scoped-counting-contract";
 import { parseMessageMetadata } from "@/lib/messages/parse-metadata";
 
@@ -15,9 +16,13 @@ interface DBTextContentPart extends ContextProvenance {
 
 interface DBImageContentPart extends ContextProvenance {
   type: "image";
+  id?: string;
   image: string;
+  displayName?: string;
   filename?: string;
   mediaType?: string;
+  inline?: boolean;
+  order?: number;
 }
 
 interface DBFileContentPart extends ContextProvenance {
@@ -206,9 +211,13 @@ interface BuildUIPartsOptions {
 }
 
 type PersistedAttachmentMetadata = {
+  id?: string;
   name?: string;
   contentType?: string;
   url?: string;
+  inline?: boolean;
+  order?: number;
+  kind?: string;
 };
 
 function collectAttachmentMetadataFromContent(content: DBContentPart[]): PersistedAttachmentMetadata[] {
@@ -217,6 +226,9 @@ function collectAttachmentMetadataFromContent(content: DBContentPart[]): Persist
 
   for (const part of content) {
     if (part.type !== "image" && part.type !== "file") {
+      continue;
+    }
+    if (part.type === "image" && part.inline === true) {
       continue;
     }
 
@@ -228,8 +240,12 @@ function collectAttachmentMetadataFromContent(content: DBContentPart[]): Persist
     seen.add(url);
     attachments.push({
       url,
-      name: part.filename,
+      id: part.type === "image" ? part.id : undefined,
+      name: part.type === "image" ? part.displayName ?? part.filename : part.filename,
       contentType: part.mediaType,
+      ...(part.type === "image" && part.inline ? { inline: true } : {}),
+      ...(part.type === "image" && typeof part.order === "number" ? { order: part.order } : {}),
+      ...(part.type === "image" && part.inline ? { kind: "inline-image" } : {}),
     });
   }
 
@@ -300,7 +316,8 @@ function buildUIPartsFromDBContent(
         type: "file",
         mediaType: part.mediaType || "image/jpeg",
         url: part.image,
-        ...(part.filename ? { filename: part.filename } : {}),
+        ...(part.id ? { id: part.id } : {}),
+        ...(part.displayName || part.filename ? { filename: part.displayName || part.filename } : {}),
       });
     } else if (part.type === "file" && part.url) {
       parts.push({
@@ -311,6 +328,17 @@ function buildUIPartsFromDBContent(
       });
     } else if (part.type === "tool-call") {
       if (renderedToolCallIds.has(part.toolCallId)) {
+        continue;
+      }
+      // Boundary filter: drop parts whose toolName is missing or the literal
+      // "tool" placeholder. Such rows can exist from before the streaming-state
+      // fix (or from any future regression) — projecting them as `tool-tool`
+      // round-trips to the model and produces confused reasoning summaries
+      // ("I called a function with a strange name 'tool'…").
+      if (isMissingOrPlaceholderToolName(part.toolName)) {
+        console.warn(
+          `[CONVERTER] Dropping unnamed tool-call ${part.toolCallId} from UI projection (toolName=${JSON.stringify(part.toolName)})`
+        );
         continue;
       }
       const toolResult = toolResults.get(part.toolCallId);
@@ -409,7 +437,15 @@ function buildUIPartsFromDBContent(
     for (const [toolCallId, toolResult] of toolResults) {
       if (renderedToolCallIds.has(toolCallId)) continue;
 
-      const toolName = toolResult.toolName || "tool";
+      // Same boundary filter for orphan results: refuse to synthesize a
+      // `tool-tool` UI part that would round-trip to the model.
+      if (isMissingOrPlaceholderToolName(toolResult.toolName)) {
+        console.warn(
+          `[CONVERTER] Dropping orphan tool-result ${toolCallId} from UI projection (toolName=${JSON.stringify(toolResult.toolName)})`
+        );
+        continue;
+      }
+      const toolName = toolResult.toolName;
       const rawState: ToolInvocationState =
         toolResult.state ||
         (toolResult.errorText ? "output-error" : "output-available");
@@ -458,6 +494,12 @@ function buildMessageCustomMetadata(
   }
   if (dbMeta?.custom?.inspectContext) {
     customMetadata.inspectContext = dbMeta.custom.inspectContext;
+  }
+  if (dbMeta?.custom?.designContext) {
+    customMetadata.designContext = dbMeta.custom.designContext;
+  }
+  if (Array.isArray(dbMeta?.custom?.inlineAttachments) && dbMeta.custom.inlineAttachments.length > 0) {
+    customMetadata.inlineAttachments = dbMeta.custom.inlineAttachments;
   }
 
   const existingAttachments = Array.isArray(dbMeta?.custom?.attachments)

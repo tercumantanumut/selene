@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const syncFolderMocks = vi.hoisted(() => ({
-  getAccessibleSyncFolders: vi.fn(),
+const filesystemMocks = vi.hoisted(() => ({
+  resolveWorkspaceAwarePaths: vi.fn(),
 }));
 
-const filesystemMocks = vi.hoisted(() => ({
-  getActiveWorktreePath: vi.fn(),
-  isOtherWorktreePath: vi.fn(),
+const logManagerMocks = vi.hoisted(() => ({
+  saveTerminalLog: vi.fn(),
 }));
 
 const commandExecutionMocks = vi.hoisted(() => ({
   executeCommandWithValidation: vi.fn(),
   startBackgroundProcess: vi.fn(),
   getBackgroundProcess: vi.fn(),
+  markBackgroundProcessObserved: vi.fn(),
   killBackgroundProcess: vi.fn(),
   listBackgroundProcesses: vi.fn(),
   cleanupBackgroundProcesses: vi.fn(),
@@ -32,19 +32,15 @@ const delegationWaitingMocks = vi.hoisted(() => ({
   registerBackgroundTask: vi.fn(),
 }));
 
-vi.mock("@/lib/vectordb/accessible-sync-folders", () => ({
-  getAccessibleSyncFolders: syncFolderMocks.getAccessibleSyncFolders,
-}));
-
 vi.mock("@/lib/ai/filesystem", () => ({
-  getActiveWorktreePath: filesystemMocks.getActiveWorktreePath,
-  isOtherWorktreePath: filesystemMocks.isOtherWorktreePath,
+  resolveWorkspaceAwarePaths: filesystemMocks.resolveWorkspaceAwarePaths,
 }));
 
 vi.mock("@/lib/command-execution", () => ({
   executeCommandWithValidation: commandExecutionMocks.executeCommandWithValidation,
   startBackgroundProcess: commandExecutionMocks.startBackgroundProcess,
   getBackgroundProcess: commandExecutionMocks.getBackgroundProcess,
+  markBackgroundProcessObserved: commandExecutionMocks.markBackgroundProcessObserved,
   killBackgroundProcess: commandExecutionMocks.killBackgroundProcess,
   listBackgroundProcesses: commandExecutionMocks.listBackgroundProcesses,
   cleanupBackgroundProcesses: commandExecutionMocks.cleanupBackgroundProcesses,
@@ -53,6 +49,10 @@ vi.mock("@/lib/command-execution", () => ({
 vi.mock("@/lib/command-execution/cwd-state", () => ({
   getPersistedCommandCwd: cwdStateMocks.getPersistedCommandCwd,
   setPersistedCommandCwd: cwdStateMocks.setPersistedCommandCwd,
+}));
+
+vi.mock("@/lib/command-execution/log-manager", () => ({
+  saveTerminalLog: logManagerMocks.saveTerminalLog,
 }));
 
 vi.mock("@/lib/command-execution/validator", () => ({
@@ -80,15 +80,12 @@ describe("bash-tool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    syncFolderMocks.getAccessibleSyncFolders.mockResolvedValue([
-      { folderPath: "/workspace" },
-    ]);
-    filesystemMocks.getActiveWorktreePath.mockResolvedValue(null);
-    filesystemMocks.isOtherWorktreePath.mockReturnValue(false);
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue(["/workspace"]);
     cwdStateMocks.getPersistedCommandCwd.mockResolvedValue(null);
     cwdStateMocks.setPersistedCommandCwd.mockResolvedValue(undefined);
     validatorMocks.validateExecutionDirectory.mockResolvedValue({ valid: true, resolvedPath: "/workspace" });
     validatorMocks.validateShellCommand.mockReturnValue({ valid: true });
+    logManagerMocks.saveTerminalLog.mockReturnValue("bash-log-1");
 
     commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
       success: true,
@@ -118,6 +115,121 @@ describe("bash-tool", () => {
       "sess-1",
       "/workspace/app"
     );
+  });
+
+
+
+  it("passes through large foreground output verbatim (stream-guard owns tiering)", async () => {
+    // Bash no longer pre-truncates by character count. Below the executor's
+    // 1MB process-level cap, the full stdout reaches the model untouched and
+    // the downstream `guardToolResultForStreaming` decides whether to slice
+    // based on token count. This test pins the bash-side invariant only.
+    const largeOutput = "docker-layer\n".repeat(400);
+    commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
+      success: true,
+      stdout: largeOutput,
+      stderr: "",
+      exitCode: 0,
+      signal: null,
+      executionTime: 25,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+    });
+
+    const result = await tool.execute(
+      { command: "supabase start" },
+      createToolContext()
+    );
+
+    // No log persistence when the executor didn't truncate.
+    expect(logManagerMocks.saveTerminalLog).not.toHaveBeenCalled();
+    expect(result.logId).toBeUndefined();
+    expect(result.isTruncated).toBe(false);
+    // Full output reaches the result unmodified — no [TRUNCATED] marker.
+    expect(result.stdout).toBe(largeOutput);
+    expect(result.stdout).not.toContain("[TRUNCATED");
+    expect(result.message).toBeUndefined();
+  });
+
+  it("propagates executor-supplied logId and surfaces readLog guidance on hard truncation", async () => {
+    const largeOutput = "Downloading [====>] 1MB/100MB\n".repeat(400);
+    commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
+      success: false,
+      stdout: largeOutput,
+      stderr: "\n[Output size limit exceeded]",
+      exitCode: null,
+      signal: "SIGTERM",
+      error: "Process terminated due to timeout or output limit",
+      executionTime: 25,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      logId: "executor-log-1",
+      isTruncated: true,
+    });
+
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+    });
+
+    const result = await tool.execute(
+      { command: "supabase start" },
+      createToolContext()
+    );
+
+    // The executor already minted the log — bash must NOT mint a second one.
+    expect(logManagerMocks.saveTerminalLog).not.toHaveBeenCalled();
+    expect(result.status).toBe("error");
+    expect(result.logId).toBe("executor-log-1");
+    expect(result.isTruncated).toBe(true);
+    // Bash forwards the executor's stdout verbatim — sizing is the stream-guard's job.
+    expect(result.stdout).toBe(largeOutput);
+    // The retrieval guidance is reattached so the model knows how to pull the full log.
+    expect(result.message).toContain('executeCommand({ command: "readLog", logId: "executor-log-1" })');
+  });
+
+
+  it("tags progress updates with the bash tool name", async () => {
+    const onProgress = vi.fn();
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+      onProgress,
+    });
+
+    commandExecutionMocks.executeCommandWithValidation.mockImplementation(async (options) => {
+      options.onProgress?.({
+        command: "/bin/sh",
+        args: ["-lc", "git status"],
+        cwd: "/workspace",
+        stdout: "partial output",
+        stderr: "",
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      });
+      return {
+        success: true,
+        stdout: "status ok\n__SELENE_CWD__:/workspace/app",
+        stderr: "",
+        exitCode: 0,
+        signal: null,
+        executionTime: 25,
+        startedAt: "2026-01-01T00:00:00.000Z",
+      };
+    });
+
+    await tool.execute({ command: "git status" }, createToolContext());
+
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "tc-1",
+        toolName: "bash",
+        status: "running",
+      })
+    );
 
     if (isWindows) {
       expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalledWith(
@@ -140,12 +252,47 @@ describe("bash-tool", () => {
           command: "/bin/sh",
           cwd: "/workspace",
           characterId: "char-1",
-          args: ["-l"],
-          stdin: expect.stringContaining("git status"),
+          args: ["-lc", expect.stringContaining("git status")],
+          stdin: undefined,
         }),
         ["/workspace"]
       );
     }
+  });
+
+  it("strips the cwd marker but preserves stdout body when executor truncates", async () => {
+    const stdoutBody = "docker-layer\n".repeat(300);
+    commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
+      success: false,
+      stdout: `${stdoutBody}__SELENE_CWD__:/workspace`,
+      stderr: "[Output size limit exceeded]",
+      exitCode: null,
+      signal: null,
+      executionTime: 1000,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      error: "Process terminated due to timeout or output limit",
+      logId: "log-large",
+      isTruncated: true,
+    });
+
+    const tool = createBashTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+    });
+
+    const result = await tool.execute(
+      { command: "supabase start" },
+      createToolContext()
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.logId).toBe("log-large");
+    expect(result.isTruncated).toBe(true);
+    // Cwd marker is stripped, but the body is no longer pre-truncated by bash.
+    expect(result.stdout).not.toContain("__SELENE_CWD__");
+    expect(result.stdout).toContain("docker-layer");
+    expect(result.stderr).toContain("[Output size limit exceeded]");
+    expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-large" })');
   });
 
   it("reuses persisted cwd when available", async () => {
@@ -168,25 +315,55 @@ describe("bash-tool", () => {
     );
   });
 
-  it("blocks dangerous shell removal commands", async () => {
-    validatorMocks.validateShellCommand.mockReturnValue({
-      valid: false,
-      error: "Shell contains a removal command (rm). Use confirmRemoval to proceed.",
+  it("uses workspace-aware paths when persisted cwd is inside a subagent worktree", async () => {
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue([
+      "/worktrees/feature-x",
+      "/repo",
+    ]);
+    cwdStateMocks.getPersistedCommandCwd.mockResolvedValue("/worktrees/feature-x/app");
+    validatorMocks.validateExecutionDirectory.mockResolvedValue({
+      valid: true,
+      resolvedPath: "/worktrees/feature-x/app",
     });
+
+    const tool = createBashTool({
+      sessionId: "subagent-sess-1",
+      characterId: "subagent-char-1",
+    });
+
+    await tool.execute({ command: "pwd" }, createToolContext());
+
+    expect(filesystemMocks.resolveWorkspaceAwarePaths).toHaveBeenCalledWith(
+      "subagent-char-1",
+      "subagent-sess-1"
+    );
+    expect(validatorMocks.validateExecutionDirectory).toHaveBeenCalledWith(
+      "/worktrees/feature-x/app",
+      ["/worktrees/feature-x", "/repo"]
+    );
+    expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/worktrees/feature-x/app",
+        characterId: "subagent-char-1",
+      }),
+      ["/worktrees/feature-x", "/repo"]
+    );
+  });
+
+  it("passes shell removal commands to the executor", async () => {
+    validatorMocks.validateShellCommand.mockReturnValue({ valid: true });
 
     const tool = createBashTool({
       sessionId: "sess-1",
       characterId: "char-1",
     });
 
-    const result = await tool.execute(
+    await tool.execute(
       { command: "rm -rf node_modules" },
       createToolContext()
     );
 
-    expect(result.status).toBe("blocked");
-    expect(result.error).toContain("removal command");
-    expect(commandExecutionMocks.executeCommandWithValidation).not.toHaveBeenCalled();
+    expect(commandExecutionMocks.executeCommandWithValidation).toHaveBeenCalled();
   });
 
 
@@ -406,8 +583,9 @@ describe("bash-tool", () => {
         expect.objectContaining({
           command: "/bin/sh",
           cwd: "/workspace",
-          args: ["-l"],
-          stdin: expect.stringContaining("npm run dev"),
+          args: ["-lc", expect.stringContaining("npm run dev")],
+          stdin: undefined,
+          onBackgroundProcessSettled: expect.any(Function),
         }),
         ["/workspace"]
       );

@@ -23,10 +23,9 @@ describe("Electron bundle (integration)", () => {
     expect(stats.size).toBeGreaterThan(50 * 1024);
   });
 
-  it("includes @huggingface/hub code inline", () => {
+  it("keeps @huggingface/hub as a packaged lazy runtime dependency", () => {
     const content = fs.readFileSync(bundlePath, "utf8");
-    // Check for distinctive code patterns from @huggingface/hub
-    expect(content).toContain("huggingface.co");
+    expect(content).toContain('"standalone","node_modules","@huggingface","hub"');
     // Should NOT have dynamic require for the package
     expect(content).not.toMatch(/require\s*\(\s*["']@huggingface\/hub["']\s*\)/);
   });

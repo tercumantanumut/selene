@@ -74,7 +74,11 @@ const vertexAIVideoSchema = jsonSchema<{
     seed: {
       type: "integer",
       minimum: 0,
-      maximum: 4294967295,
+      // Clamp to int32 max — Anthropic's tool-schema validator rejects
+      // values that overflow int32 ("int too big to convert"). Vertex's API
+      // accepts up to uint32, but the practical seed range below int32 max
+      // is sufficient for deterministic generation.
+      maximum: 2147483647,
       description: "Optional seed for deterministic/reproducible generation.",
     },
     generate_audio: {

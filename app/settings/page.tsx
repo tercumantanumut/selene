@@ -127,11 +127,12 @@ export default function SettingsPage() {
     return false;
   };
 
-  const loadCodexAuth = async (): Promise<boolean> => {
+  const loadCodexAuth = async ({ forceRefresh = false }: { forceRefresh?: boolean } = {}): Promise<boolean> => {
     try {
-      await fetch("/api/auth/codex/refresh", { method: "POST" });
-
-      const response = await fetch(`/api/auth/codex?t=${Date.now()}`);
+      const endpoint = forceRefresh
+        ? `/api/auth/codex?refresh=1&t=${Date.now()}`
+        : `/api/auth/codex?t=${Date.now()}`;
+      const response = await fetch(endpoint);
       if (response.ok) {
         const data = await response.json();
         console.log("[Settings] Loaded Codex auth:", data);
@@ -324,108 +325,63 @@ export default function SettingsPage() {
 
   const handleCodexLogin = async () => {
     setCodexLoading(true);
-    let popup: Window | null = null;
-    let pollInterval: NodeJS.Timeout | null = null;
-    let timeoutId: NodeJS.Timeout | null = null;
-    let messageHandler: ((event: MessageEvent) => void) | null = null;
-    let pollInFlight = false;
     const electronAPI = typeof window !== "undefined" && "electronAPI" in window
       ? (window as unknown as { electronAPI?: { isElectron?: boolean; shell?: { openExternal: (url: string) => Promise<void> } } }).electronAPI
       : undefined;
     const isElectron = !!electronAPI?.isElectron;
 
-    const cleanup = () => {
-      if (pollInterval) clearInterval(pollInterval);
-      if (timeoutId) clearTimeout(timeoutId);
-      if (messageHandler) window.removeEventListener("message", messageHandler);
-      setCodexLoading(false);
-    };
-
     try {
-      if (!isElectron) {
-        const width = 520;
-        const height = 720;
-        const left = window.screenX + (window.outerWidth - width) / 2;
-        const top = window.screenY + (window.outerHeight - height) / 2;
-
-        popup = window.open(
-          "about:blank",
-          "codex-auth",
-          `width=${width},height=${height},left=${left},top=${top}`
-        );
-
-        if (popup) {
-          popup.document.write(`<p style='font-family:sans-serif'>${t("errors.connectingToOpenAI")}</p>`);
-        }
-      }
-
       const authResponse = await fetch("/api/auth/codex/authorize");
       const authData = await authResponse.json();
 
-      if (!authData.success || !authData.url) {
-        popup?.close();
+      if (!authData.success) {
         throw new Error(authData.error || t("errors.authUrlFailed"));
       }
 
-      if (isElectron && electronAPI?.shell?.openExternal) {
-        await electronAPI.shell.openExternal(authData.url);
-      } else if (popup) {
-        popup.location.href = authData.url;
-      } else {
-        toast.error(t("errors.popupBlocked"));
-        cleanup();
+      // Already authenticated — short-circuit success.
+      if (authData.authenticated) {
+        await loadCodexAuth({ forceRefresh: true });
+        setFormState(prev => ({ ...prev, llmProvider: "codex" }));
+        setCodexLoading(false);
         return;
       }
 
-      messageHandler = (event: MessageEvent) => {
-        const allowedOrigins = new Set([
-          window.location.origin,
-          "http://127.0.0.1:1455",
-          "http://localhost:1455",
-        ]);
-        if (!allowedOrigins.has(event.origin)) return;
-
-        if (event.data?.type === "codex-auth") {
-          console.log("[Settings] Received Codex auth message:", event.data);
-          popup?.close();
-          loadCodexAuth().finally(cleanup);
+      if (authData.url) {
+        if (isElectron && electronAPI?.shell?.openExternal) {
+          await electronAPI.shell.openExternal(authData.url);
+        } else {
+          window.open(authData.url, "_blank");
         }
-      };
+      } else {
+        toast.error(authData.message || t("errors.popupBlocked"));
+        setCodexLoading(false);
+        return;
+      }
 
-      window.addEventListener("message", messageHandler);
+      // CLIProxyAPI catches the OAuth callback on its own local server and
+      // writes the credential file when done. We just poll until the file
+      // shows up (or timeout). No postMessage / no localhost:1455 chrome.
+      const deadline = Date.now() + 5 * 60 * 1000;
+      let authenticated = false;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        authenticated = await loadCodexAuth({ forceRefresh: true });
+        if (authenticated) break;
+      }
 
-      pollInterval = setInterval(async () => {
-        if (pollInFlight) return;
-        pollInFlight = true;
-        try {
-          const authenticated = await loadCodexAuth();
-          if (authenticated) {
-            console.log("[Settings] Codex auth confirmed, closing popup...");
-            popup?.close();
-            cleanup();
-            return;
-          }
+      // Mirror the pre-refactor behavior of saveCodexToken(token, true):
+      // a successful Codex login also makes Codex the active LLM provider
+      // so the user lands on it immediately instead of having to flip the
+      // model selector by hand.
+      if (authenticated) {
+        setFormState(prev => ({ ...prev, llmProvider: "codex" }));
+      }
 
-          if (popup?.closed) {
-            console.log("[Settings] Codex popup closed, refreshing auth state...");
-            await new Promise(resolve => setTimeout(resolve, 500));
-            await loadCodexAuth();
-            cleanup();
-          }
-        } finally {
-          pollInFlight = false;
-        }
-      }, 1000);
-
-      timeoutId = setTimeout(() => {
-        console.warn("[Settings] Codex OAuth timeout");
-        popup?.close();
-        cleanup();
-      }, 5 * 60 * 1000);
+      setCodexLoading(false);
     } catch (err) {
       console.error("Codex login failed:", err);
       toast.error(t("errors.loginFailed"));
-      cleanup();
+      setCodexLoading(false);
     }
   };
 
@@ -901,6 +857,7 @@ export default function SettingsPage() {
               section={activeSection}
               formState={formState}
               setFormState={setFormState}
+              reloadSettings={loadSettings}
               antigravityAuth={antigravityAuth}
               antigravityLoading={antigravityLoading}
               onAntigravityLogin={handleAntigravityLogin}

@@ -8,6 +8,7 @@ type ExecuteCommandLiveStatus = "running" | "success" | "error";
 
 export interface ExecuteCommandProgressUpdate {
   toolCallId?: string;
+  toolName?: string;
   command: string;
   args: string[];
   cwd: string;
@@ -21,6 +22,7 @@ export interface ExecuteCommandProgressUpdate {
   message?: string;
   logId?: string;
   isTruncated?: boolean;
+  aborted?: boolean;
   chunkStream?: "stdout" | "stderr";
   chunkText?: string;
 }
@@ -35,7 +37,7 @@ export interface ExecuteOptions {
   args: string[];
   /** Optional stdin payload written to the child process before closing stdin. */
   stdin?: string;
-  /** Working directory - must be within synced folders */
+  /** Working directory. Unsafe mode allows any absolute path. */
   cwd: string;
   /** Character/agent ID for folder validation */
   characterId: string;
@@ -43,8 +45,6 @@ export interface ExecuteOptions {
   timeout?: number;
   /** Maximum output buffer size in bytes (default: 1048576 = 1MB) */
   maxOutputSize?: number;
-  /** Explicit confirmation required for removal commands (rm/rmdir/del/...) */
-  confirmRemoval?: boolean;
   /** Internal use: skip RTK wrapping for this invocation */
   forceDirectExecution?: boolean;
   /** Internal use: retry the command through the user's login shell on Unix. */
@@ -59,8 +59,12 @@ export interface ExecuteOptions {
   windowsVerbatimArguments?: boolean;
   /** Tool call identifier used for live command progress projections. */
   toolCallId?: string;
+  /** Abort signal from the owning AI SDK run/tool call. */
+  abortSignal?: AbortSignal;
   /** Live progress callback for streaming command output into the UI. */
   onProgress?: (update: ExecuteCommandProgressUpdate) => void;
+  /** Called whenever a background process settles. */
+  onBackgroundProcessSettled?: (info: BackgroundProcessInfo) => void;
 }
 
 /**
@@ -106,6 +110,8 @@ export interface ExecuteResult {
   logId?: string;
   /** Whether the output was truncated in context */
   isTruncated?: boolean;
+  /** Whether execution was cancelled by the caller's abort signal. */
+  aborted?: boolean;
   /** Metadata for shell ripgrep compatibility/fallback diagnostics */
   searchMetadata?: ExecuteSearchMetadata;
 }
@@ -128,6 +134,8 @@ export interface ValidationResult {
 export interface ExecuteCommandToolOptions {
   /** Session ID for context */
   sessionId: string;
+  /** User ID for task visibility */
+  userId?: string;
   /** Character/agent ID for folder access */
   characterId?: string | null;
   /** Live command progress callback used while a foreground command is running. */
@@ -172,6 +180,8 @@ interface BashToolResult {
   logId?: string;
   /** Whether the output was truncated in context */
   isTruncated?: boolean;
+  /** Whether execution was cancelled by the caller's abort signal. */
+  aborted?: boolean;
 }
 
 /**
@@ -184,7 +194,7 @@ export interface ExecuteCommandInput {
   args?: string[];
   /** Optional raw stdin payload for commands that read from stdin */
   stdin?: string;
-  /** Working directory (must be within synced folders) */
+  /** Working directory. Unsafe mode allows any absolute path. */
   cwd?: string;
   /** Timeout in milliseconds */
   timeout?: number;
@@ -192,8 +202,6 @@ export interface ExecuteCommandInput {
   background?: boolean;
   /** Process ID to check status of a background process (instead of executing a new command) */
   processId?: string;
-  /** Explicit confirmation required for removal commands (rm/rmdir/del/...) */
-  confirmRemoval?: boolean;
   /** When command==="readLog": first N lines of the log */
   head?: number;
   /** When command==="readLog": last N lines of the log */
@@ -232,6 +240,8 @@ export interface ExecuteCommandToolResult {
   logId?: string;
   /** Whether the output was truncated in context */
   isTruncated?: boolean;
+  /** Whether execution was cancelled by the caller's abort signal. */
+  aborted?: boolean;
 }
 
 /**
@@ -270,6 +280,8 @@ export interface BackgroundProcessInfo {
   cwd: string;
   /** When the process started */
   startedAt: number;
+  /** When the process finished or stopped */
+  settledAt?: number | null;
   /** Whether the process is still running */
   running: boolean;
   /** Accumulated stdout */
@@ -286,6 +298,12 @@ export interface BackgroundProcessInfo {
   timeoutId: NodeJS.Timeout | null;
   /** Log ID for persistent storage */
   logId?: string;
+  /** Last time a running background log snapshot was saved */
+  lastLogSnapshotAt?: number;
+  /** Whether the tool loop has already observed this process while it was running */
+  observedWhileRunning?: boolean;
+  /** Last time the process status was observed by a tool call */
+  lastObservedAt?: number;
 }
 
 /**

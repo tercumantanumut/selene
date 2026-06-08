@@ -200,4 +200,71 @@ describe("sanitizeMessagesForInit", () => {
       }),
     ]);
   });
+
+  it("preserves rich-editor inline image ordering without attachment previews", () => {
+    const uiMessage = toCreateMessageWithAttachmentMetadata({
+      role: "user",
+      content: [
+        { type: "text", text: "intro" },
+        {
+          type: "image",
+          id: "editor-inline-image-1",
+          image: "/api/media/sessions/sess-1/uploads/hero.png",
+          displayName: "[Image 1]",
+          contentType: "image/png",
+        },
+        { type: "text", text: "middle" },
+        {
+          type: "image",
+          id: "editor-inline-image-2",
+          image: "/api/media/sessions/sess-1/uploads/detail.jpg",
+          displayName: "[Image 2]",
+          contentType: "image/jpeg",
+        },
+        { type: "text", text: "outro" },
+      ],
+      attachments: [],
+    } as any);
+
+    expect(uiMessage.parts).toEqual([
+      { type: "text", text: "intro" },
+      {
+        type: "file",
+        id: "editor-inline-image-1",
+        url: "/api/media/sessions/sess-1/uploads/hero.png",
+        filename: "[Image 1]",
+        mediaType: "image/png",
+      },
+      { type: "text", text: "middle" },
+      {
+        type: "file",
+        id: "editor-inline-image-2",
+        url: "/api/media/sessions/sess-1/uploads/detail.jpg",
+        filename: "[Image 2]",
+        mediaType: "image/jpeg",
+      },
+      { type: "text", text: "outro" },
+    ]);
+    expect((uiMessage.metadata as any)?.custom?.attachments).toBeUndefined();
+    expect((uiMessage.metadata as any)?.custom?.inlineAttachments).toEqual([
+      expect.objectContaining({
+        id: "editor-inline-image-1",
+        name: "[Image 1]",
+        url: "/api/media/sessions/sess-1/uploads/hero.png",
+        contentType: "image/png",
+        inline: true,
+        order: 1,
+        kind: "inline-image",
+      }),
+      expect.objectContaining({
+        id: "editor-inline-image-2",
+        name: "[Image 2]",
+        url: "/api/media/sessions/sess-1/uploads/detail.jpg",
+        contentType: "image/jpeg",
+        inline: true,
+        order: 2,
+        kind: "inline-image",
+      }),
+    ]);
+  });
 });

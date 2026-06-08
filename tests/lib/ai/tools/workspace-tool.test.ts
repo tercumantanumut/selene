@@ -24,6 +24,12 @@ const syncServiceMocks = vi.hoisted(() => ({
   removeSyncFolder: vi.fn(),
 }));
 
+const workspaceMetadataMocks = vi.hoisted(() => ({
+  resolveWorkspaceInfoFromSession: vi.fn(async (session: { metadata?: { workspaceInfo?: unknown } }) => session.metadata?.workspaceInfo ?? null),
+  writeWorkspaceInfo: vi.fn(),
+  updateWorkspaceLifecycleMetadata: vi.fn(),
+}));
+
 vi.mock("child_process", () => ({
   execFile: childProcessMocks.execFile,
 }));
@@ -45,6 +51,8 @@ vi.mock("@/lib/vectordb/sync-service", () => ({
   removeSyncFolder: syncServiceMocks.removeSyncFolder,
 }));
 
+vi.mock("@/lib/workspace/metadata", () => workspaceMetadataMocks);
+
 import { createWorkspaceTool } from "@/lib/ai/tools/workspace-tool";
 
 describe("workspace-tool create action", () => {
@@ -56,6 +64,16 @@ describe("workspace-tool create action", () => {
 
     syncServiceMocks.addSyncFolder.mockResolvedValue("sync-folder-1");
     syncServiceMocks.setSyncFolderStatus.mockResolvedValue(undefined);
+
+    workspaceMetadataMocks.writeWorkspaceInfo.mockImplementation(async (_sessionId: string, workspaceInfo: Record<string, unknown>) => workspaceInfo);
+    workspaceMetadataMocks.updateWorkspaceLifecycleMetadata.mockImplementation(async (_sessionId: string, patch: Record<string, unknown>) => ({
+      type: "worktree",
+      branch: "feature/windows-path-fix",
+      baseBranch: "main",
+      worktreePath: "C:\\repo\\worktrees\\feature-windows-path-fix",
+      status: "active",
+      ...patch,
+    }));
 
     fsMocks.existsSync.mockReturnValue(false);
     fsMocks.mkdirSync.mockReturnValue(undefined);
@@ -119,6 +137,14 @@ describe("workspace-tool create action", () => {
     // The redundant "set status to synced" call was removed — addSyncFolder
     // now inserts workspace folders with status="synced" directly.
     expect(syncServiceMocks.setSyncFolderStatus).not.toHaveBeenCalled();
+    expect(workspaceMetadataMocks.writeWorkspaceInfo).toHaveBeenCalledWith(
+      "sess-1",
+      expect.objectContaining({
+        type: "worktree",
+        branch: "feature/windows-path-fix",
+      }),
+      "workspace-tool:create",
+    );
   });
 
   it("returns a clear error when git rev-parse says repoPath is not a repository", async () => {
@@ -141,5 +167,46 @@ describe("workspace-tool create action", () => {
     expect(result.status).toBe("error");
     expect(String(result.error || "")).toContain("not a valid git repository");
     expect(String(result.error || "")).toContain("fatal: not a git repository");
+  });
+
+  it("routes update-metadata through the lifecycle helper", async () => {
+    dbMocks.getSession.mockResolvedValue({
+      id: "sess-1",
+      metadata: {
+        workspaceInfo: {
+          type: "worktree",
+          branch: "feature/windows-path-fix",
+          baseBranch: "main",
+          worktreePath: "C:\\repo\\worktrees\\feature-windows-path-fix",
+          status: "active",
+        },
+      },
+    });
+
+    const tool = createWorkspaceTool({
+      sessionId: "sess-1",
+      characterId: "char-1",
+      userId: "user-1",
+    });
+
+    const result = await (tool as any).execute({
+      action: "update-metadata",
+      prUrl: "https://example.com/pr/1",
+      prNumber: 1,
+      prStatus: "open",
+      status: "pr-open",
+    });
+
+    expect(result.status).toBe("success");
+    expect(workspaceMetadataMocks.updateWorkspaceLifecycleMetadata).toHaveBeenCalledWith(
+      "sess-1",
+      expect.objectContaining({
+        prUrl: "https://example.com/pr/1",
+        prNumber: 1,
+        prStatus: "open",
+        status: "pr-open",
+      }),
+      "workspace-tool:update-metadata",
+    );
   });
 });

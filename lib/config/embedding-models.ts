@@ -81,6 +81,16 @@ export const OPENROUTER_EMBEDDING_MODELS: EmbeddingModelInfo[] = [
 /**
  * Local embedding models (Transformers.js / ONNX).
  * These run entirely on the user's machine.
+ *
+ * COMPATIBILITY CONTRACT:
+ * Every model listed here MUST load via `pipeline("feature-extraction", id, { dtype: "fp32" })`
+ * with mean pooling + normalize (see lib/ai/local-embeddings.ts). That requires a standard
+ * arch supported by @huggingface/transformers (bert, xlm-roberta, qwen3, etc.) AND an ONNX
+ * export with conventional filenames in /onnx (model.onnx + optional model.onnx_data).
+ * Models that need `AutoModel.from_pretrained` (e.g. EmbeddingGemma's bidir-attention variant)
+ * or `trust_remote_code` (e.g. nomic-embed-text-v2-moe) do NOT belong here.
+ *
+ * Sizes below are fp32 download sizes (model.onnx + model.onnx_data).
  */
 export const LOCAL_EMBEDDING_MODELS: EmbeddingModelInfo[] = [
   {
@@ -93,12 +103,58 @@ export const LOCAL_EMBEDDING_MODELS: EmbeddingModelInfo[] = [
     recommended: true,
   },
   {
+    id: "mixedbread-ai/mxbai-embed-large-v1",
+    name: "mxbai-embed-large v1",
+    dimensions: 1024,
+    provider: "local",
+    size: "1.3GB",
+    description: "English upgrade over BGE Large (same 1024-dim)",
+  },
+  {
+    id: "Snowflake/snowflake-arctic-embed-l-v2.0",
+    name: "Arctic Embed L v2.0",
+    dimensions: 1024,
+    provider: "local",
+    size: "2.3GB",
+    description: "Multilingual (74 langs incl. Turkish), MRL→256",
+  },
+  {
+    id: "onnx-community/Qwen3-Embedding-0.6B-ONNX",
+    name: "Qwen3 Embedding 0.6B",
+    dimensions: 1024,
+    provider: "local",
+    size: "2.4GB",
+    description: "Multilingual (100+ langs), 32K context",
+  },
+  {
+    id: "onnx-community/gte-multilingual-base",
+    name: "GTE Multilingual Base",
+    dimensions: 768,
+    provider: "local",
+    size: "1.3GB",
+    description: "Lighter multilingual (70+ langs), Alibaba GTE",
+  },
+  {
     id: "Xenova/bge-base-en-v1.5",
     name: "BGE Base",
     dimensions: 768,
     provider: "local",
     size: "440MB",
     description: "Good balance",
+  },
+  // EXPERIMENTAL — model card ships a `sentence_embedding` ONNX output meant for
+  // `AutoModel.from_pretrained(...).sentence_embedding`. Our `pipeline("feature-extraction")`
+  // path with mean pooling + normalize *should* still produce usable vectors against
+  // the standard `last_hidden_state`, but this has not been validated end-to-end.
+  // Smoke-test before promoting to a default: run `runValidationEmbedding({ modelId: "..." })`
+  // and verify dims === 384 and cosine sims look sensible against a known query.
+  {
+    id: "onnx-community/granite-embedding-30m-english-ONNX",
+    name: "Granite Embedding 30M (Experimental)",
+    dimensions: 384,
+    provider: "local",
+    size: "120MB",
+    description: "[Needs smoke test] IBM Granite 30M, English, smallest viable",
   },
   {
     id: "Xenova/bge-small-en-v1.5",
@@ -182,17 +238,27 @@ export const RERANKER_MODELS: RerankerModelInfo[] = [
     type: "cross-encoder",
     description: "Higher quality, slower",
   },
+  // NOTE: `BAAI/bge-reranker-base` and `BAAI/bge-reranker-large` were removed —
+  // their HF repos ship only PyTorch weights and no ONNX, so Transformers.js
+  // cannot load them. Existing user configs pointing to those IDs are aliased
+  // to the ONNX variants below by `normalizeRerankModelId()` in reranker.ts.
   {
-    id: "BAAI/bge-reranker-base",
-    name: "BGE Reranker Base",
+    id: "onnx-community/bge-reranker-base-ONNX",
+    name: "BGE Reranker Base (ONNX)",
     type: "cross-encoder",
-    description: "Good general-purpose reranker",
+    description: "Multilingual XLM-RoBERTa, official ONNX export",
   },
   {
-    id: "BAAI/bge-reranker-large",
-    name: "BGE Reranker Large",
+    id: "onnx-community/bge-reranker-v2-m3-ONNX",
+    name: "BGE Reranker v2 m3",
     type: "cross-encoder",
-    description: "Highest quality reranker",
+    description: "Multilingual successor to BGE Reranker Large",
+  },
+  {
+    id: "Xenova/ms-marco-MiniLM-L-4-v2",
+    name: "MS MARCO MiniLM L-4 v2",
+    type: "cross-encoder",
+    description: "Smallest cross-encoder (~77MB), fastest",
   },
 ];
 

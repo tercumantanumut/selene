@@ -15,7 +15,7 @@
  * resolved `scopedPlugins` and `pluginRoots`.
  */
 
-import { tool, jsonSchema, type Tool } from "ai";
+import { type Tool } from "ai";
 import type { ExecuteCommandProgressUpdate } from "@/lib/command-execution/types";
 import {
   createRetrieveFullContentTool,
@@ -48,24 +48,12 @@ import {
 } from "@/lib/plugins/hook-integration";
 import { guardToolResultForStreaming } from "@/lib/ai/tool-result-stream-guard";
 import {
-  buildMissingSdkPassthroughOutput,
-  normalizeSdkPassthroughOutput,
-} from "./sdk-passthrough-normalizer";
-import { sanitizeToolResultForBase64, attachMediaRefs } from "@/lib/media/base64-extract";
-import {
   normalizeWebSearchQuery,
   getWebSearchSourceCount,
   buildWebSearchLoopGuardResult,
   normalizeReadFileInputArgs,
   WEB_SEARCH_NO_RESULT_GUARD,
 } from "./content-sanitizer";
-import { mcpContextStore } from "@/lib/ai/providers/mcp-context-store";
-
-const SDK_PASSTHROUGH_LARGE_INPUT_BYTES = (() => {
-  const parsed = Number(process.env.SDK_PASSTHROUGH_LARGE_INPUT_BYTES);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 262_144;
-})();
-
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
 interface ToolsBuildContext {
@@ -89,15 +77,6 @@ interface ToolsBuildContext {
   workflowPromptContextInput: import("@/lib/agents/workflows").WorkflowPromptContextInput | null;
   /** LLM provider name — used to register SDK agent passthrough tools for claudecode */
   provider?: string;
-  /**
-   * Count of image content parts that `prepareMessagesForRequest` replaced
-   * with describeImage-prompting placeholders because the outbound provider
-   * rejects inline images. When > 0 we promote `describeImage` into the
-   * initial active tool set so the model can immediately invoke it instead
-   * of having to rediscover it via `searchTools` (which a thinking-mode
-   * request with no vision support would otherwise need to do mid-turn).
-   */
-  droppedImagesForProvider?: number;
   /**
    * Client-forwarded active design workspace preview theme (from the Zustand
    * `useDesignWorkspaceStore`). Forwarded to `createDesignWorkspaceTool`
@@ -166,19 +145,6 @@ export async function buildToolsForRequest(
       )
     : undefined;
 
-  // If the outbound provider rejected inline images, message-prep replaced each
-  // one with a placeholder that names `describeImage` as the recovery path.
-  // Auto-authorize the tool for this request even if the agent's enabledTools
-  // list (or the default character template) doesn't include it — otherwise
-  // the placeholder instructions dead-end at "tool not available". This is
-  // scoped to the single request: describeImage is NOT persisted to the
-  // agent's enabledTools, it's only added to the in-memory filter set.
-  const droppedImagesTriggersDescribeImage =
-    (ctx.droppedImagesForProvider ?? 0) > 0;
-  if (droppedImagesTriggersDescribeImage && agentEnabledTools) {
-    agentEnabledTools.add("describeImage");
-  }
-
   const registry = ToolRegistry.getInstance();
 
   // First, get non-deferred tools to build the initial active set.
@@ -223,42 +189,6 @@ export async function buildToolsForRequest(
     initialActiveTools.add("executeCommand");
     console.log(
       "[CHAT API] Companion-tool enforcement: promoted executeCommand to always-loaded because bash is loaded"
-    );
-  }
-
-  // describeImage promotion: when the outbound provider rejected inline
-  // images, message-prep replaced each one with a placeholder that names
-  // `describeImage` as the recovery path.  Promote the tool into the
-  // initial active set so the model can call it on the same turn without
-  // a searchTools round-trip — otherwise DeepSeek-in-thinking-mode would
-  // have to emit a discovery tool call just to invoke the tool the
-  // placeholder already told it to use.
-  //
-  // Note: `agentEnabledTools` was already widened above to include
-  // `describeImage` when this trigger fires, so `allTools.describeImage`
-  // is populated even for agents whose default template (or persisted
-  // enabledTools) omits it.
-  const droppedImagesForProvider = ctx.droppedImagesForProvider ?? 0;
-  if (
-    droppedImagesForProvider > 0 &&
-    allTools.describeImage &&
-    !initialActiveTools.has("describeImage")
-  ) {
-    initialActiveTools.add("describeImage");
-    const autoAuthorized =
-      droppedImagesTriggersDescribeImage &&
-      !enabledTools?.includes("describeImage");
-    console.log(
-      `[CHAT API] Companion-tool enforcement: promoted describeImage to always-loaded ` +
-        `because provider=${ctx.provider ?? "unknown"} rejected ${droppedImagesForProvider} image part(s)` +
-        `${autoAuthorized ? " (auto-authorized for this request — not in agent enabledTools)" : ""}`
-    );
-  } else if (droppedImagesForProvider > 0 && !allTools.describeImage) {
-    // Tool is disabled by env var or factory failure — log loudly so we can
-    // diagnose. Without the tool, the placeholder's instruction dead-ends.
-    console.warn(
-      `[CHAT API] describeImage is NOT available despite ${droppedImagesForProvider} dropped image(s); ` +
-        `placeholder instructions will dead-end. Check that the tool is not disabled by env.`
     );
   }
 
@@ -326,6 +256,7 @@ export async function buildToolsForRequest(
     ...(allTools.executeCommand && {
       executeCommand: createExecuteCommandTool({
         sessionId,
+        userId,
         characterId: characterId || null,
         onProgress: onExecuteCommandProgress,
       }),
@@ -333,6 +264,7 @@ export async function buildToolsForRequest(
     ...(allTools.bash && {
       bash: createBashTool({
         sessionId,
+        userId,
         characterId: characterId || null,
         onProgress: onExecuteCommandProgress,
       }),
@@ -522,150 +454,12 @@ export async function buildToolsForRequest(
     ...customComfyUIToolResult.allTools,
   };
 
-  // ── Claude Agent SDK passthrough tools ─────────────────────────────────────
-  // When using the claudecode provider, the SDK agent streams back tool_use
-  // blocks for its built-in tools (Bash, Read, Write, etc.) and Selene MCP
-  // tools (prefixed as mcp__selene-platform__<name>). The Vercel AI SDK
-  // validates tool names against the tools map and rejects unknown ones.
-  // These passthrough tools have an immediate no-op execute so the tool
-  // lifecycle completes (UI shows "completed"). Loop prevention is handled
-  // in route.ts via stopWhen(1) for claudecode provider.
-  const sdkPassthroughNames = new Set<string>();
-  const mcpPassthroughNames = new Set<string>();
-
-  if (ctx.provider === "claudecode") {
-    const createSdkPassthroughTool = (registeredToolName: string): Tool =>
-      tool({
-        description: "Claude Agent SDK passthrough tool (executed internally by the SDK agent)",
-        inputSchema: jsonSchema<Record<string, unknown>>({
-          type: "object",
-          additionalProperties: true,
-        }),
-        // Resolve the real SDK tool output from the per-request bridge.
-        // Fallback to passthrough marker only if no bridged output arrives in time.
-        execute: async (args, options) => {
-          const serializedArgs = (() => {
-            try {
-              return JSON.stringify(args ?? {});
-            } catch {
-              return "";
-            }
-          })();
-          const largeInputMetadata =
-            serializedArgs.length > SDK_PASSTHROUGH_LARGE_INPUT_BYTES
-              ? {
-                  _sdkLargeInput: true,
-                  _sdkLargeInputBytes: serializedArgs.length,
-                  _sdkLargeInputPreview: serializedArgs.slice(0, 2_000),
-                }
-              : null;
-
-          const toolCallId =
-            options && typeof options === "object" && "toolCallId" in options &&
-            typeof (options as { toolCallId?: unknown }).toolCallId === "string"
-              ? (options as { toolCallId: string }).toolCallId
-              : "";
-
-          const abortSignal =
-            options && typeof options === "object" && "abortSignal" in options &&
-            (options as { abortSignal?: unknown }).abortSignal instanceof AbortSignal
-              ? (options as { abortSignal: AbortSignal }).abortSignal
-              : undefined;
-
-          const bridge = mcpContextStore.getStore()?.sdkToolResultBridge;
-          if (bridge && toolCallId) {
-            // MCP tools (delegateToSubagent, etc.) are executed by the MCP
-            // server and can run arbitrarily long — never time them out.
-            // SDK agent tools (Task, Agent, etc.) also run long.
-            const isLongRunningTool =
-              mcpPassthroughNames.has(registeredToolName) ||
-              registeredToolName === "Task" ||
-              registeredToolName === "Agent" ||
-              registeredToolName === "TaskCreate" ||
-              registeredToolName === "TaskGet" ||
-              registeredToolName === "TaskUpdate" ||
-              registeredToolName === "TaskList";
-
-            try {
-              const resolved = await bridge.waitFor(toolCallId, {
-                // Long-running tools (SDK agents, MCP tools) can run well beyond
-                // the default 5-minute passthrough timeout; keep waiting unless aborted.
-                timeoutMs: isLongRunningTool ? null : 300_000,
-                abortSignal,
-              });
-              if (resolved) {
-                // Strip any base64 image/document envelopes (Anthropic shape)
-                // emitted by SDK-native built-ins like Read before the payload
-                // reaches the AI SDK executor. This protects the current turn's
-                // model-facing context, not just persisted history.
-                const { sanitized, mediaRefs } = await sanitizeToolResultForBase64(
-                  resolved.output,
-                  { sessionId, role: "generated" }
-                );
-                const normalized = normalizeSdkPassthroughOutput(
-                  resolved.toolName || registeredToolName,
-                  sanitized,
-                  args
-                );
-                const withMediaRefs = attachMediaRefs(normalized, mediaRefs);
-                if (largeInputMetadata) {
-                  return { ...withMediaRefs, ...largeInputMetadata };
-                }
-                return withMediaRefs;
-              }
-              console.warn(
-                `[CHAT API] SDK passthrough wait ended without result: ${toolCallId} tool=${registeredToolName}`
-              );
-              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
-                reason: `No bridged SDK tool result arrived for toolCallId=${toolCallId}. The underlying tool likely failed before publishing a structured result.`,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.warn(
-                `[CHAT API] SDK passthrough bridge wait failed: toolCallId=${toolCallId} tool=${registeredToolName} bridge=sdkToolResultBridge error=${message}`
-              );
-              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
-                reason: `SDK passthrough bridge wait failed for toolCallId=${toolCallId}: ${message}`,
-              });
-            }
-          }
-
-          return { _sdkPassthrough: true, ...(largeInputMetadata ?? {}) };
-        },
-      });
-
-    // (a) SDK built-in tools (Bash, Read, Write, etc.)
-    const SDK_AGENT_TOOLS = [
-      "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep",
-      "Task", "WebFetch", "WebSearch", "NotebookEdit", "TodoRead",
-      "TodoWrite", "AskFollowupQuestion",
-      // Additional Claude Code tools that stream during agent runs:
-      "AskUserQuestion", "Agent", "TaskOutput", "TaskStop",
-      "Skill", "EnterPlanMode", "ExitPlanMode",
-      "TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
-      "EnterWorktree",
-    ] as const;
-
-    for (const name of SDK_AGENT_TOOLS) {
-      if (!allToolsWithMCP[name]) {
-        allToolsWithMCP[name] = createSdkPassthroughTool(name);
-        sdkPassthroughNames.add(name);
-      }
-    }
-
-    // (b) Selene platform MCP tools — the SDK agent calls these via the
-    // "selene-platform" MCP server, which handles real execution. Replace
-    // the original tool entries with passthrough versions so the Vercel AI
-    // SDK doesn't double-execute. The mcp__<server>__ prefix is stripped
-    // in normalizeClaudeSdkToolName so tool names arrive unprefixed.
-    const existingToolNames = Object.keys(allToolsWithMCP);
-    for (const name of existingToolNames) {
-      if (sdkPassthroughNames.has(name)) continue;
-      allToolsWithMCP[name] = createSdkPassthroughTool(name);
-      sdkPassthroughNames.add(name);
-      mcpPassthroughNames.add(name);
-    }
-  }
+  // Claude Code no longer goes through the Agent SDK — with the CLIProxyAPI
+  // bridge it consumes the same `tools` map as every other provider, with
+  // real descriptions and real executors. The previous SDK-passthrough block
+  // (which stamped every tool with "passthrough tool" and routed execution
+  // through an in-process tool-result bridge) was Agent-SDK-era glue and has
+  // been removed.
 
   // Wrap tools with plugin hooks and streaming guardrails.
   const hasPreHooks = getRegisteredHooks("PreToolUse").length > 0;
@@ -680,14 +474,6 @@ export async function buildToolsForRequest(
   let webSearchDisableReason: string | null = null;
   let webSearchDisableLogged = false;
 
-  // executeCommand oversized-output loop guard
-  let consecutiveOversizedExecCommands = 0;
-  let execCommandDisabledByLoopGuard = false;
-  let execCommandDisableReason: string | null = null;
-  const EXEC_COMMAND_OVERSIZED_LIMIT = 2;
-  /** logIds from oversized results, surfaced in the disable message so the
-   *  model can retrieve slices via readLog instead of re-running commands. */
-  const oversizedExecLogIds: string[] = [];
 
   for (const [toolId, originalTool] of Object.entries(allToolsWithMCP)) {
     if (!originalTool.execute) {
@@ -714,32 +500,6 @@ export async function buildToolsForRequest(
           );
         }
 
-        // executeCommand oversized-output loop guard (pre-execution check)
-        if ((toolId === "executeCommand" || toolId === "bash") && execCommandDisabledByLoopGuard) {
-          console.warn(
-            `[CHAT API] ${toolId} disabled for remaining response (${execCommandDisableReason ?? "unknown reason"})`
-          );
-          // Build the recovery hint with the readLog escape hatch and explicit
-          // logIds so the model can retrieve slices instead of looping.
-          const logIdList = oversizedExecLogIds.length > 0
-            ? ` Previous log IDs: ${oversizedExecLogIds.join(", ")}.`
-            : "";
-          const executeCommandLoaded =
-            initialActiveTools.has("executeCommand") || discoveredTools.has("executeCommand");
-          const step0 = executeCommandLoaded
-            ? ""
-            : ` First, load executeCommand with: searchTools({ query: "select:executeCommand" }). Then, `;
-          return {
-            status: "error",
-            error:
-              `${toolId} has been temporarily disabled for this response ` +
-              `(${execCommandDisableReason}). ` +
-              `To recover without re-running:${step0} use ` +
-              `executeCommand({ command: "readLog", logId: "<id>" }) to retrieve slices ` +
-              `of the previous output.${logIdList} ` +
-              `Or, re-run with head/tail to limit output, or use a compact reporter.`,
-          };
-        }
 
         if (toolId === "webSearch") {
           const normalizedQuery = normalizeWebSearchQuery(normalizedArgs.query);
@@ -858,31 +618,6 @@ export async function buildToolsForRequest(
             consecutiveZeroResultWebSearches = 0;
           }
 
-          // Shell-command oversized-output loop guard (executeCommand + bash)
-          if (toolId === "executeCommand" || toolId === "bash") {
-            if (guardedResult.blocked) {
-              consecutiveOversizedExecCommands += 1;
-              // Collect logId from the raw result so the disable message can
-              // list explicit retrieval targets for the model.
-              const rawLogId =
-                rawResult && typeof rawResult === "object" && !Array.isArray(rawResult)
-                  ? (rawResult as Record<string, unknown>).logId
-                  : undefined;
-              if (typeof rawLogId === "string" && rawLogId.length > 0) {
-                oversizedExecLogIds.push(rawLogId);
-              }
-              if (consecutiveOversizedExecCommands >= EXEC_COMMAND_OVERSIZED_LIMIT) {
-                execCommandDisableReason =
-                  `${consecutiveOversizedExecCommands} consecutive oversized shell command results`;
-                execCommandDisabledByLoopGuard = true;
-                console.warn(
-                  `[CHAT API] ${toolId} loop guard triggered (${execCommandDisableReason})`
-                );
-              }
-            } else {
-              consecutiveOversizedExecCommands = 0;
-            }
-          }
 
           // PostToolUse: fire-and-forget
           if (hasPostHooks) {
@@ -936,13 +671,6 @@ export async function buildToolsForRequest(
       `pre:${hasPreHooks}, post:${hasPostHooks}, failure:${hasFailureHooks})`
   );
 
-  // Build the initial activeTools array.
-  // SDK agent passthrough tools must always be active so the Vercel AI SDK
-  // accepts tool_use blocks from the SDK agent on any step.
-  const sdkPassthroughToolNames = ctx.provider === "claudecode"
-    ? Object.keys(allToolsWithMCP).filter((name) => sdkPassthroughNames.has(name))
-    : [];
-
   const initialActiveToolNames = useDeferredLoading
     ? [
         ...new Set([
@@ -950,7 +678,6 @@ export async function buildToolsForRequest(
           ...previouslyDiscoveredTools,
           ...mcpToolResult.alwaysLoadToolIds,
           ...customComfyUIToolResult.alwaysLoadToolIds,
-          ...sdkPassthroughToolNames,
         ]),
       ]
     : Object.keys(allToolsWithMCP);

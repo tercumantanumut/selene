@@ -9,13 +9,13 @@ import { tool, jsonSchema, type ToolExecutionOptions } from "ai";
 import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 import fs from "fs/promises";
 import path from "path";
-import { getAccessibleSyncFolders } from "@/lib/vectordb/accessible-sync-folders";
-import { getActiveWorktreePath, isOtherWorktreePath } from "@/lib/ai/filesystem";
+import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import {
     executeCommandWithValidation,
     startBackgroundProcess,
     getBackgroundProcess,
-    killBackgroundProcess,
+    markBackgroundProcessObserved,
     listBackgroundProcesses,
     cleanupBackgroundProcesses,
 } from "@/lib/command-execution";
@@ -23,6 +23,11 @@ import { readTerminalLog } from "@/lib/command-execution/log-manager";
 import { sliceLogText } from "@/lib/ai/log-slice";
 import { recordRetrieval } from "@/lib/ai/output-stub-telemetry";
 import { registerBackgroundTask } from "@/app/api/chat/delegation-waiting";
+import {
+    handleBackgroundProcessSettled,
+    killTrackedBackgroundProcess,
+    registerBackgroundProcessTask,
+} from "@/lib/background-tasks/background-process-task";
 import type {
     ExecuteCommandToolOptions,
     ExecuteCommandInput,
@@ -63,6 +68,28 @@ function stripOuterQuotes(value: string): string {
         return trimmed.slice(1, -1).trim();
     }
     return trimmed;
+}
+
+function logRetrievalGuidance(logId?: string): string {
+    return logId
+        ? ` Use executeCommand({ command: "readLog", logId: "${logId}" }) for full output.`
+        : "";
+}
+
+function formatBackgroundListMetadata(processInfo: {
+    logId?: string;
+    exitCode?: number | null;
+    startedAt?: string;
+    settledAt?: string;
+    cwd?: string;
+}): string {
+    const metadata: string[] = [];
+    if (processInfo.logId) metadata.push(`logId=${processInfo.logId}`);
+    if (processInfo.exitCode !== undefined) metadata.push(`exitCode=${processInfo.exitCode}`);
+    if (processInfo.startedAt) metadata.push(`startedAt=${processInfo.startedAt}`);
+    if (processInfo.settledAt) metadata.push(`settledAt=${processInfo.settledAt}`);
+    if (processInfo.cwd) metadata.push(`cwd=${processInfo.cwd}`);
+    return metadata.length > 0 ? ` ${metadata.join(" ")}` : "";
 }
 
 function normalizeCommandName(command: string): string {
@@ -345,14 +372,6 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
             type: "string",
             description: "The log ID to read when command is 'readLog'.",
         },
-        head: {
-            type: "number",
-            description: "readLog only: return the first N lines of the log.",
-        },
-        tail: {
-            type: "number",
-            description: "readLog only: return the last N lines of the log.",
-        },
         range: {
             type: "array",
             items: { type: "number" },
@@ -361,16 +380,11 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
             description:
                 "readLog only: 1-indexed inclusive [startLine, endLine] range. Example: [400, 500].",
         },
-        grep: {
-            type: "string",
-            description:
-                "readLog only: regex pattern to search within the log. Returns matching lines with 2 lines of context each. Capped at 200 matches.",
-        },
-        confirmRemoval: {
-            type: "boolean",
-            description:
-                "Required for removal commands (rm/rmdir/del/erase/rd). Set true only when deletion is explicitly intended.",
-        },
+        // Legacy readLog fields remain accepted for saved calls and UI defaults,
+        // but range is the only documented retrieval mode.
+        head: { type: "number" },
+        tail: { type: "number" },
+        grep: { type: "string" },
     },
     required: [],
     additionalProperties: false,
@@ -381,7 +395,7 @@ const executeCommandSchema = jsonSchema<ExecuteCommandInput & { logId?: string }
  * Create the executeCommand AI tool
  */
 export function createExecuteCommandTool(options: ExecuteCommandToolOptions) {
-    const { characterId, sessionId, onProgress } = options;
+    const { characterId, sessionId, userId, onProgress } = options;
 
     return tool({
         description: `Execute shell commands safely within synced directories. Supports foreground and background execution.
@@ -401,19 +415,14 @@ export function createExecuteCommandTool(options: ExecuteCommandToolOptions) {
 - Run tests: executeCommand({ command: "npm", args: ["test"] })
 - Check git status: executeCommand({ command: "git", args: ["status"] })
 - Install deps: executeCommand({ command: "npm", args: ["install"] })
-- Read a stored log (first 200 lines by default): executeCommand({ command: "readLog", logId: "..." })
-- Read specific slices (preferred — keeps context small):
-  · executeCommand({ command: "readLog", logId: "...", head: 100 })
-  · executeCommand({ command: "readLog", logId: "...", tail: 100 })
-  · executeCommand({ command: "readLog", logId: "...", range: [400, 500] })
-  · executeCommand({ command: "readLog", logId: "...", grep: "error" })
+- Read a stored log slice: executeCommand({ command: "readLog", logId: "...", range: [1, 200] })
 - Check background process: executeCommand({ processId: "bg-123" })
 - Kill background process: executeCommand({ command: "kill", processId: "bg-123" })
 - List background processes: executeCommand({ command: "list" })
 
 **readLog retrieval policy:**
 - Oversized tool outputs are replaced with a stub that contains an outline and a logId. Call readLog ONLY when the preview/outline is insufficient.
-- Prefer grep/range/head over fetching the whole log. Each readLog call is hard-capped to ~8K tokens — chunked reads are expected for large logs.
+- Use range: [startLine, endLine] for log retrieval. Each readLog call is hard-capped to ~8K tokens; request another range for the next chunk.
 
 **Background Mode:**
 Use background: true for commands that take a long time (npm install, npx create-*, builds).
@@ -426,8 +435,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
 - timeout: Max execution time in ms (auto-detected based on command type)
 - background: Run in background and return processId (default: false)
 - processId: Check/manage a background process by its ID
-- logId: The log ID to read when command is 'readLog'
-- confirmRemoval: Must be true for removal commands (rm/rmdir/del/erase/rd)`,
+- logId: The log ID to read when command is 'readLog'`,
 
         inputSchema: executeCommandSchema,
 
@@ -436,10 +444,12 @@ The tool returns immediately with a processId. Poll with processId to check stat
             toolCallOptions?: ToolExecutionOptions,
         ): Promise<ExecuteCommandToolResult> => {
             const toolCallId = extractToolCallId(toolCallOptions);
+            const abortSignal = toolCallOptions?.abortSignal;
             const forwardProgress = (update: ExecuteCommandProgressUpdate) => {
                 onProgress?.({
                     ...update,
                     toolCallId: update.toolCallId ?? toolCallId,
+                    toolName: update.toolName ?? "executeCommand",
                 });
             };
 
@@ -451,7 +461,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            const { command, args = [], stdin, cwd, timeout, background, processId, logId, head, tail, range, grep, confirmRemoval = false } = input;
+            const { command, args = [], stdin, cwd, timeout, background, processId, logId, head, tail, range, grep } = input;
 
             // ── Read Log ────────────────────────────────────────────────
             if (command === "readLog" && logId) {
@@ -501,7 +511,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     metaBits.push("budget-clamped");
                 }
                 const metaLabel = metaBits.length > 0 ? ` (${metaBits.join(", ")})` : "";
-                const modeLabel = slice.mode === "default" ? "default head" : slice.mode;
+                const modeLabel = slice.mode === "default" ? "default range preview" : slice.mode;
 
                 return {
                     status: "success",
@@ -525,6 +535,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     };
                 }
                 const elapsed = Math.round((Date.now() - info.startedAt) / 1000);
+                markBackgroundProcessObserved(processId);
                 if (info.running) {
                     return {
                         status: "running",
@@ -532,7 +543,8 @@ The tool returns immediately with a processId. Poll with processId to check stat
                         stdout: info.stdout,
                         stderr: info.stderr,
                         startedAt: toIsoTimestamp(info.startedAt),
-                        message: `Process '${info.command} ${info.args.join(" ")}' still running (${elapsed}s elapsed).`,
+                        message: `Process '${info.command} ${info.args.join(" ")}' still running (${elapsed}s elapsed).${logRetrievalGuidance(info.logId)}`,
+                        logId: info.logId,
                     };
                 }
                 return {
@@ -543,16 +555,16 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     exitCode: info.exitCode,
                     executionTime: Date.now() - info.startedAt,
                     startedAt: toIsoTimestamp(info.startedAt),
-                    message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.`,
+                    message: `Process finished after ${elapsed}s with exit code ${info.exitCode}.${logRetrievalGuidance(info.logId)}`,
                     logId: info.logId,
                 };
             }
 
             // Kill a background process
             if (processId && command === "kill") {
-                const killed = killBackgroundProcess(processId);
-                if (!killed) {
-                    return { status: "error", error: `No background process found with ID '${processId}'.` };
+                const result = killTrackedBackgroundProcess(processId, userId);
+                if (!result.ok) {
+                    return { status: "error", error: result.error ?? `No background process found with ID '${processId}'.` };
                 }
                 return { status: "success", message: `Background process '${processId}' terminated.` };
             }
@@ -567,7 +579,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 }
                 const lines = procs.map((p) => {
                     const elapsed = Math.round(p.elapsed / 1000);
-                    return `[${p.id}] ${p.running ? "RUNNING" : "DONE"} (${elapsed}s) ${p.command}`;
+                    return `[${p.id}] ${p.running ? "RUNNING" : "DONE"} (${elapsed}s) ${p.command}${formatBackgroundListMetadata(p)}`;
                 });
                 return { status: "success", stdout: lines.join("\n"), message: `${procs.length} background process(es).` };
             }
@@ -581,13 +593,14 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            // Get synced folders for this agent
+            // Use the same workspace-aware authorization roots as file tools.
+            // This includes workflow-shared folders and the active worktree, while
+            // filtering other worktrees out of the execution sandbox.
             let syncedFolders: string[];
             try {
-                const folders = await getAccessibleSyncFolders(characterId);
-                syncedFolders = folders.map((f) => f.folderPath);
+                syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
 
-                if (syncedFolders.length === 0) {
+                if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
                     return {
                         status: "no_folders",
                         message:
@@ -601,24 +614,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 };
             }
 
-            // Determine working directory — prefer active worktree when available
-            const worktreePath = await getActiveWorktreePath(sessionId);
-            let executionDir = cwd;
-            if (!executionDir) {
-                executionDir = worktreePath || syncedFolders[0];
-            }
-
-            // Ensure worktree path is in allowed folders for cwd validation
-            if (worktreePath && !syncedFolders.includes(worktreePath)) {
-                syncedFolders = [worktreePath, ...syncedFolders];
-            }
-
-            // Exclude other worktree paths to prevent cross-workspace contamination
-            if (worktreePath) {
-                syncedFolders = syncedFolders.filter(
-                    (p) => !isOtherWorktreePath(p, worktreePath)
-                );
-            }
+            const executionDir = cwd || syncedFolders[0] || process.cwd();
 
             try {
                 const resolvedCommand = await resolveClaudePluginRootPlaceholder(command);
@@ -640,7 +636,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                             cwd: executionDir,
                             timeout: Math.min(timeout || 600_000, maxBgTimeout),
                             characterId: characterId,
-                            confirmRemoval,
+                            onBackgroundProcessSettled: handleBackgroundProcessSettled,
                         },
                         syncedFolders
                     );
@@ -654,11 +650,22 @@ The tool returns immediately with a processId. Poll with processId to check stat
                         registerBackgroundTask(characterId, sessionId, bgResult.processId);
                     }
 
+                    registerBackgroundProcessTask({
+                        processId: bgResult.processId,
+                        userId,
+                        characterId,
+                        sessionId,
+                        toolName: "executeCommand",
+                        command: [normalizedInput.command, ...preparedInput.args].filter(Boolean).join(" "),
+                        cwd: executionDir,
+                    });
+
                     console.log(`[executeCommand] Background process started: ${bgResult.processId}`);
                     return {
                         status: "background_started",
                         processId: bgResult.processId,
-                        message: `Background process started. Use processId '${bgResult.processId}' to check status.`,
+                        message: `Background process started. Use processId '${bgResult.processId}' to check status.${logRetrievalGuidance(bgResult.logId)}`,
+                        logId: bgResult.logId,
                     };
                 }
 
@@ -671,7 +678,8 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     cwd: executionDir,
                     timeout: timeout ? Math.min(timeout, maxTimeout) : undefined,
                     characterId: characterId,
-                    confirmRemoval,
+                    abortSignal,
+                    onProgress: forwardProgress,
                 };
 
                 let result = await executeCommandWithValidation(
@@ -753,6 +761,7 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     error: result.error,
                     logId: result.logId,
                     isTruncated: result.isTruncated,
+                    aborted: result.aborted,
                 };
 
                 return toolResult;

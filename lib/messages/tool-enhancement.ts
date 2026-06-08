@@ -56,6 +56,7 @@ export interface FrontendMessage {
         kind?: string;
       }>;
       inspectContext?: unknown;
+      designContext?: unknown;
     };
   };
 }

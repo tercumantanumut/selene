@@ -1,12 +1,12 @@
 /**
  * Observability Cleanup Job
  * 
- * Background job to clean up stale agent runs that were never completed.
- * Runs periodically to mark orphaned "running" runs as failed.
+ * Background job to report stale agent runs that may need recovery.
+ * It must not fail running long-lived agents based on timestamp age alone.
  */
 
 import { hasPendingInteractiveWait } from "@/lib/interactive-tool-bridge";
-import { findStaleRuns, markRunAsTimedOut } from "./queries";
+import { findStaleRuns } from "./queries";
 
 // Default cleanup interval: 15 minutes
 const DEFAULT_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
@@ -31,21 +31,22 @@ async function runCleanup(): Promise<void> {
 
   try {
     const staleRuns = await findStaleRuns(STALE_THRESHOLD_MINUTES);
-    const runIds: string[] = [];
+    const staleRunIds: string[] = [];
+    const interactiveWaitRunIds: string[] = [];
 
     for (const run of staleRuns) {
       if (hasPendingInteractiveWait(run.sessionId)) {
+        interactiveWaitRunIds.push(run.id);
         continue;
       }
-      await markRunAsTimedOut(run.id, "background_cleanup");
-      runIds.push(run.id);
+      staleRunIds.push(run.id);
     }
 
-    if (runIds.length > 0) {
-      console.log(
-        `[ObservabilityCleanup] Cleaned ${runIds.length} stale runs:`,
-        runIds,
-      );
+    if (staleRunIds.length > 0 || interactiveWaitRunIds.length > 0) {
+      console.warn("[ObservabilityCleanup] Stale running runs detected; leaving them running for long-run recovery", {
+        staleRunIds,
+        interactiveWaitRunIds,
+      });
     } else {
       console.log("[ObservabilityCleanup] No stale runs found");
     }
@@ -66,7 +67,7 @@ export function startCleanupJob(intervalMs: number = DEFAULT_CLEANUP_INTERVAL_MS
   }
 
   console.log(
-    `[ObservabilityCleanup] Starting cleanup job (interval: ${intervalMs / 60000}m, threshold: ${STALE_THRESHOLD_MINUTES}m)`
+    `[ObservabilityCleanup] Starting cleanup job (interval: ${intervalMs / 60000}m, report threshold: ${STALE_THRESHOLD_MINUTES}m)`
   );
 
   // Run immediately on start

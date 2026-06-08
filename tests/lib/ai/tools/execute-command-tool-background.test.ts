@@ -2,19 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const syncFolderMocks = vi.hoisted(() => ({
-    getAccessibleSyncFolders: vi.fn(),
-}));
-
 const filesystemMocks = vi.hoisted(() => ({
-    getActiveWorktreePath: vi.fn(),
-    isOtherWorktreePath: vi.fn(),
+    resolveWorkspaceAwarePaths: vi.fn(),
 }));
 
 const executorMocks = vi.hoisted(() => ({
     executeCommandWithValidation: vi.fn(),
     startBackgroundProcess: vi.fn(),
     getBackgroundProcess: vi.fn(),
+    markBackgroundProcessObserved: vi.fn(),
     killBackgroundProcess: vi.fn(),
     listBackgroundProcesses: vi.fn(),
     cleanupBackgroundProcesses: vi.fn(),
@@ -24,19 +20,15 @@ const validatorMocks = vi.hoisted(() => ({
     validateExecutionDirectory: vi.fn(),
 }));
 
-vi.mock("@/lib/vectordb/accessible-sync-folders", () => ({
-    getAccessibleSyncFolders: syncFolderMocks.getAccessibleSyncFolders,
-}));
-
 vi.mock("@/lib/ai/filesystem", () => ({
-    getActiveWorktreePath: filesystemMocks.getActiveWorktreePath,
-    isOtherWorktreePath: filesystemMocks.isOtherWorktreePath,
+    resolveWorkspaceAwarePaths: filesystemMocks.resolveWorkspaceAwarePaths,
 }));
 
 vi.mock("@/lib/command-execution", () => ({
     executeCommandWithValidation: executorMocks.executeCommandWithValidation,
     startBackgroundProcess: executorMocks.startBackgroundProcess,
     getBackgroundProcess: executorMocks.getBackgroundProcess,
+    markBackgroundProcessObserved: executorMocks.markBackgroundProcessObserved,
     killBackgroundProcess: executorMocks.killBackgroundProcess,
     listBackgroundProcesses: executorMocks.listBackgroundProcesses,
     cleanupBackgroundProcesses: executorMocks.cleanupBackgroundProcesses,
@@ -70,11 +62,7 @@ function makeTool() {
 beforeEach(() => {
     vi.clearAllMocks();
 
-    syncFolderMocks.getAccessibleSyncFolders.mockResolvedValue([
-        { folderPath: "C:\\workspace" },
-    ]);
-    filesystemMocks.getActiveWorktreePath.mockResolvedValue(null);
-    filesystemMocks.isOtherWorktreePath.mockReturnValue(false);
+    filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue(["C:\\workspace"]);
 
     validatorMocks.validateExecutionDirectory.mockResolvedValue({
         valid: true,
@@ -117,6 +105,7 @@ describe("background execution", () => {
                 args: ["-y", "create-vite@latest", "my-app"],
                 cwd: "C:\\workspace",
                 characterId: "char-1",
+                onBackgroundProcessSettled: expect.any(Function),
             }),
             expect.any(Array), // allowedPaths (syncedFolders)
         );
@@ -154,6 +143,7 @@ describe("process status checking", () => {
             stderr: "",
             exitCode: null,
             signal: null,
+            logId: "log-running",
         });
 
         const tool = makeTool();
@@ -165,6 +155,9 @@ describe("process status checking", () => {
         expect(result.status).toBe("running");
         expect(result.processId).toBe("bg-456");
         expect(result.stdout).toBe("installing...");
+        expect(result.logId).toBe("log-running");
+        expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-running" })');
+        expect(executorMocks.markBackgroundProcessObserved).toHaveBeenCalledWith("bg-456");
     });
 
     it("should return completed status for a finished background process", async () => {
@@ -179,6 +172,7 @@ describe("process status checking", () => {
             stderr: "",
             exitCode: 0,
             signal: null,
+            logId: "log-finished",
         });
 
         const tool = makeTool();
@@ -191,6 +185,8 @@ describe("process status checking", () => {
         expect(result.processId).toBe("bg-789");
         expect(result.exitCode).toBe(0);
         expect(result.stdout).toBe("added 100 packages");
+        expect(result.logId).toBe("log-finished");
+        expect(result.message).toContain('executeCommand({ command: "readLog", logId: "log-finished" })');
     });
 
     it("should return error for a failed background process", async () => {
@@ -356,7 +352,7 @@ describe("foreground execution", () => {
     });
 
     it("should return no_folders when agent has no synced folders", async () => {
-        syncFolderMocks.getAccessibleSyncFolders.mockResolvedValue([]);
+        filesystemMocks.resolveWorkspaceAwarePaths.mockResolvedValue([]);
 
         const tool = makeTool();
         const result = await tool.execute(

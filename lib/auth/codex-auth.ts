@@ -1,59 +1,119 @@
-import { loadSettings, saveSettings } from "@/lib/settings/settings-manager";
+/**
+ * Codex auth state — backed by the CLIProxyAPI sidecar's credential dir.
+ *
+ * Selene no longer keeps its own OAuth token storage for Codex. The sidecar
+ * runs `-codex-login`, persists `codex-<email>[-<plan>].json` files, and
+ * refreshes them on demand. We read those files to derive the user-facing
+ * auth status and persist a small cached snapshot in `settings.json` so the
+ * UI doesn't flicker between page loads.
+ *
+ * Existing users who logged in via the old PKCE flow still have a
+ * `settings.codexToken` blob — `ensureCodexCredentialBridged()` does a
+ * one-time migration into the sidecar's auth-dir on first invocation.
+ *
+ * The OpenAI Codex CLI client id (`app_EMoamEEZ73f0CkXaXp7hrann`) is the
+ * same identity the sidecar uses, so the OAuth bearer is interchangeable —
+ * no re-login required when upgrading from the old flow.
+ */
 
-export interface CodexOAuthToken {
-  type: "oauth";
-  access_token: string;
-  refresh_token: string;
-  expires_at: number;
+import { loadSettings, saveSettings } from "@/lib/settings/settings-manager";
+import {
+  deleteAllCodexCredentials,
+  listCodexCredentials,
+} from "@/lib/ai/providers/cliproxy/credentials";
+import { ensureCodexCredentialBridged } from "@/lib/ai/providers/cliproxy/codex-bridge";
+import { getCodexLoginState } from "@/lib/ai/providers/cliproxy/login";
+
+const TOKEN_SOURCE = "cliproxyapi-oauth";
+
+/** Path on the JWT where OpenAI namespaces its profile claims (email, name). */
+export const CODEX_JWT_PROFILE_CLAIM_PATH = "https://api.openai.com/profile";
+/** Path on the JWT where OpenAI namespaces its auth/account claims. */
+export const CODEX_JWT_AUTH_CLAIM_PATH = "https://api.openai.com/auth";
+
+export interface CodexAuthStatus {
+  authenticated: boolean;
+  email?: string;
+  accountId?: string;
+  plan?: string;
+  tokenSource?: string;
+  authUrl?: string;
+  output?: string[];
+  error?: string;
 }
 
 interface CodexAuthState {
   isAuthenticated: boolean;
   email?: string;
   accountId?: string;
-  expiresAt?: number;
+  plan?: string;
   lastRefresh?: number;
+  tokenSource?: string;
+  authUrl?: string;
+  output?: string[];
+  error?: string;
 }
 
-export const CODEX_OAUTH = {
-  CLIENT_ID: "app_EMoamEEZ73f0CkXaXp7hrann",
-  AUTH_URL: "https://auth.openai.com/oauth/authorize",
-  TOKEN_URL: "https://auth.openai.com/oauth/token",
-  REDIRECT_URI: "http://localhost:1455/auth/callback",
-  SCOPES: "openid profile email offline_access",
-} as const;
-
-export const CODEX_CONFIG = {
-  API_BASE_URL: "https://chatgpt.com/backend-api",
-  API_PATH: "/codex/responses",
-  REFRESH_THRESHOLD_MS: 15 * 60 * 1000,
-  HEADERS: {
-    originator: "codex_cli_rs",
-  } as const,
-  JWT_CLAIM_PATH: "https://api.openai.com/auth",
-} as const;
-
 let cachedAuthState: CodexAuthState | null = null;
-let cachedToken: CodexOAuthToken | null = null;
 
 function decodeBase64Url(input: string): string {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), "=");
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
   return Buffer.from(padded, "base64").toString("utf8");
 }
 
-export function decodeCodexJWT(token: string): { accountId?: string; email?: string } | null {
+/**
+ * Best-effort decode of a Codex OAuth JWT into the three surface fields we
+ * care about: email (under namespaced profile claim), account id, and plan
+ * type (under namespaced auth claim). Returns null on any parse failure.
+ */
+export function decodeCodexJWT(
+  token: string,
+): { accountId?: string; email?: string; planType?: string } | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
     const payload = JSON.parse(decodeBase64Url(parts[1]));
+    const auth = payload?.[CODEX_JWT_AUTH_CLAIM_PATH] ?? {};
+    const profile = payload?.[CODEX_JWT_PROFILE_CLAIM_PATH] ?? {};
+    const email =
+      typeof profile?.email === "string"
+        ? profile.email
+        : typeof payload?.email === "string"
+          ? payload.email
+          : undefined;
     return {
-      accountId: payload?.[CODEX_CONFIG.JWT_CLAIM_PATH]?.chatgpt_account_id,
-      email: payload?.email,
+      accountId: typeof auth?.chatgpt_account_id === "string" ? auth.chatgpt_account_id : undefined,
+      email,
+      planType: typeof auth?.chatgpt_plan_type === "string" ? auth.chatgpt_plan_type : undefined,
     };
   } catch {
     return null;
   }
+}
+
+function buildAuthStateFromStatus(status: CodexAuthStatus): CodexAuthState {
+  return {
+    isAuthenticated: status.authenticated,
+    email: status.email,
+    accountId: status.accountId,
+    plan: status.plan,
+    lastRefresh: Date.now(),
+    tokenSource: status.tokenSource,
+    authUrl: status.authUrl,
+    output: status.output,
+    error: status.error,
+  };
+}
+
+function persistAuthState(status: CodexAuthStatus): CodexAuthState {
+  const settings = loadSettings();
+  const authState = buildAuthStateFromStatus(status);
+
+  settings.codexAuth = authState;
+  saveSettings(settings);
+  cachedAuthState = authState;
+  return authState;
 }
 
 export function getCodexAuthState(): CodexAuthState {
@@ -64,200 +124,99 @@ export function getCodexAuthState(): CodexAuthState {
     isAuthenticated: !!settings.codexAuth?.isAuthenticated,
     email: settings.codexAuth?.email,
     accountId: settings.codexAuth?.accountId,
-    expiresAt: settings.codexAuth?.expiresAt,
+    plan: settings.codexAuth?.plan,
     lastRefresh: settings.codexAuth?.lastRefresh,
+    tokenSource: settings.codexAuth?.tokenSource,
+    authUrl: settings.codexAuth?.authUrl,
+    output: settings.codexAuth?.output,
+    error: settings.codexAuth?.error,
   };
-
   cachedAuthState = state;
   return state;
 }
 
-export function getCodexToken(): CodexOAuthToken | null {
-  if (cachedToken) return cachedToken;
-
-  const settings = loadSettings();
-  if (!settings.codexToken) return null;
-
-  cachedToken = settings.codexToken;
-  return cachedToken;
-}
-
-function isCodexTokenValid(): boolean {
-  const token = getCodexToken();
-  if (!token) return false;
-
-  const now = Date.now();
-  return token.expires_at > (now + CODEX_CONFIG.REFRESH_THRESHOLD_MS);
-}
-
-export function needsCodexTokenRefresh(): boolean {
-  const token = getCodexToken();
-  if (!token) return false;
-
-  const now = Date.now();
-  const expiresAt = token.expires_at;
-  return expiresAt <= (now + CODEX_CONFIG.REFRESH_THRESHOLD_MS) && expiresAt > now;
-}
-
-export function saveCodexToken(
-  token: CodexOAuthToken,
-  email?: string,
-  accountId?: string,
-  setAsActiveProvider = false
-): void {
-  const settings = loadSettings();
-
-  settings.codexToken = token;
-
-  settings.codexAuth = {
-    isAuthenticated: true,
-    email: email || settings.codexAuth?.email,
-    accountId: accountId || settings.codexAuth?.accountId,
-    expiresAt: token.expires_at,
-    lastRefresh: Date.now(),
-  };
-
-  // Only switch active provider during explicit user-driven auth flows.
-  // Token refresh must not mutate provider selection.
-  if (setAsActiveProvider) {
-    settings.llmProvider = "codex";
-  }
-
-  saveSettings(settings);
-
-  cachedToken = token;
-  cachedAuthState = settings.codexAuth;
-}
-
-export function clearCodexAuth(): void {
-  const settings = loadSettings();
-  delete settings.codexToken;
-  settings.codexAuth = { isAuthenticated: false };
-  saveSettings(settings);
-
-  cachedToken = null;
-  cachedAuthState = { isAuthenticated: false };
-}
-
 export function invalidateCodexAuthCache(): void {
-  cachedToken = null;
   cachedAuthState = null;
 }
 
-export function getCodexAccessToken(): string | null {
-  const token = getCodexToken();
-  if (!token) return null;
-
-  if (token.expires_at <= Date.now()) {
-    return null;
-  }
-
-  return token.access_token;
-}
-
+/**
+ * Sync read of the cached snapshot. Used by `lib/ai/providers.ts` for fast
+ * provider-availability checks during streamText setup — the snapshot is
+ * refreshed by `getCodexAuthStatus()` on settings reload and after every
+ * successful auth flow, so it stays in sync with the sidecar.
+ */
 export function isCodexAuthenticated(): boolean {
-  const state = getCodexAuthState();
-  if (!state.isAuthenticated) return false;
-  return isCodexTokenValid();
+  return getCodexAuthState().isAuthenticated;
 }
 
-export async function refreshCodexToken(): Promise<boolean> {
-  const token = getCodexToken();
-  if (!token?.refresh_token) {
-    return false;
-  }
-
+/**
+ * Re-read sidecar credentials (and migrate any legacy settings.codexToken
+ * into the auth-dir on the way past), then persist a fresh snapshot.
+ */
+export async function getCodexAuthStatus(): Promise<CodexAuthStatus> {
+  // Migration shim: writes selene's legacy codexToken into the sidecar's
+  // auth-dir if one isn't already there. No-op once the sidecar owns the
+  // credential.
   try {
-    const response = await fetch(CODEX_OAUTH.TOKEN_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: token.refresh_token,
-        client_id: CODEX_OAUTH.CLIENT_ID,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[CodexAuth] Token refresh failed:", response.status, errorText);
-      return false;
-    }
-
-    const data = await response.json() as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-    };
-
-    if (!data.access_token || !data.refresh_token || typeof data.expires_in !== "number") {
-      console.error("[CodexAuth] Token refresh response missing fields:", data);
-      return false;
-    }
-
-    const decoded = decodeCodexJWT(data.access_token);
-    const newToken: CodexOAuthToken = {
-      type: "oauth",
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      expires_at: Date.now() + data.expires_in * 1000,
-    };
-
-    saveCodexToken(newToken, decoded?.email, decoded?.accountId);
-    return true;
-  } catch (error) {
-    console.error("[CodexAuth] Token refresh error:", error);
-    return false;
+    await ensureCodexCredentialBridged();
+  } catch (err) {
+    console.warn("[codex-auth] credential bridge failed:", err);
   }
+
+  let creds;
+  try {
+    creds = await listCodexCredentials();
+  } catch (err) {
+    const status: CodexAuthStatus = {
+      authenticated: false,
+      tokenSource: TOKEN_SOURCE,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    persistAuthState(status);
+    return status;
+  }
+
+  const loginState = getCodexLoginState();
+
+  if (creds.length === 0) {
+    const status: CodexAuthStatus = {
+      authenticated: false,
+      tokenSource: TOKEN_SOURCE,
+      authUrl: loginState?.url ?? undefined,
+      output: loginState?.output,
+      error: loginState?.errorMessage,
+    };
+    persistAuthState(status);
+    return status;
+  }
+
+  const primary = creds[0];
+  const status: CodexAuthStatus = {
+    authenticated: true,
+    email: primary.email,
+    plan: primary.plan,
+    tokenSource: TOKEN_SOURCE,
+    output: loginState?.output,
+  };
+  persistAuthState(status);
+  return status;
 }
 
-export async function ensureValidCodexToken(): Promise<boolean> {
-  if (isCodexTokenValid()) return true;
-  if (needsCodexTokenRefresh()) {
-    return refreshCodexToken();
-  }
-  return false;
-}
-
-export async function exchangeCodexAuthorizationCode(
-  code: string,
-  verifier: string,
-  redirectUri: string = CODEX_OAUTH.REDIRECT_URI,
-): Promise<{ access_token: string; refresh_token: string; expires_in: number } | null> {
-  const response = await fetch(CODEX_OAUTH.TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: CODEX_OAUTH.CLIENT_ID,
-      code,
-      code_verifier: verifier,
-      redirect_uri: redirectUri,
-    }),
+/**
+ * Delete the sidecar's stored credentials and reset selene's cached snapshot.
+ */
+export async function clearCodexAuth(): Promise<void> {
+  await deleteAllCodexCredentials().catch((err) => {
+    console.error("[codex-auth] failed to delete credentials:", err);
   });
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    console.error("[CodexAuth] Code exchange failed:", response.status, text);
-    return null;
-  }
-
-  const data = await response.json() as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
+  const settings = loadSettings();
+  settings.codexAuth = {
+    isAuthenticated: false,
+    lastRefresh: Date.now(),
   };
-
-  if (!data.access_token || !data.refresh_token || typeof data.expires_in !== "number") {
-    console.error("[CodexAuth] Code exchange response missing fields:", data);
-    return null;
-  }
-
-  return {
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
-    expires_in: data.expires_in,
-  };
+  // Drop the legacy token blob from older PKCE-era selene versions.
+  delete settings.codexToken;
+  saveSettings(settings);
+  cachedAuthState = settings.codexAuth;
 }

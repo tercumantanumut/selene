@@ -39,9 +39,10 @@ describe("guardToolResultForStreaming — retrievalToolLoaded resolver", () => {
 
     expect(result.blocked).toBe(true);
     const stub = JSON.stringify(result.result);
-    // Step-0 MUST be present because executeCommand is not loaded
-    expect(stub).toContain("Step 0 (MANDATORY)");
+    // A concise load hint is present because executeCommand is not loaded.
+    expect(stub).toContain("First load:");
     expect(stub).toContain("select:executeCommand");
+    expect(stub).not.toContain("Step 0 (MANDATORY)");
   });
 
   it("passes retrievalToolLoaded=true when executeCommand is in discoveredTools", () => {

@@ -111,4 +111,13 @@ describe("getToolBadgeStatus", () => {
       })
     ).toBe("completed");
   });
+
+  it("treats running shell tool results as running before the final output arrives", () => {
+    expect(
+      getToolBadgeStatus({
+        status: { type: "complete" },
+        result: { status: "running", message: "Running git status..." },
+      })
+    ).toBe("running");
+  });
 });

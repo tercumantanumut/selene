@@ -48,10 +48,10 @@ export interface BuildStubOptions {
   /** Optional extra stderr text length hint (used by executeCommand) */
   stderr?: string;
   /**
-   * Whether the retrieval tool needed for this stub (executeCommand for logId,
-   * retrieveFullContent for contentId) is currently loaded in the model's active
-   * tool set. When false, the stub prepends a mandatory step-0 discovery
-   * instruction so the model doesn't loop calling an unavailable tool.
+   * Whether the retrieval tool needed for this stub is currently loaded in the
+   * model's active tool set. `executeCommand` can be discovered later for logId
+   * retrieval, but a session-local contentId is only advertised when
+   * retrieveFullContent is already loaded for the same turn.
    */
   retrievalToolLoaded?: boolean;
 }
@@ -171,12 +171,13 @@ function headPreview(text: string, previewTokens: number): string {
 function retrievalCall(
   idType: RetrievalIdType,
   id: string,
-  extras: string
+  range: [number, number]
 ): string {
+  const extras = `range: [${range[0]}, ${range[1]}]`;
   if (idType === "logId") {
-    return `executeCommand({ command: "readLog", logId: "${id}"${extras ? ", " + extras : ""} })`;
+    return `executeCommand({ command: "readLog", logId: "${id}", ${extras} })`;
   }
-  return `retrieveFullContent({ contentId: "${id}"${extras ? ", " + extras : ""} })`;
+  return `retrieveFullContent({ contentId: "${id}", ${extras} })`;
 }
 
 /**
@@ -238,38 +239,24 @@ export function buildOutputStub(opts: BuildStubOptions): string {
     parts.push("");
     parts.push("Retrieval:");
 
-    // When the retrieval tool isn't loaded yet, prepend a mandatory step-0 so
-    // the model doesn't loop trying to call an unavailable tool.
-    if (!retrievalToolLoaded) {
-      const retrievalToolName =
-        idType === "logId" ? "executeCommand" : "retrieveFullContent";
-      const selectQuery =
-        idType === "logId"
-          ? "select:executeCommand"
-          : "select:retrieveFullContent";
-      parts.push("");
-      parts.push(
-        `⚠️  IMPORTANT — ${retrievalToolName} is NOT currently in your active tool set.`
-      );
-      parts.push(
-        `    Step 0 (MANDATORY): First load it with → searchTools({ query: "${selectQuery}" })`
-      );
-      parts.push(
-        `    Step 1 (AFTER loading): Then use one of the retrieval calls below.`
-      );
-      parts.push("");
-      parts.push("Retrieval calls (usable after step 0):");
-    }
+    if (idType === "contentId") {
+      if (retrievalToolLoaded) {
+        const suggestedEnd = Math.max(1, Math.min(outline.lineCount, 200));
+        parts.push(`Retrieve lines: ${retrievalCall(idType, retrievalId, [1, suggestedEnd])}`);
+        parts.push("Change the two line numbers to read another slice.");
+      } else {
+        parts.push("retrieveFullContent is not currently loaded, so this contentId is not safely retrievable from this turn.");
+        parts.push("Use the outline/preview here, or re-run the original tool call with a smaller range/filter.");
+      }
+    } else {
+      if (!retrievalToolLoaded) {
+        parts.push('First load: searchTools({ query: "select:executeCommand" })');
+      }
 
-    parts.push(`- ${retrievalCall(idType, retrievalId, "head: 100")}`);
-    parts.push(`- ${retrievalCall(idType, retrievalId, "tail: 100")}`);
-    parts.push(`- ${retrievalCall(idType, retrievalId, "range: [400, 500]")}`);
-    parts.push(`- ${retrievalCall(idType, retrievalId, 'grep: "error"')}`);
-    parts.push("");
-    const hintTool = idType === "logId" ? "readLog" : "retrieveFullContent";
-    parts.push(
-      `Only call ${hintTool} if the preview/outline doesn't answer your task.`
-    );
+      const suggestedEnd = Math.max(1, Math.min(outline.lineCount, 200));
+      parts.push(`Retrieve lines: ${retrievalCall(idType, retrievalId, [1, suggestedEnd])}`);
+      parts.push("Change the two line numbers to read another slice.");
+    }
   } else {
     parts.push("");
     parts.push("Full output NOT stored (no retrieval ID available). Re-run with a smaller/filtered command if needed.");

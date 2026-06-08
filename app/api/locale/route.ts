@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { locales, localeCookieName, type Locale } from "@/i18n/config";
+import { updateSetting } from "@/lib/settings/settings-manager";
 
 /**
  * Sets the NEXT_LOCALE cookie server-side so the proxy + next-intl can read it
@@ -20,6 +21,13 @@ export async function POST(request: Request) {
       { error: `Unsupported locale. Expected one of: ${locales.join(", ")}` },
       { status: 400 },
     );
+  }
+
+  try {
+    updateSetting("appLanguage", locale as Locale);
+  } catch (error) {
+    console.error("[locale] Failed to persist selected language", error);
+    return NextResponse.json({ error: "Failed to persist locale selection" }, { status: 500 });
   }
 
   const response = NextResponse.json({ locale });

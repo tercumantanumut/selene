@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
 import { getClaudeCodeAuthStatus } from "@/lib/auth/claudecode-auth";
-import { killLoginProcess } from "@/lib/auth/claude-login-process";
+import { killClaudeLogin } from "@/lib/ai/providers/cliproxy/login";
 
+/**
+ * POST /api/auth/claudecode/refresh
+ *
+ * Cancels any pending login subprocess and re-reads the sidecar credential
+ * dir to produce a fresh status snapshot.
+ */
 export async function POST() {
   try {
-    // Kill any hanging login subprocess before running the Agent SDK check.
-    // A stale `claude login` process interferes with the Agent SDK query.
-    killLoginProcess();
-
+    killClaudeLogin();
     const status = await getClaudeCodeAuthStatus();
 
     return NextResponse.json({
@@ -15,7 +18,7 @@ export async function POST() {
       authenticated: status.authenticated,
       reason: status.authenticated ? "authenticated" : "not_authenticated",
       output: status.output,
-      url: status.authUrl || null,
+      url: status.authUrl ?? null,
       error: status.error,
     });
   } catch (error) {

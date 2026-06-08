@@ -33,6 +33,12 @@ const aiMocks = vi.hoisted(() => ({
   generateText: vi.fn(async () => ({ text: "## Summary\n- Generated body" })),
 }));
 
+const workspaceMetadataMocks = vi.hoisted(() => ({
+  resolveWorkspaceInfoFromSession: vi.fn(async (session: { metadata?: { workspaceInfo?: unknown } }) => session.metadata?.workspaceInfo ?? null),
+  updateWorkspaceLifecycleMetadata: vi.fn(),
+  writeWorkspaceInfo: vi.fn(),
+}));
+
 const resolverMocks = vi.hoisted(() => ({
   resolveSessionUtilityModel: vi.fn(() => ({ id: "utility-model" })),
   getSessionProviderTemperature: vi.fn(() => 0.2),
@@ -65,6 +71,7 @@ vi.mock("@/lib/workspace/git-service", () => gitServiceMocks);
 vi.mock("@/lib/spawn-utils", () => spawnMocks);
 vi.mock("ai", () => aiMocks);
 vi.mock("@/lib/ai/session-model-resolver", () => resolverMocks);
+vi.mock("@/lib/workspace/metadata", () => workspaceMetadataMocks);
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   return { ...actual, ...fsMocks };
@@ -92,6 +99,11 @@ describe("/api/sessions/[id]/workspace route", () => {
       metadata: updates.metadata,
     }));
     syncFolderMocks.getSyncFolders.mockResolvedValue([]);
+    workspaceMetadataMocks.updateWorkspaceLifecycleMetadata.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...baseSession.metadata.workspaceInfo,
+      ...patch,
+    }));
+    workspaceMetadataMocks.writeWorkspaceInfo.mockImplementation(async (_id: string, workspaceInfo: Record<string, unknown>) => workspaceInfo);
     childProcessMocks.execFileAsync.mockReset();
     childProcessMocks.execFileAsync.mockImplementation(async (command: string, args: string[], options?: { cwd?: string }) => {
       const cwd = options?.cwd;
@@ -174,23 +186,15 @@ describe("/api/sessions/[id]/workspace route", () => {
       { params: Promise.resolve({ id: "session-1" }) }
     );
 
-    expect(dbMocks.updateSession).toHaveBeenCalledWith(
+    expect((response as { body: { workspace: { type: string } } }).body.workspace.type).toBe("local");
+    expect(workspaceMetadataMocks.writeWorkspaceInfo).toHaveBeenCalledWith(
       "session-1",
       expect.objectContaining({
-        metadata: expect.objectContaining({
-          workspaceInfo: expect.objectContaining({
-            type: "local",
-            branch: "feature/dev-git-mode",
-            baseBranch: "main",
-            worktreePath: "/repo/primary",
-            repoUrl: "git@github.com:acme/repo.git",
-            syncFolderId: "folder-1",
-            status: "active",
-          }),
-        }),
-      })
+        type: "local",
+        branch: "feature/dev-git-mode",
+      }),
+      "workspace-route:enable-git"
     );
-    expect((response as { body: { workspace: { type: string } } }).body.workspace.type).toBe("local");
   });
 
   it("cleans up local git mode without removing a worktree", async () => {
@@ -353,19 +357,15 @@ describe("/api/sessions/[id]/workspace route", () => {
 
     expect(pushMock).toHaveBeenCalledWith("origin", "feature/dev-git-mode");
     expect(aiMocks.generateText).not.toHaveBeenCalled();
-    expect(dbMocks.updateSession).toHaveBeenCalledWith(
+    expect((response as { body: { prNumber: number } }).body.prNumber).toBe(17);
+    expect(workspaceMetadataMocks.updateWorkspaceLifecycleMetadata).toHaveBeenCalledWith(
       "session-1",
       expect.objectContaining({
-        metadata: expect.objectContaining({
-          workspaceInfo: expect.objectContaining({
-            prNumber: 17,
-            prUrl: "https://github.com/acme/repo/pull/17",
-            prStatus: "draft",
-            status: "pr-open",
-          }),
-        }),
-      })
+        prNumber: 17,
+        prUrl: "https://github.com/acme/repo/pull/17",
+        status: "pr-open",
+      }),
+      "workspace-route:push-and-create-pr"
     );
-    expect((response as { body: { prNumber: number } }).body.prNumber).toBe(17);
   });
 });

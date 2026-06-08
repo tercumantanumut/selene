@@ -18,6 +18,7 @@ export {
     executeCommandWithValidation,
     startBackgroundProcess,
     getBackgroundProcess,
+    markBackgroundProcessObserved,
     killBackgroundProcess,
     listBackgroundProcesses,
     cleanupBackgroundProcesses,

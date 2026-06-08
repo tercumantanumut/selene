@@ -10,6 +10,7 @@ import { useTranslations } from "next-intl";
 import { useAuthRedirect } from "@/hooks/use-auth-redirect";
 import { useAuth } from "@/components/auth/auth-provider";
 import { AuthFormCard } from "@/components/auth/auth-form-card";
+import { readAuthResponseError } from "@/components/auth/auth-error";
 
 export default function SignUpPage() {
   const [email, setEmail] = useState("");
@@ -55,18 +56,26 @@ export default function SignUpPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await res.json();
-
       if (!res.ok) {
-        setError(data.error || t("errorShort"));
+        const responseError = await readAuthResponseError(res);
+        console.error("[Auth] Signup failed", {
+          status: res.status,
+          statusText: res.statusText,
+          error: responseError,
+        });
+        setError(responseError || t("errorShort"));
         setLoading(false);
         return;
       }
 
+      await res.json();
+
       await refreshAuth();
       router.push("/");
-    } catch {
-      setError(tc("error"));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : tc("error");
+      console.error("[Auth] Signup request failed", err);
+      setError(message);
       setLoading(false);
     }
   };

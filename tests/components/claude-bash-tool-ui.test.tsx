@@ -124,6 +124,26 @@ describe("ClaudeBashToolUI", () => {
     expect(container.textContent).toContain("installing...");
   });
 
+  it("renders the partial command from in-flight argsText while input is streaming", () => {
+    // GPT-5.5/Codex sometimes stalls mid-tool-input. Without partial extraction
+    // the tool card shows "(unknown command)" and the user can't tell whether
+    // the stream is progressing or stuck. The renderer must surface whatever
+    // the model has emitted so far — even if the JSON is unterminated.
+    flushSync(() => {
+      root.render(
+        createElement(ClaudeBashToolUI, {
+          toolName: "Bash",
+          // No `args` (parser hasn't completed yet) and no `result` (running).
+          argsText: '{"command":"cd /workspace && rg \\"Fake[A-Za-z',
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("cd /workspace && rg");
+    expect(container.textContent).toContain("Fake[A-Za-z");
+    expect(container.textContent).not.toContain("(unknown command)");
+  });
+
   it("normalizes apply_patch heredoc labels for inline diff rendering", () => {
     flushSync(() => {
       root.render(

@@ -1,4 +1,5 @@
 import { isInternalToolHistoryLeakText } from "@/lib/messages/internal-tool-history";
+import { UNKNOWN_TOOL_NAME } from "@/lib/messages/tool-name-placeholder";
 
 export type CodexInputItem = {
   type?: string;
@@ -121,7 +122,10 @@ const buildSyntheticCallFromOutput = (
   outputItem: CodexInputItem,
   callId: string
 ): CodexInputItem => {
-  const toolName = typeof outputItem.name === "string" ? outputItem.name : "tool";
+  const toolName =
+    typeof outputItem.name === "string" && outputItem.name.length > 0
+      ? outputItem.name
+      : UNKNOWN_TOOL_NAME;
   const callType = mapOutputTypeToCallType(outputItem.type ?? "function_call_output");
 
   return {
@@ -136,7 +140,10 @@ const buildSyntheticOutputFromCall = (
   callItem: CodexInputItem,
   callId: string
 ): CodexInputItem => {
-  const toolName = typeof callItem.name === "string" ? callItem.name : "tool";
+  const toolName =
+    typeof callItem.name === "string" && callItem.name.length > 0
+      ? callItem.name
+      : UNKNOWN_TOOL_NAME;
   const outputType = mapCallTypeToOutputType(callItem.type ?? "function_call");
 
   return {
@@ -274,7 +281,9 @@ function extractNestedToolCalls(item: CodexInputItem): CodexInputItem[] {
       toolCallParts.push({
         type: "function_call",
         call_id: part.toolCallId as string,
-        name: (typeof part.toolName === "string" ? part.toolName : "tool") as string,
+        name: (typeof part.toolName === "string" && part.toolName.length > 0
+          ? part.toolName
+          : UNKNOWN_TOOL_NAME) as string,
         arguments: args,
       });
       continue;
@@ -289,7 +298,9 @@ function extractNestedToolCalls(item: CodexInputItem): CodexInputItem[] {
       toolCallParts.push({
         type: part.type as string,
         call_id: cid,
-        name: (typeof part.name === "string" ? part.name : "tool") as string,
+        name: (typeof part.name === "string" && part.name.length > 0
+          ? part.name
+          : UNKNOWN_TOOL_NAME) as string,
         arguments:
           typeof part.arguments === "string" ? part.arguments : "{}",
       });

@@ -102,6 +102,17 @@ export const db: BetterSQLite3Database<typeof schema> = isBuildTime
   }))
   : getDb();
 
+export function getRawSqlite(): Database.Database {
+  if (isBuildTime) {
+    throw new Error("Database accessed during build time.");
+  }
+  getDb();
+  if (!globalForDb.sqlite) {
+    throw new Error("SQLite connection was not initialized.");
+  }
+  return globalForDb.sqlite;
+}
+
 // Export close function for cleanup
 function closeDb(): void {
   if (globalForDb.sqlite) {

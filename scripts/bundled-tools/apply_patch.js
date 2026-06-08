@@ -243,50 +243,102 @@ function writeFileEnsuringDir(filePath, content) {
   fs.writeFileSync(filePath, content, "utf8");
 }
 
-function applyAction(action, rootDir) {
+/**
+ * Plan a single action without touching the filesystem.
+ *
+ * Returns an "operation" describing the on-disk change to commit later.
+ * Throwing here aborts the whole patch with no on-disk changes — that is
+ * the atomicity contract: validate-all-then-commit-all, never partial.
+ *
+ * The planner uses an in-memory `virtualFs` map so a patch that touches
+ * the same file twice (e.g. add then update, or two updates) sees its
+ * own prior mutations during validation, matching what the committed
+ * result will be.
+ */
+function planAction(action, rootDir, virtualFs) {
   if (action.type === "update") {
     const targetPath = resolveWorkspacePath(action.filePath, rootDir);
-    if (!fs.existsSync(targetPath)) {
-      fail(`Cannot update missing file: ${action.filePath}`);
+    let original;
+    if (Object.prototype.hasOwnProperty.call(virtualFs, targetPath)) {
+      const prior = virtualFs[targetPath];
+      if (prior === null) {
+        fail(`Cannot update missing file: ${action.filePath}`);
+      }
+      original = prior;
+    } else {
+      if (!fs.existsSync(targetPath)) {
+        fail(`Cannot update missing file: ${action.filePath}`);
+      }
+      original = readTextFile(targetPath);
     }
 
-    const original = readTextFile(targetPath);
     const parsed = toLineArray(original);
     applyHunksToLines(parsed.lines, action.hunks, action.filePath);
-
     const updated = fromLineArray(parsed.lines, parsed.hasFinalNewline);
-    fs.writeFileSync(targetPath, updated, "utf8");
 
     if (action.moveTo) {
       const movedPath = resolveWorkspacePath(action.moveTo, rootDir);
-      fs.mkdirSync(path.dirname(movedPath), { recursive: true });
-      fs.renameSync(targetPath, movedPath);
+      virtualFs[targetPath] = null;
+      virtualFs[movedPath] = updated;
+      return { kind: "move", fromPath: targetPath, toPath: movedPath, content: updated };
     }
-    return;
+
+    virtualFs[targetPath] = updated;
+    return { kind: "write", targetPath, content: updated };
   }
 
   if (action.type === "add") {
     const targetPath = resolveWorkspacePath(action.filePath, rootDir);
-    if (fs.existsSync(targetPath)) {
+    const priorKnown = Object.prototype.hasOwnProperty.call(virtualFs, targetPath);
+    const existsAlready = priorKnown ? virtualFs[targetPath] !== null : fs.existsSync(targetPath);
+    if (existsAlready) {
       fail(`Cannot add file that already exists: ${action.filePath}`);
     }
 
     const body = action.contentLines.join("\n");
     const content = body.length > 0 ? `${body}\n` : "";
-    writeFileEnsuringDir(targetPath, content);
-    return;
+    virtualFs[targetPath] = content;
+    return { kind: "write", targetPath, content };
   }
 
   if (action.type === "delete") {
     const targetPath = resolveWorkspacePath(action.filePath, rootDir);
-    if (!fs.existsSync(targetPath)) {
+    const priorKnown = Object.prototype.hasOwnProperty.call(virtualFs, targetPath);
+    const existsNow = priorKnown ? virtualFs[targetPath] !== null : fs.existsSync(targetPath);
+    if (!existsNow) {
       fail(`Cannot delete missing file: ${action.filePath}`);
     }
-    fs.unlinkSync(targetPath);
-    return;
+    virtualFs[targetPath] = null;
+    return { kind: "delete", targetPath };
   }
 
   fail(`Unknown action type: ${action.type}`);
+}
+
+/**
+ * Commit a planned operation to disk. Phase-2 only: by the time we reach
+ * here every action has already been validated against the in-memory
+ * virtual fs, so these writes are expected to succeed.
+ */
+function commitOperation(op) {
+  if (op.kind === "write") {
+    writeFileEnsuringDir(op.targetPath, op.content);
+    return;
+  }
+  if (op.kind === "delete") {
+    fs.unlinkSync(op.targetPath);
+    return;
+  }
+  if (op.kind === "move") {
+    // Write the updated content to the source path first, then move it.
+    // This handles updates-with-rename atomically per file: the source
+    // exists (we validated it) so the rename is just a path change.
+    writeFileEnsuringDir(op.fromPath, op.content);
+    fs.mkdirSync(path.dirname(op.toPath), { recursive: true });
+    fs.renameSync(op.fromPath, op.toPath);
+    return;
+  }
+  fail(`Unknown operation kind: ${op.kind}`);
 }
 
 function main() {
@@ -294,8 +346,17 @@ function main() {
   const actions = parsePatch(patchText);
   const rootDir = process.cwd();
 
+  // Phase 1 — validate every action in memory. Any failure aborts the
+  // entire patch with zero on-disk changes (atomicity across files).
+  const operations = [];
+  const virtualFs = Object.create(null);
   for (const action of actions) {
-    applyAction(action, rootDir);
+    operations.push(planAction(action, rootDir, virtualFs));
+  }
+
+  // Phase 2 — commit. All actions validated; writes should succeed.
+  for (const op of operations) {
+    commitOperation(op);
   }
 
   process.stdout.write("Done!\n");

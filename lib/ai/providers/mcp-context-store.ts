@@ -2,48 +2,24 @@
  * Per-request MCP context store.
  *
  * AsyncLocalStorage propagates through async call trees, so setting a value
- * before streamText() / streamObject() makes it available deep inside the
- * fetch interceptor (createClaudeCodeFetch) without threading it through
- * every intermediate function signature.
+ * before the model call makes it available deep inside the tool executors
+ * and the MCP server bridge without threading it through every intermediate
+ * function signature.
  */
 
 import { AsyncLocalStorage } from "async_hooks";
 import type { LivePromptEntry } from "@/lib/background-tasks/live-prompt-queue-registry";
 
-export interface SdkToolResultRecord {
-  output: unknown;
-  toolName?: string;
-}
-
-export interface SdkToolResultBridge {
-  /**
-   * Publish a resolved SDK tool result (keyed by tool_use_id / toolCallId).
-   */
-  publish: (toolCallId: string, output: unknown, toolName?: string) => void;
-  /**
-   * Wait for a published result for this tool call.
-   * Returns undefined on timeout/cancel.
-   */
-  waitFor: (
-    toolCallId: string,
-    options?: { timeoutMs?: number | null; abortSignal?: AbortSignal }
-  ) => Promise<SdkToolResultRecord | undefined>;
-  /**
-   * Resolve and clear all pending waiters/results for request teardown.
-   */
-  dispose?: () => void;
-}
-
 /**
  * Per-request context used to build the Selene platform MCP server that
- * exposes ToolRegistry tools and per-agent MCP tools to the Claude Agent SDK.
+ * exposes ToolRegistry tools and per-agent MCP tools to in-process callers.
  */
 export interface SeleneMcpContext {
   /** Authenticated user ID */
   userId: string;
   /** Current chat session ID */
   sessionId: string;
-  /** Current agent run ID (used for live prompt injection into SDK sessions). */
+  /** Current agent run ID (used for live prompt injection). */
   runId?: string;
   /** Active character / agent ID (null for the default assistant) */
   characterId: string | null;
@@ -55,18 +31,18 @@ export interface SeleneMcpContext {
   enabledTools?: string[];
   /** Agent working directory (primary sync folder path) */
   cwd?: string;
-  /** Filesystem paths to cached Selene plugins (for SDK plugin loading) */
+  /** Filesystem paths to cached Selene plugins (for in-process plugin loading) */
   pluginPaths?: string[];
-  /** Hook execution context for bridging Selene hooks into SDK callbacks */
+  /** Hook execution context for routing plugin hooks during tool calls */
   hookContext?: {
     allowedPluginNames: Set<string>;
     pluginRoots: Map<string, string>;
   };
 
-  // ── SDK-specific tool loading and isolation fields ─────────────────────────
+  // ── Tool loading and isolation ─────────────────────────────────────────────
 
   /**
-   * Tool loading mode for the Agent SDK — mirrors the app-level setting.
+   * Tool loading mode — mirrors the app-level setting.
    * When "deferred", non-alwaysLoad tools require searchTools discovery first.
    * When "always", all enabled tools are active immediately.
    */
@@ -74,8 +50,7 @@ export interface SeleneMcpContext {
 
   /**
    * Tool names previously discovered via searchTools in earlier turns.
-   * Seeds the SDK session's activated-tools set so discoveries from prior
-   * requests persist (Agent SDK runs one full session per request).
+   * Seeds the activated-tools set so discoveries from prior requests persist.
    */
   previouslyDiscoveredTools?: string[];
 
@@ -100,9 +75,9 @@ export interface SeleneMcpContext {
   alwaysLoadMcpToolIds?: string[];
 
   /**
-   * Callback fired when an SDK MCP tool produces rich output (image URL, video URL, etc.).
+   * Callback fired when an MCP tool produces rich output (image URL, video URL, etc.).
    * Route.ts wires this into the Selene streaming state so image/video chips
-   * appear in the UI even when using the Agent SDK provider.
+   * appear in the UI.
    */
   onRichOutput?: (toolCallId: string, toolName: string, output: unknown) => void;
 
@@ -112,14 +87,8 @@ export interface SeleneMcpContext {
   onExecuteCommandProgress?: (update: import("@/lib/command-execution/types").ExecuteCommandProgressUpdate) => void;
 
   /**
-   * Bridge for resolving real Claude Agent SDK tool outputs (tool_use_result)
-   * back into Vercel AI SDK tool execution lifecycle.
-   */
-  sdkToolResultBridge?: SdkToolResultBridge;
-
-  /**
-   * Callback fired before queued live-prompt entries are injected into an active
-   * Claude Agent SDK session, so the chat route can split/persist messages.
+   * Callback fired before queued live-prompt entries are injected into an
+   * active run so the chat route can split/persist messages.
    */
   onQueueMessages?: (entries: LivePromptEntry[]) => Promise<void>;
 }

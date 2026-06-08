@@ -58,6 +58,7 @@ export interface ActiveRunLookupResponse {
     runId?: string | null;
     pipelineName?: string | null;
     startedAt?: string | null;
+    health?: "running" | "stale_suspected" | null;
     hasInteractiveWait?: boolean;
     shouldResumeBackgroundRun?: boolean;
     latestDeepResearchRunId?: string | null;

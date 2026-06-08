@@ -7,10 +7,10 @@ import { recordRetrieval } from "@/lib/ai/output-stub-telemetry";
 // ==========================================================================
 // Retrieve Full Content Tool
 // ==========================================================================
-// Allows the model to fetch previously-stored truncated content. Every call
-// is bounded: the model picks a slice (head/tail/range/grep) or the default
-// head preview, and the output is hard-capped to ~8K tokens so a single
-// retrieval can't re-inflate context.
+// Allows the model to fetch previously-stored truncated content. Retrieval is
+// documented as a line range, while legacy head/tail/grep fields remain
+// tolerated for backward compatibility. Every call is hard-capped to ~8K tokens
+// so a single retrieval can't re-inflate context.
 
 interface RetrieveFullContentArgs {
   contentId: string;
@@ -31,14 +31,6 @@ const retrieveFullContentSchema = jsonSchema<RetrieveFullContentArgs>({
       description:
         "The reference ID of the truncated content to retrieve (format: trunc_XXXXXXXX). This ID appears in the stub returned alongside oversized tool output.",
     },
-    head: {
-      type: "number",
-      description: "Return the first N lines of the stored content.",
-    },
-    tail: {
-      type: "number",
-      description: "Return the last N lines of the stored content.",
-    },
     range: {
       type: "array",
       items: { type: "number" },
@@ -47,11 +39,11 @@ const retrieveFullContentSchema = jsonSchema<RetrieveFullContentArgs>({
       description:
         "1-indexed inclusive [startLine, endLine] line range. Example: [400, 500].",
     },
-    grep: {
-      type: "string",
-      description:
-        "Regex pattern to search within the stored content. Returns matching lines with 2 lines of context each. Capped at 200 matches.",
-    },
+    // Legacy fields remain accepted so old saved tool calls and UI defaults do not fail,
+    // but they are intentionally not described to agents.
+    head: { type: "number" },
+    tail: { type: "number" },
+    grep: { type: "string" },
   },
   required: ["contentId"],
   additionalProperties: false,
@@ -63,14 +55,55 @@ interface RetrieveFullContentToolOptions {
 }
 
 /**
- * Core retrieveFullContent execution logic
+ * Core retrieveFullContent execution logic.
+ * Exported for unit-testing; consumers should use createRetrieveFullContentTool().
  */
-async function executeRetrieveFullContent(
+function normalizePositiveLineCount(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+function normalizeLineRange(value: RetrieveFullContentArgs["range"]): [number, number] | undefined {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return undefined;
+  }
+
+  const [rawStart, rawEnd] = value;
+  if (
+    typeof rawStart !== "number" ||
+    typeof rawEnd !== "number" ||
+    !Number.isFinite(rawStart) ||
+    !Number.isFinite(rawEnd)
+  ) {
+    return undefined;
+  }
+
+  const start = Math.floor(rawStart);
+  const end = Math.floor(rawEnd);
+  if (start <= 0 || end <= 0) {
+    return undefined;
+  }
+
+  return [start, end];
+}
+
+function normalizeGrep(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+export async function executeRetrieveFullContent(
   options: RetrieveFullContentToolOptions,
   args: RetrieveFullContentArgs
 ) {
   const { sessionId } = options;
-  const { contentId, head, tail, range, grep } = args;
+  const { contentId } = args;
+  const head = normalizePositiveLineCount(args.head);
+  const tail = normalizePositiveLineCount(args.tail);
+  const range = normalizeLineRange(args.range);
+  const grep = normalizeGrep(args.grep);
 
   const entry = getFullContent(sessionId, contentId);
 
@@ -143,7 +176,7 @@ async function executeRetrieveFullContent(
     metaBits.push("budget-clamped");
   }
   const metaLabel = metaBits.length > 0 ? ` (${metaBits.join(", ")})` : "";
-  const modeLabel = slice.mode === "default" ? "default head" : slice.mode;
+  const modeLabel = slice.mode === "default" ? "default range preview" : slice.mode;
 
   return {
     status: "success",
@@ -181,16 +214,13 @@ export function createRetrieveFullContentTool(options: RetrieveFullContentToolOp
 - ❌ Any contentId that doesn't start with "trunc_"
 
 **Retrieval policy:**
-- Prefer \`grep\`/\`range\`/\`head\` over asking for the full content.
-- Each call is hard-capped at ~8K tokens; use chunked reads for large content.
-- Defaults to the first 200 lines when no slice parameter is given.
+- Use \`range: [startLine, endLine]\` to read a bounded line slice.
+- Each call is hard-capped at ~8K tokens; use another range for the next chunk.
+- If no valid range is provided, the tool returns the first 200 lines.
 
 **Parameters:**
 - contentId (required) — the trunc_XXXXXXXX id from a stub
-- head: N — first N lines
-- tail: N — last N lines
-- range: [start, end] — 1-indexed inclusive line range
-- grep: "pattern" — regex search with 2 lines of context`,
+- range: [startLine, endLine] — 1-indexed inclusive line range`,
     inputSchema: retrieveFullContentSchema,
     execute: executeWithLogging,
   });

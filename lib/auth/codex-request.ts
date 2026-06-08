@@ -62,7 +62,7 @@ function getReasoningConfig(
     !isCodexMini;
 
   const supportsXhigh = isGpt54 || isGpt53General || isGpt53Codex || isGpt52General || isGpt52Codex || isCodexMax;
-  const supportsNone = isGpt54 || isGpt53General || isGpt52General || isGpt51General;
+  const supportsNone = isGpt52General || isGpt51General;
 
   const defaultEffort: ReasoningEffort = isGpt54
       ? "medium"
@@ -145,9 +145,15 @@ export async function transformCodexRequest(
   const originalModel = body.model as string | undefined;
   const normalizedModel = normalizeCodexModel(originalModel);
 
+  const shouldStream = body.stream === true;
+
   body.model = normalizedModel;
   body.store = false;
-  body.stream = true;
+  // Preserve the AI SDK call mode. `streamText` sends `stream: true` and expects
+  // SSE; `generateText` does not and expects a JSON Responses API object. Forcing
+  // every Codex request to stream makes non-streaming callers try to parse SSE as
+  // JSON, which breaks utility paths such as prompt enhancement.
+  body.stream = shouldStream;
   if (codexInstructions) {
     body.instructions = patchCodexInstructions(codexInstructions);
   }

@@ -12,6 +12,27 @@ import { mkdtemp, open, readFile, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
+function isUnixLikePlatform(): boolean {
+    return process.platform === "darwin" || process.platform === "linux";
+}
+
+function signalChildProcess(child: ReturnType<typeof spawn>, signal: NodeJS.Signals, useProcessGroup: boolean): void {
+    if (useProcessGroup && child.pid && isUnixLikePlatform()) {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+        }
+    }
+
+    try {
+        child.kill(signal);
+    } catch {
+        // Process already exited.
+    }
+}
+
 /**
  * Returns true when the error is an EBADF (bad file descriptor) failure.
  * On macOS in Electron's utilityProcess, creating stdio pipes triggers EBADF.
@@ -47,6 +68,14 @@ export async function spawnWithFileCapture(
     exitCode: number | null;
     signal: NodeJS.Signals | null;
     timedOut: boolean;
+    /**
+     * True when the raw child output exceeded `maxOutputSize` and was clamped
+     * during the read-back step, OR when the child was killed by the timeout.
+     * Callers must treat this as the authoritative truncation signal so
+     * downstream consumers can surface it. `timedOut` is retained for
+     * backwards compatibility with callers that distinguish the two causes.
+     */
+    truncated: boolean;
 }> {
     const tmpDir = await mkdtemp(join(tmpdir(), "selene-exec-"));
     const outFile = join(tmpDir, "out");
@@ -75,6 +104,7 @@ export async function spawnWithFileCapture(
                     env,
                     // Avoid stdio pipes entirely; child writes directly to temp files.
                     stdio: [inHandle ? inHandle.fd : "ignore", outHandle.fd, errHandle.fd],
+                    detached: isUnixLikePlatform(),
                     windowsHide: true,
                 });
 
@@ -85,8 +115,10 @@ export async function spawnWithFileCapture(
 
                 const timer = setTimeout(() => {
                     timedOut = true;
-                    try { child.kill("SIGTERM"); } catch { /* already dead */ }
-                    setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ok */ } }, 5000);
+                    signalChildProcess(child, "SIGTERM", isUnixLikePlatform());
+                    setTimeout(() => {
+                        signalChildProcess(child, "SIGKILL", isUnixLikePlatform());
+                    }, 5000);
                 }, timeout);
 
                 child.on("error", (err) => {
@@ -105,12 +137,20 @@ export async function spawnWithFileCapture(
                 readFile(errFile, "utf-8").catch(() => ""),
             ]);
 
+            // The child writes directly to temp files with no live cap, so
+            // size-based truncation is detected at read-back time by comparing
+            // raw lengths to `maxOutputSize`. `timedOut` captures SIGTERM-by-
+            // deadline. Either condition counts as truncation.
+            const sizeExceeded =
+                rawOut.length > maxOutputSize || rawErr.length > maxOutputSize;
+
             return {
                 stdout: rawOut.slice(0, maxOutputSize),
                 stderr: rawErr.slice(0, maxOutputSize),
                 exitCode,
                 signal,
                 timedOut,
+                truncated: timedOut || sizeExceeded,
             };
         } finally {
             await Promise.all([

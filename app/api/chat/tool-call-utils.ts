@@ -1,4 +1,5 @@
 import { normalizeToolResultOutput } from "@/lib/ai/tool-result-utils";
+import { toStructuredToolName } from "@/lib/messages/tool-name-placeholder";
 
 export function reconcileToolCallPairs(
   parts: Array<{
@@ -40,7 +41,7 @@ export function reconcileToolCallPairs(
         normalized.push({
           type: "tool-call",
           toolCallId: part.toolCallId,
-          toolName: part.toolName || "tool",
+          toolName: toStructuredToolName(part.toolName),
           input: {
             __reconstructed: true,
             reason: "missing_tool_call_in_history",
@@ -69,7 +70,7 @@ export function reconcileToolCallPairs(
     normalized.push({
       type: "tool-result",
       toolCallId,
-      toolName: callPart?.toolName || "tool",
+      toolName: toStructuredToolName(callPart?.toolName),
       output: toModelToolResultOutput({
         status: "error",
         error: "Tool execution did not return a persisted result in history.",

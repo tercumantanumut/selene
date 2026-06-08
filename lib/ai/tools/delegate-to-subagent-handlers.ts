@@ -34,6 +34,9 @@ import {
 } from "./delegate-to-subagent-types";
 import { appendToLivePromptQueueBySession } from "@/lib/background-tasks/live-prompt-queue-registry";
 import { addDelegationCompletion } from "./delegation-completion-store";
+import {
+  buildDelegationDeliveryMetadata,
+} from "./delegation-delivery-registry";
 import { emitDelegationCompleted } from "@/lib/background-tasks/delegation-completion-signal";
 
 // ---------------------------------------------------------------------------
@@ -45,7 +48,7 @@ import { emitDelegationCompleted } from "@/lib/background-tasks/delegation-compl
  * When `initiatorSessionId` is provided, only delegations created in that
  * session are returned — this prevents cross-session leakage.
  */
-const DELEGATION_STALE_TTL_MS = 60 * 60 * 1000;
+const DELEGATION_STALE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isDelegationExpired(delegation: ActiveDelegation, now = Date.now()): boolean {
   const referenceTime = delegation.settledAt ?? delegation.startedAt;
@@ -398,17 +401,17 @@ async function extractFinalResponse(sessionId: string): Promise<string | undefin
 async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation): Promise<void> {
   // Fetch the actual final response from the subagent's session
   let resultContent: string;
+  let shouldAppendObserveReminder = false;
   if (delegation.error) {
     resultContent = `<error>${delegation.error}</error>`;
   } else {
     try {
       const finalResponse = await extractFinalResponse(delegation.sessionId);
-      // Cap to 4000 chars to avoid context blowup with many concurrent agents
-      const MAX_INLINE_RESULT_CHARS = 4000;
-      if (finalResponse && finalResponse.length > MAX_INLINE_RESULT_CHARS) {
-        resultContent = finalResponse.slice(0, MAX_INLINE_RESULT_CHARS) + "\n... [result truncated — use observe to read full response]";
+      if (finalResponse?.trim()) {
+        resultContent = finalResponse;
+        shouldAppendObserveReminder = true;
       } else {
-        resultContent = finalResponse || "No response captured.";
+        resultContent = "No response captured. Observe the session first, send continue preferably.";
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -422,20 +425,38 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     ? delegation.settledAt - delegation.startedAt
     : Date.now() - delegation.startedAt;
 
-  const completionMessage = [
-    `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${delegation.error ? "failed" : "completed"}" elapsed="${elapsed}ms">`,
+  const completionMessageParts = [
+    `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${delegation.error ? "failed" : "completed"}" elapsed="${elapsed}ms" resultVersion="${delegation.resultVersion}">`,
     resultContent,
     `</delegation-result>`,
-  ].join("\n");
+  ];
+
+  if (shouldAppendObserveReminder) {
+    completionMessageParts.push(
+      `Note: You have the sub agent result in your context window, avoid using observe action to see full results again unless necessary.`,
+    );
+  }
+
+  const completionMessage = completionMessageParts.join("\n");
+
+  const deliveryMetadata = buildDelegationDeliveryMetadata({
+    delegationId: delegation.id,
+    resultVersion: delegation.resultVersion,
+    resultContent: completionMessage,
+    deliveredAt: delegation.settledAt ?? Date.now(),
+  });
 
   const queued = appendToLivePromptQueueBySession(delegation.initiatorSessionId, {
-    id: `deleg-complete-${delegation.id}`,
+    id: deliveryMetadata.deliveryId,
     content: completionMessage,
     stopIntent: false,
     metadata: {
       kind: "delegation_completion",
       delegationId: delegation.id,
       delegateName: delegation.delegateName,
+      resultVersion: deliveryMetadata.resultVersion,
+      deliveryId: deliveryMetadata.deliveryId,
+      resultHash: deliveryMetadata.resultHash,
     },
   });
 
@@ -454,6 +475,10 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     completedAt: delegation.settledAt ?? Date.now(),
     error: delegation.error,
     resultContent: completionMessage,
+    resultVersion: deliveryMetadata.resultVersion,
+    deliveryId: deliveryMetadata.deliveryId,
+    resultHash: deliveryMetadata.resultHash,
+    deliveredAt: deliveryMetadata.deliveredAt,
   });
 
   // Signal the SSE endpoint so the frontend can auto-resume the conversation.

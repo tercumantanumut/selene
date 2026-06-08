@@ -48,6 +48,34 @@ function getCommandLabel(args?: BashArgs): string {
   return "(unknown command)";
 }
 
+/**
+ * Extract a partial `command` value from in-flight argsText while the model
+ * is still streaming JSON. Without this, the bash tool card renders a stale
+ * "(unknown command)" label until the JSON is complete — which makes the
+ * tool card appear to do nothing during the input-streaming phase, and gives
+ * users no way to tell whether the stream is progressing or stalled.
+ */
+function extractStreamingCommand(argsText?: string): string | undefined {
+  if (!argsText) return undefined;
+  // Try a complete parse first — argsText may already be valid JSON.
+  try {
+    const parsed = JSON.parse(argsText) as { command?: unknown };
+    if (typeof parsed.command === "string") return parsed.command;
+  } catch {
+    // fall through to partial extraction
+  }
+  // Partial extraction: locate the first "command":"..." substring and
+  // recover whatever has been emitted so far, even if the closing quote
+  // hasn't arrived yet. Handles escaped quotes inside the value.
+  const match = argsText.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (!match) return undefined;
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return match[1];
+  }
+}
+
 function getStructuredResult(result: unknown): BashResult | null {
   if (!result || typeof result !== "object" || Array.isArray(result)) return null;
   return result as BashResult;
@@ -67,12 +95,16 @@ function isErrorResult(result: unknown, structured: BashResult | null): boolean 
  * Prefer structured stdout/stderr/error fields when available so command
  * failures render the real shell details instead of a generic error banner.
  */
-export const ClaudeBashToolUI: ToolCallContentPartComponent = ({ args, result }) => {
+export const ClaudeBashToolUI: ToolCallContentPartComponent = ({ args, argsText, result }) => {
   const structured = getStructuredResult(result);
-  const command = getCommandLabel(args);
+  const isRunning = result === undefined;
+  // While input is still streaming the parsed `args` may be missing a
+  // `command` field. Recover the partial command from in-flight argsText so
+  // the tool card shows progress instead of a stale "(unknown command)".
+  const streamingCommand = isRunning && !args?.command ? extractStreamingCommand(argsText) : undefined;
+  const command = streamingCommand ?? getCommandLabel(args);
   const outputText = parseTextResult(result);
   const hasError = isErrorResult(result, structured);
-  const isRunning = result === undefined;
 
   const stdout = structured?.stdout ?? (!hasError ? outputText : undefined);
   const stderr = structured?.stderr;

@@ -98,7 +98,7 @@ function unwrapMcpTextWrappedToolResult(output: unknown): unknown {
   return output;
 }
 
-const EXECUTE_COMMAND_CONTEXT_OUTPUT_LIMIT = 2000;
+const COMMAND_CONTEXT_OUTPUT_LIMIT = 2000;
 
 function truncateField(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -106,7 +106,7 @@ function truncateField(value: unknown, maxLength: number): string | undefined {
   return `${value.slice(0, maxLength)}\n... [TRUNCATED ${value.length - maxLength} CHARS] ...`;
 }
 
-function compactExecuteCommandOutput(output: unknown): unknown {
+function compactCommandOutput(output: unknown): unknown {
   const result = getRecord(output);
   if (!result) return output;
 
@@ -120,8 +120,8 @@ function compactExecuteCommandOutput(output: unknown): unknown {
   if (result.isTruncated === true) compact.isTruncated = true;
   if (typeof result.error === "string") compact.error = result.error;
 
-  const stdout = truncateField(result.stdout, EXECUTE_COMMAND_CONTEXT_OUTPUT_LIMIT);
-  const stderr = truncateField(result.stderr, EXECUTE_COMMAND_CONTEXT_OUTPUT_LIMIT);
+  const stdout = truncateField(result.stdout, COMMAND_CONTEXT_OUTPUT_LIMIT);
+  const stderr = truncateField(result.stderr, COMMAND_CONTEXT_OUTPUT_LIMIT);
   if (stdout) compact.stdout = stdout;
   if (stderr) compact.stderr = stderr;
 
@@ -134,6 +134,22 @@ function compactExecuteCommandOutput(output: unknown): unknown {
   }
 
   return compact;
+}
+
+function stripEphemeralReadFileImageBytes(output: unknown): unknown {
+  const result = getRecord(output);
+  if (!result || result.kind !== "image") return output;
+
+  const image = getRecord(result.image);
+  if (!image || typeof image.dataUri !== "string") return output;
+
+  return {
+    ...result,
+    image: {
+      ...image,
+      dataUri: "[ephemeral image bytes omitted from persisted history]",
+    },
+  };
 }
 
 function summarizeToolKeys(result: Record<string, unknown>): string {
@@ -170,6 +186,13 @@ function buildToolSummary(toolName: string, input?: unknown, output?: unknown): 
   switch (safeName) {
     case "readFile": {
       const filePath = getString(result.filePath) || getString(result.path) || "file";
+      if (result.kind === "image") {
+        const image = getRecord(result.image);
+        const mediaType = getString(image?.mediaType) || "image";
+        const byteLength = getNumber(image?.byteLength);
+        const sizeText = byteLength ? ` (${Math.round(byteLength / 1024)} KB)` : "";
+        return `Read ${filePath}: image ${mediaType}${sizeText}`;
+      }
       // Binary file soft-redirect: show a descriptive summary instead of "lines ?"
       if (result.isBinary === true) {
         return `${filePath}: binary file (use Read tool)`;
@@ -345,18 +368,22 @@ export function normalizeToolResultOutput(
   // Canonical history must remain lossless. Projection is allowed to compact/limit.
   const mode = options.mode;
   let normalizedOutput = unwrapMcpTextWrappedToolResult(output);
-  if (mode === "projection" && toolName === "executeCommand") {
-    normalizedOutput = compactExecuteCommandOutput(normalizedOutput);
+  if (toolName === "readFile") {
+    normalizedOutput = stripEphemeralReadFileImageBytes(normalizedOutput);
+  }
+  if (mode === "projection" && (toolName === "executeCommand" || toolName === "bash")) {
+    normalizedOutput = compactCommandOutput(normalizedOutput);
   }
 
   // Get session ID from run context for content storage
   const sessionId = getRunContext()?.sessionId;
 
   if (mode === "projection") {
-    // Exempt tools that intentionally return full content payloads.
+    // Exempt tools that intentionally return bounded content payloads.
     // readFile has built-in limits; skill and webSearch browse mode may return
     // richer content that should not be utility-truncated here.
-    const EXEMPT_TOOLS = new Set(["readFile", "skill", "webSearch"]);
+    // retrieveFullContent self-limits to PER_CALL_TOKEN_BUDGET (8K) via log-slice.ts.
+    const EXEMPT_TOOLS = new Set(["readFile", "skill", "webSearch", "retrieveFullContent"]);
 
     // Per-tool token budgets for tools that need more context than the default 3,000.
     // localGrep and vectorSearch results are dense, useful content — 10,000 tokens

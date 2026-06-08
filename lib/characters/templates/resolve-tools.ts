@@ -38,7 +38,7 @@ export const ALWAYS_ENABLED_TOOLS = [
   "readFile",
   "editFile",
   "writeFile",
-  "bash",
+  "executeCommand",
 ] as const;
 
 /** Utility tools that are ALWAYS enabled — no external dependencies */

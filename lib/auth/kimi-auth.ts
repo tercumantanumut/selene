@@ -32,6 +32,7 @@ export const KIMI_OAUTH_CONFIG = {
 
 let cachedAuthState: KimiAuthState | null = null;
 let cachedToken: KimiOAuthToken | null = null;
+let refreshInFlight: Promise<boolean> | null = null;
 
 export function getKimiAuthState(): KimiAuthState {
   if (cachedAuthState) return cachedAuthState;
@@ -154,6 +155,18 @@ export function forceExpireKimiToken(): void {
 }
 
 export async function refreshKimiToken(): Promise<boolean> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+
+  refreshInFlight = refreshKimiTokenInternal().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
+}
+
+async function refreshKimiTokenInternal(): Promise<boolean> {
   const token = getKimiOAuthToken();
   if (!token?.refresh_token) {
     return false;
@@ -222,10 +235,11 @@ export async function refreshKimiToken(): Promise<boolean> {
 }
 
 export async function ensureValidKimiToken(): Promise<boolean> {
-  if (isKimiTokenValid()) return true;
   if (needsKimiTokenRefresh()) {
     return refreshKimiToken();
   }
+
+  if (isKimiTokenValid()) return true;
 
   // Token is fully expired but we still have a refresh_token — attempt refresh.
   const token = getKimiOAuthToken();

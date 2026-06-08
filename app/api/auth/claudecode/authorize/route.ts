@@ -1,37 +1,36 @@
 import { NextResponse } from "next/server";
 import { getClaudeCodeAuthStatus } from "@/lib/auth/claudecode-auth";
-import { startClaudeLoginProcess } from "@/lib/auth/claude-login-process";
+import { startClaudeLogin } from "@/lib/ai/providers/cliproxy/login";
 
 /**
  * GET /api/auth/claudecode/authorize
  *
- * First checks if already authenticated via the Agent SDK.
- * If not, spawns `claude login` as a persistent subprocess (stdin piped) so the
- * user can paste the authorization code back via POST /api/auth/claudecode/exchange.
+ * If the sidecar already has a credential on file, short-circuits with
+ * `authenticated: true`. Otherwise spawns `cliproxyapi -claude-login` and
+ * returns the OAuth URL for the UI to open in a browser. The OAuth callback
+ * fires automatically into the sidecar — there's no code-paste step.
  */
 export async function GET() {
   try {
     const status = await getClaudeCodeAuthStatus();
-
     if (status.authenticated) {
       return NextResponse.json({
         success: true,
         authenticated: true,
-        message: "Claude Agent SDK is already authenticated",
+        message: "Claude Code is already authenticated",
       });
     }
 
-    // Start the login subprocess and wait for the URL to appear in its output.
-    const { url, output } = await startClaudeLoginProcess();
+    const { url, output } = await startClaudeLogin();
 
     return NextResponse.json({
       success: true,
       authenticated: false,
-      url: url ?? status.authUrl ?? null,
+      url: url ?? null,
       output,
       message: url
-        ? "Open the provided URL to authenticate, then paste the code below."
-        : "Authenticate Claude Agent SDK via your terminal if no URL is provided",
+        ? "Open the provided URL to authenticate; this dialog will refresh when the OAuth callback completes."
+        : "Could not detect the OAuth URL — check that the CLIProxyAPI sidecar is installed.",
     });
   } catch (error) {
     console.error("[ClaudeCodeAuthorize] Failed:", error);

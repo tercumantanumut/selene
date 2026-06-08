@@ -20,7 +20,16 @@ import {
   Settings2,
   PanelRightClose,
   PanelRightOpen,
+  Ruler,
+  Pipette,
+  MessageSquare,
 } from "lucide-react";
+import type {
+  Measurement,
+  PickedColor,
+  DesignComment,
+} from "@/lib/design/workspace/types";
+import { pickedColorSourceShortLabel } from "@/lib/design/workspace/picked-color-display";
 import { cn } from "@/lib/utils";
 import {
   requestDesignWorkspaceSettings,
@@ -82,15 +91,296 @@ function ActiveDesignLabel() {
   );
 }
 
+function MeasurementsSection({
+  measurements,
+  onRemove,
+  onClear,
+}: {
+  measurements: Measurement[];
+  onRemove: (id: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2.5">
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <Ruler className="h-3 w-3" />
+          Measurements ({measurements.length})
+        </label>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-1.5 text-[11px]"
+          onClick={onClear}
+          aria-label="Clear all measurements"
+        >
+          Clear all
+        </Button>
+      </div>
+      {measurements.map((m) => (
+        <div key={m.id} className="space-y-1 rounded border border-border/50 bg-background/50 p-1.5 text-[11px]">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="truncate font-mono text-[10px] text-muted-foreground">
+                {m.from.selector} → {m.to.selector}
+              </div>
+              {m.orphaned === true && (
+                <Badge
+                  variant="outline"
+                  className="px-1 py-0 text-[10px]"
+                  title="One or both selectors no longer match a live DOM node in the preview"
+                >
+                  stale
+                </Badge>
+              )}
+            </div>
+            <button
+              onClick={() => onRemove(m.id)}
+              className="shrink-0 text-muted-foreground transition-colors hover:text-red-500"
+              aria-label="Remove measurement"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-x-2 gap-y-0.5">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">dx</span>
+              <span className="font-mono">{Math.round(m.distances.dx)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">dy</span>
+              <span className="font-mono">{Math.round(m.distances.dy)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">d</span>
+              <span className="font-mono">{Math.round(m.distances.euclidean)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">h</span>
+              <span className="font-mono">{Math.round(m.distances.horizontal)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">v</span>
+              <span className="font-mono">{Math.round(m.distances.vertical)}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PickedColorsSection({
+  colors,
+  onRemove,
+  onClear,
+}: {
+  colors: PickedColor[];
+  onRemove: (id: string) => void;
+  onClear: () => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = useCallback(async (key: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied((current) => (current === key ? null : current)), 1200);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2.5">
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <Pipette className="h-3 w-3" />
+          Picked colors ({colors.length})
+        </label>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-1.5 text-[11px]"
+          onClick={onClear}
+          aria-label="Clear all picked colors"
+        >
+          Clear all
+        </Button>
+      </div>
+      {colors.map((c) => {
+        const rgbStr = `rgba(${c.rgb.r}, ${c.rgb.g}, ${c.rgb.b}, ${c.rgb.a})`;
+        const hslStr = `hsla(${c.hsl.h}, ${c.hsl.s}%, ${c.hsl.l}%, ${c.hsl.a})`;
+        return (
+          <div key={c.id} className="space-y-1 rounded border border-border/50 bg-background/50 p-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span
+                  className="h-5 w-5 shrink-0 rounded border border-border"
+                  style={{ backgroundColor: c.hex }}
+                  aria-label={`Swatch ${c.hex}`}
+                />
+                <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                  {pickedColorSourceShortLabel(c.source)}
+                </Badge>
+              </div>
+              <button
+                onClick={() => onRemove(c.id)}
+                className="text-muted-foreground transition-colors hover:text-red-500"
+                aria-label="Remove picked color"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="grid grid-cols-[auto,1fr,auto] items-center gap-x-1.5 gap-y-0.5 text-[11px]">
+              <span className="text-muted-foreground">hex</span>
+              <span className="truncate font-mono">{c.hex}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 w-5 p-0"
+                aria-label="Copy hex"
+                onClick={() => void copy(`${c.id}-hex`, c.hex)}
+              >
+                {copied === `${c.id}-hex` ? (
+                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </Button>
+              <span className="text-muted-foreground">rgb</span>
+              <span className="truncate font-mono">{rgbStr}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 w-5 p-0"
+                aria-label="Copy rgb"
+                onClick={() => void copy(`${c.id}-rgb`, rgbStr)}
+              >
+                {copied === `${c.id}-rgb` ? (
+                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </Button>
+              <span className="text-muted-foreground">hsl</span>
+              <span className="truncate font-mono">{hslStr}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 w-5 p-0"
+                aria-label="Copy hsl"
+                onClick={() => void copy(`${c.id}-hsl`, hslStr)}
+              >
+                {copied === `${c.id}-hsl` ? (
+                  <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </Button>
+            </div>
+            <div
+              className="overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[10px] text-muted-foreground"
+              title={`${c.element.tagName} · ${c.element.selector}`}
+            >
+              {c.element.tagName} · {c.element.selector}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CommentsSection({
+  comments,
+  onRemove,
+  onResolve,
+  onClear,
+}: {
+  comments: DesignComment[];
+  onRemove: (id: string) => void;
+  onResolve: (id: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2.5">
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <MessageSquare className="h-3 w-3" />
+          Comments ({comments.length})
+        </label>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-1.5 text-[11px]"
+          onClick={onClear}
+          aria-label="Clear all comments"
+        >
+          Clear all
+        </Button>
+      </div>
+      {comments.map((c, idx) => (
+        <div
+          key={c.id}
+          className={cn(
+            "space-y-1 rounded border border-border/50 bg-background/50 p-1.5 text-[11px]",
+            c.resolved && "opacity-60",
+          )}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[10px] font-semibold text-white">
+                {idx + 1}
+              </span>
+              {c.resolved && (
+                <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                  resolved
+                </Badge>
+              )}
+              {c.orphaned === true && (
+                <Badge
+                  variant="outline"
+                  className="px-1 py-0 text-[10px]"
+                  title="Selector no longer matches a live DOM node in the preview"
+                >
+                  stale
+                </Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-5 px-1.5 text-[10px]"
+                onClick={() => onResolve(c.id)}
+                aria-label={c.resolved ? "Reopen comment" : "Resolve comment"}
+              >
+                {c.resolved ? "Reopen" : "Resolve"}
+              </Button>
+              <button
+                onClick={() => onRemove(c.id)}
+                className="text-muted-foreground transition-colors hover:text-red-500"
+                aria-label="Remove comment"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <div className={cn("whitespace-pre-wrap", c.resolved && "line-through")}>{c.text}</div>
+          <div className="truncate font-mono text-[10px] text-muted-foreground">{c.elementSelector}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DetailsContent() {
   const {
     updateComponent,
     removeComponent,
     showCode,
     toggleCode,
-    selectedElement,
     selectedElements,
-    setSelectedElement,
     removeSelectedElement,
     clearSelectedElements,
     config,
@@ -100,15 +390,23 @@ function DetailsContent() {
     history: workspaceHistory,
     setConfig,
     sessionId,
+    measurements,
+    removeMeasurement,
+    clearMeasurements,
+    pickedColors,
+    removePickedColor,
+    clearPickedColors,
+    comments,
+    removeComment,
+    resolveComment,
+    clearComments,
   } = useDesignWorkspaceStore(
     useShallow((s) => ({
       updateComponent: s.updateComponent,
       removeComponent: s.removeComponent,
       showCode: s.showCode,
       toggleCode: s.toggleCode,
-      selectedElement: s.selectedElement,
       selectedElements: s.selectedElements,
-      setSelectedElement: s.setSelectedElement,
       removeSelectedElement: s.removeSelectedElement,
       clearSelectedElements: s.clearSelectedElements,
       config: s.config,
@@ -118,6 +416,16 @@ function DetailsContent() {
       history: s.history,
       setConfig: s.setConfig,
       sessionId: s.sessionId,
+      measurements: s.measurements,
+      removeMeasurement: s.removeMeasurement,
+      clearMeasurements: s.clearMeasurements,
+      pickedColors: s.pickedColors,
+      removePickedColor: s.removePickedColor,
+      clearPickedColors: s.clearPickedColors,
+      comments: s.comments,
+      removeComment: s.removeComment,
+      resolveComment: s.resolveComment,
+      clearComments: s.clearComments,
     })),
   );
 
@@ -308,6 +616,31 @@ function DetailsContent() {
               </div>
             ))}
           </div>
+        )}
+
+        {measurements.length > 0 && (
+          <MeasurementsSection
+            measurements={measurements}
+            onRemove={removeMeasurement}
+            onClear={clearMeasurements}
+          />
+        )}
+
+        {pickedColors.length > 0 && (
+          <PickedColorsSection
+            colors={pickedColors}
+            onRemove={removePickedColor}
+            onClear={clearPickedColors}
+          />
+        )}
+
+        {comments.length > 0 && (
+          <CommentsSection
+            comments={comments}
+            onRemove={removeComment}
+            onResolve={resolveComment}
+            onClear={clearComments}
+          />
         )}
 
         <div className="space-y-1">

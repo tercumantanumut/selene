@@ -32,6 +32,8 @@ export interface DelegateToSubagentInput {
   toolUseId?: string;
   answers?: Record<string, string>;
   waitSeconds?: number;
+  /** Re-read a settled result even when it was already auto-delivered. */
+  force?: boolean;
   /** @deprecated Use mode instead. Kept for backwards compatibility. */
   runInBackground?: boolean;
   mode?: "blocking" | "background";
@@ -76,6 +78,11 @@ export interface DelegateResult {
   steps?: Array<{ toolName: string; summary: string }>;
   /** Total new steps since last observe. */
   newStepCount?: number;
+  deliveryStatus?: "already_delivered";
+  deliveryId?: string;
+  resultVersion?: number;
+  resultHash?: string;
+  deliveredAt?: number;
   elapsed?: number;
   waitedMs?: number;
   waitTimedOut?: boolean;
@@ -123,6 +130,8 @@ export interface ActiveDelegation {
   error?: string;
   /** Watermark for incremental observe — tracks the last orderingIndex seen by the caller. */
   lastObservedOrderingIndex: number;
+  /** Monotonic version for the latest settled result; increments on continue(). */
+  resultVersion: number;
 }
 
 export type SubagentCandidate = {

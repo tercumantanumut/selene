@@ -46,6 +46,7 @@ import {
 import {
   drainDelegationCompletions,
 } from "@/lib/ai/tools/delegation-completion-store";
+import { markDelegationResultDelivered } from "@/lib/ai/tools/delegation-delivery-registry";
 import { createHeartbeatStream } from "@/lib/utils/heartbeat-stream";
 import {
     classifyRecoverability,
@@ -59,6 +60,7 @@ import { nowISO } from "@/lib/utils/timestamp";
 import { convertDBMessagesToUIMessages, type DBToolCallPart } from "@/lib/messages/converter";
 import type { FrontendMessage } from "@/lib/messages/tool-enhancement";
 import { MAX_STREAM_TOOL_RESULT_TOKENS } from "@/lib/ai/tool-result-stream-guard";
+import { createToolInputStallWatchdog } from "@/lib/ai/tool-input-stall-watchdog";
 import {
   withRunContext,
   createAgentRun,
@@ -80,7 +82,7 @@ import type { InjectionStreamWriter } from "@/lib/ai/streaming/injection-stream-
 import { generateNextAssistantMessageId } from "@/lib/ai/streaming/injection-stream-emitter";
 import {
   findOrphanToolCalls,
-  buildSyntheticModelToolResults,
+  insertSyntheticToolResultsAfterMatchingAssistant,
 } from "@/lib/ai/providers/message-shaping";
 
 // ── Extracted utility modules ─────────────────────────────────────────────────
@@ -110,11 +112,12 @@ import {
 } from "./canonical-content";
 import { buildToolsForRequest } from "./tools-builder";
 import { prepareMessagesForRequest } from "./message-prep";
+import { routeMultimodalReadFileResults } from "./multimodal-tool-result-router";
 import { createOnFinishCallback, createOnAbortCallback, handleUndrainedQueueMessages } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
 import { buildSystemPromptForRequest } from "./system-prompt-builder";
+import { createVisibleAssistantChunkSanitizer } from "./ui-stream-sanitizer";
 import { mcpContextStore, type SeleneMcpContext } from "@/lib/ai/providers/mcp-context-store";
-import { createSdkToolResultBridge } from "./sdk-tool-result-bridge";
 import {
   disableToolForSchemaRecovery,
   parseInvalidToolSchemaError,
@@ -129,6 +132,25 @@ import {
   isUiChunkCommittable,
   shouldAttemptPrecommitRecovery,
 } from "./ui-stream-recovery";
+
+function markDeliveredDelegationPromptEntries(
+  entries: Array<{ id: string; timestamp: number; metadata?: { kind?: string; delegationId?: string; resultVersion?: number; deliveryId?: string; resultHash?: string } }>,
+  channel: "live-prompt" | "completion-store",
+): void {
+  for (const entry of entries) {
+    if (entry.metadata?.kind !== "delegation_completion" || !entry.metadata.deliveryId || !entry.metadata.resultHash) {
+      continue;
+    }
+    markDelegationResultDelivered({
+      delegationId: entry.metadata.delegationId ?? entry.id,
+      resultVersion: entry.metadata.resultVersion ?? 1,
+      deliveryId: entry.metadata.deliveryId,
+      resultHash: entry.metadata.resultHash,
+      deliveredAt: entry.timestamp,
+      channel,
+    });
+  }
+}
 
 // Initialize tool event handler for observability (once per runtime)
 initializeToolEventHandler();
@@ -153,7 +175,6 @@ export async function POST(req: Request) {
   let sessionId = "";
   let runId = "";
   let latestUserPromptText = "";
-  let sdkToolResultBridge: ReturnType<typeof createSdkToolResultBridge> | null = null;
   let streamAbortSignal: AbortSignal = req.signal;
   let clientDisconnected = false;
   try {
@@ -225,6 +246,7 @@ export async function POST(req: Request) {
       }
     }
 
+    const isDelegationAutoResume = req.headers.get("X-Delegation-Auto-Resume") === "true";
     const body = await req.json();
     const { messages, sessionId: bodySessionId } = body as {
       messages: Array<{
@@ -277,7 +299,7 @@ export async function POST(req: Request) {
         ? rawDesignPreviewTheme
         : undefined;
 
-    console.debug(`[CHAT API] Session ID: header=${headerSessionId}, body=${bodySessionId}, using=${providedSessionId}, characterId=${characterId}, source=${taskSource || "chat"}`);
+    console.debug(`[CHAT API] Session ID: header=${headerSessionId}, body=${bodySessionId}, using=${providedSessionId}, characterId=${characterId}, source=${taskSource || (isDelegationAutoResume ? "delegation-auto-resume" : "chat")}`);
 
     const lastMsg = messages[messages.length - 1];
     console.debug(`[CHAT API] Last message: role=${lastMsg?.role}, hasParts=${!!lastMsg?.parts}, partsCount=${lastMsg?.parts?.length}, hasAttachments=${!!(lastMsg as any)?.experimental_attachments}`);
@@ -391,6 +413,7 @@ export async function POST(req: Request) {
       ? (update: import("@/lib/command-execution/types").ExecuteCommandProgressUpdate) => {
           if (!update.toolCallId) return;
 
+          const toolName = update.toolName ?? "executeCommand";
           const commandLabel = [update.command, ...(update.args ?? [])].join(" ").trim();
           const progressMessage = update.message?.trim()
             || (commandLabel ? `Running ${commandLabel}...` : "Running command...");
@@ -409,7 +432,7 @@ export async function POST(req: Request) {
           };
 
           if (!streamingState.toolCallParts.has(update.toolCallId)) {
-            recordStructuredToolCall(streamingState, update.toolCallId, "executeCommand", {
+            recordStructuredToolCall(streamingState, update.toolCallId, toolName, {
               command: update.command,
               args: update.args,
               cwd: update.cwd,
@@ -419,7 +442,7 @@ export async function POST(req: Request) {
           recordToolResultChunk(
             streamingState,
             update.toolCallId,
-            "executeCommand",
+            toolName,
             normalizedResult,
             update.status === "running"
           );
@@ -479,7 +502,12 @@ export async function POST(req: Request) {
       userId: dbUser.id,
       pipelineName: "chat",
       triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : "chat",
-      metadata: { characterId: resolvedCharacterId || null, messageCount: messages.length, taskSource: taskSource || "chat" },
+      metadata: {
+        characterId: resolvedCharacterId || null,
+        messageCount: messages.length,
+        taskSource: taskSource || (isDelegationAutoResume ? "delegation-auto-resume" : "chat"),
+        ...(isDelegationAutoResume ? { delegationAutoResume: true } : {}),
+      },
     });
     const chatAbortController = new AbortController();
     registerChatAbortController(agentRun.id, chatAbortController);
@@ -500,16 +528,19 @@ export async function POST(req: Request) {
       pipelineName: "chat",
       triggerType: isScheduledRun ? "cron" : isChannelSource ? "webhook" : isDelegation ? "delegation" : "chat",
       messageCount: messages.length,
-      metadata: isScheduledRun || isChannelSource || isDelegation
+      metadata: isScheduledRun || isChannelSource || isDelegation || isDelegationAutoResume
         ? {
             ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
             ...(isChannelSource ? { suppressFromUI: true, taskSource: "channel" } : {}),
+            ...(isDelegationAutoResume ? { delegationAutoResume: true, taskSource: "delegation-auto-resume" } : {}),
             ...(isDelegation ? {
               isDelegation: true,
               parentAgentId: sessionMetadata.parentAgentId,
               workflowId: sessionMetadata.workflowId,
               characterName: sessionMetadata.characterName,
               delegationTask: sessionMetadata.delegationTask,
+              initiatorSessionId: sessionMetadata.initiatorSessionId,
+              rootSessionId: sessionMetadata.rootSessionId,
             } : {}),
           }
         : undefined,
@@ -532,7 +563,7 @@ export async function POST(req: Request) {
     // maxKeptPosition in deleteMessagesNotIn — which would prevent deletion of
     // the old messages between the edit point and the new message.
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!isNewSession && !isScheduledRun) {
+    if (!isNewSession && !isScheduledRun && !isDelegationAutoResume) {
       const frontendIds = new Set(
         messages
           .filter(m => m.id && uuidRegex.test(m.id))
@@ -555,7 +586,7 @@ export async function POST(req: Request) {
     let persistedUserMessageId: string | undefined;
     const userMessageCount = messages.filter((msg) => msg.role === "user").length;
 
-    if (!isScheduledRun && lastMessage && lastMessage.role === 'user') {
+    if (!isScheduledRun && !isDelegationAutoResume && lastMessage && lastMessage.role === 'user') {
       // Strip [PASTE_CONTENT:N:M]...[/PASTE_CONTENT:N] delimiter tags but keep the pasted content.
       // This ensures full content is preserved in DB for reload, without tag clutter in the UI.
       const messageForDB = stripPasteDelimitersFromMessage(lastMessage);
@@ -563,7 +594,9 @@ export async function POST(req: Request) {
         ...((lastMessage.metadata?.custom?.attachments ?? []).filter((attachment): attachment is NonNullable<typeof attachment> => !!attachment)),
         ...((lastMessage.experimental_attachments ?? []).filter((attachment): attachment is NonNullable<typeof attachment> => !!attachment)),
       ];
-      const persistedInspectContext = (lastMessage.metadata?.custom as Record<string, unknown> | undefined)?.inspectContext ?? null;
+      const lastCustom = lastMessage.metadata?.custom as Record<string, unknown> | undefined;
+      const persistedDesignContext = lastCustom?.designContext ?? null;
+      const persistedInspectContext = lastCustom?.inspectContext ?? null;
       const extractedContent = await extractContent(messageForDB);
       const normalizedContent: unknown[] = Array.isArray(extractedContent)
         ? extractedContent
@@ -573,6 +606,7 @@ export async function POST(req: Request) {
       const userMessageIndex = await nextOrderingIndex(sessionId);
       const customMetadata: Record<string, unknown> = {};
       if (persistedAttachments.length > 0) customMetadata.attachments = persistedAttachments;
+      if (persistedDesignContext) customMetadata.designContext = persistedDesignContext;
       if (persistedInspectContext) customMetadata.inspectContext = persistedInspectContext;
       const result = await createMessage({
         ...(isValidUUID && { id: lastMessage.id }),
@@ -618,9 +652,12 @@ export async function POST(req: Request) {
     let requestMessages = messages as FrontendMessage[];
     let sessionSummaryForRequest: string | null | undefined;
 
-    if (contextCheck.compactionResult?.success) {
-      const refreshedSession = await getSessionWithMessages(sessionId);
-      if (refreshedSession) {
+    const refreshedSession = await getSessionWithMessages(sessionId);
+    if (refreshedSession) {
+      const hasCompactedHistory = Boolean(refreshedSession.session.summary?.trim()) ||
+        refreshedSession.messages.some((message) => message.isCompacted);
+
+      if (contextCheck.compactionResult?.success || hasCompactedHistory) {
         requestMessages = convertDBMessagesToUIMessages(
           refreshedSession.messages.filter((message) => !message.isCompacted) as any,
         ) as FrontendMessage[];
@@ -632,7 +669,7 @@ export async function POST(req: Request) {
     }
 
     console.debug(`[CHAT API] Using HYBRID approach: ${requestMessages.length} frontend messages`);
-    const { coreMessages, enhancedMessages, droppedImagesForProvider } = await prepareMessagesForRequest({
+    const { coreMessages, enhancedMessages } = await prepareMessagesForRequest({
       messages: requestMessages,
       sessionId,
       userId: dbUser.id,
@@ -730,7 +767,6 @@ export async function POST(req: Request) {
       allowedPluginNames,
       workflowPromptContextInput,
       provider: currentProvider,
-      droppedImagesForProvider,
       designPreviewTheme,
     });
 
@@ -773,12 +809,6 @@ export async function POST(req: Request) {
     const pluginPaths = scopedPlugins
       .map((p) => p.cachePath)
       .filter((p): p is string => Boolean(p));
-
-    // Claude Agent SDK tool-result bridge:
-    // - Provider adapter publishes SDK `tool_use_result` payloads keyed by tool_use_id
-    // - Passthrough tool executors await the keyed payload and return it to AI SDK
-    // This preserves real tool output in streaming + DB instead of placeholder stubs.
-    sdkToolResultBridge = createSdkToolResultBridge();
 
     // Mutable ref wiring mid-stream injection (fired from `prepareStep` on
     // the non-CC path and `onQueueMessages` on the Claude Code path) to the
@@ -824,7 +854,6 @@ export async function POST(req: Request) {
         };
       })(),
       onExecuteCommandProgress: handleExecuteCommandProgress,
-      sdkToolResultBridge,
       onQueueMessages: (() => {
         const _state = streamingState;
         const _sync = syncStreamingMessage;
@@ -862,6 +891,7 @@ export async function POST(req: Request) {
             orphanToolCalls,
             nextAssistantMessageId,
           });
+          markDeliveredDelegationPromptEntries(entries, "live-prompt");
 
           if (_state && _sync) {
             assistantMessageId = nextAssistantMessageId;
@@ -1046,6 +1076,59 @@ export async function POST(req: Request) {
       req.signal.addEventListener("abort", markClientDisconnected, { once: true });
     }
 
+    // ── Tool-input stall watchdog ─────────────────────────────────────────
+    // Some models (notably GPT-5.5/Codex) occasionally stall mid-tool-input:
+    // they emit `tool-input-start` then stop sending deltas, leaving the run
+    // hung until the user manually stops. This watchdog only covers the
+    // JSON-args streaming phase — once `tool-call` arrives (args complete),
+    // the timer is cleared and tool execution proceeds with its own timeouts.
+    const TOOL_INPUT_STALL_MS = (() => {
+      const env = Number(process.env.TOOL_INPUT_STALL_MS);
+      return Number.isFinite(env) && env > 0 ? env : 300_000;
+    })();
+    // Capture `agentRun.id` for the watchdog closure — by the time the timer
+    // may fire, narrowing of `agentRun` (declared as nullable upstream) has
+    // been lost across the closure boundary.
+    const watchdogRunId = agentRun.id;
+    const toolInputStallWatchdog = createToolInputStallWatchdog({
+      stallMs: TOOL_INPUT_STALL_MS,
+      isCancelled: () => chatAbortController.signal.aborted,
+      onStall: (toolCallId, toolName, stallMs) => {
+        const labelName = toolName || "<unnamed>";
+        console.warn(
+          `[CHAT API] Tool-input stall: ${labelName} (${toolCallId}) — no deltas for ${stallMs}ms ` +
+            `(session=${sessionId}, run=${watchdogRunId}). Aborting run.`
+        );
+        // If we never saw a toolName for this stalled call, skip writing a
+        // tool-result entirely — synthesizing one with a placeholder name
+        // would round-trip back to the model on the next turn and confuse it
+        // (see GPT-5/Codex phantom-"tool" issue). The run-level abort below
+        // still surfaces the failure to the user.
+        if (toolName && streamingState && syncStreamingMessage) {
+          const stallSeconds = Math.round(stallMs / 1000);
+          const recorded = recordToolResultChunk(
+            streamingState,
+            toolCallId,
+            toolName,
+            {
+              status: "error",
+              error: `Model stopped emitting tool input for ${stallSeconds}s — aborted to prevent hang.`,
+            },
+            false
+          );
+          if (recorded) {
+            void syncStreamingMessage();
+          }
+        }
+        chatAbortController.abort(`tool-input-stall:${labelName}:${stallMs}ms`);
+      },
+    });
+    chatAbortController.signal.addEventListener(
+      "abort",
+      () => toolInputStallWatchdog.disarmAll(),
+      { once: true }
+    );
+
     // Build shared callback context
     const callbackCtx = {
       sessionId,
@@ -1072,7 +1155,6 @@ export async function POST(req: Request) {
       runFinalized,
       provider,
       streamAbortSignal,
-      disposeSdkToolResultBridge: sdkToolResultBridge.dispose,
       latestUserPromptText,
       persistedUserMessageId,
     };
@@ -1112,12 +1194,12 @@ export async function POST(req: Request) {
           // so the final request has exactly one system message total.
           // Cache control markers are Anthropic-specific anyway, so no loss.
           let finalSystemPrompt: typeof systemPromptValue = systemPromptValue;
-          let finalMessages = cachedMessages;
+          let finalMessages = routeMultimodalReadFileResults(cachedMessages, provider);
           if (provider === "openrouter") {
             if (Array.isArray(systemPromptValue)) {
               const parts = systemPromptValue.map((block) => block.content);
               // Absorb leading system messages from cachedMessages into the prompt
-              const msgs = [...cachedMessages];
+              const msgs = [...finalMessages];
               while (msgs.length > 0 && msgs[0].role === "system") {
                 parts.push(msgs[0].content as string);
                 msgs.shift();
@@ -1127,7 +1209,7 @@ export async function POST(req: Request) {
             } else if (typeof systemPromptValue === "string") {
               // Even when not cached, absorb leading system messages
               const parts = [systemPromptValue];
-              const msgs = [...cachedMessages];
+              const msgs = [...finalMessages];
               while (msgs.length > 0 && msgs[0].role === "system") {
                 parts.push(msgs[0].content as string);
                 msgs.shift();
@@ -1141,6 +1223,17 @@ export async function POST(req: Request) {
             model: resolvedModel,
             ...(injectContext && { system: finalSystemPrompt }),
           messages: finalMessages,
+          // Codex (OpenAI Responses API) defaults `store: true` in the AI SDK,
+          // which causes assistant tool-call parts carrying providerMetadata.openai.itemId
+          // to be serialized as `{ type: "item_reference", id }` instead of full
+          // `function_call` items. Those references are then stripped by the Codex
+          // pipeline (Codex CLI never persisted them server-side), leaving orphan
+          // `function_call_output` items whose names get synthesized as phantoms
+          // like `functions.tool`. Forcing `store: false` at the LanguageModel level
+          // makes the AI SDK emit complete `function_call` items with real names.
+          ...(provider === "codex"
+            ? { providerOptions: { openai: { store: false } } }
+            : {}),
           ...(providerSupportsFeature("tools", provider) ? {
             tools: allToolsWithMCP,
             activeTools: initialActiveToolNames as (keyof typeof allToolsWithMCP)[],
@@ -1201,9 +1294,9 @@ export async function POST(req: Request) {
               const storeCompletions = drainDelegationCompletions(sessionId);
               if (storeCompletions.length > 0) {
                 const completionEntries = storeCompletions.map((c) => ({
-                  id: `deleg-store-${c.delegationId}`,
+                  id: c.deliveryId || `deleg-store-${c.delegationId}`,
                   content: c.resultContent || [
-                    `<delegation-result delegationId="${c.delegationId}" delegate="${c.delegateName}" status="${c.error ? "failed" : "completed"}">`,
+                    `<delegation-result delegationId="${c.delegationId}" delegate="${c.delegateName}" status="${c.error ? "failed" : "completed"}" resultVersion="${c.resultVersion ?? 1}">`,
                     c.error || "Result content not available — use observe to read full response.",
                     `</delegation-result>`,
                   ].join("\n"),
@@ -1213,6 +1306,9 @@ export async function POST(req: Request) {
                     kind: "delegation_completion" as const,
                     delegationId: c.delegationId,
                     delegateName: c.delegateName,
+                    resultVersion: c.resultVersion,
+                    deliveryId: c.deliveryId,
+                    resultHash: c.resultHash,
                   },
                 }));
                 pendingPrompts = [...completionEntries, ...queuedPrompts];
@@ -1263,6 +1359,7 @@ export async function POST(req: Request) {
                 orphanToolCalls,
                 nextAssistantMessageId,
               });
+              markDeliveredDelegationPromptEntries(pendingPrompts, "live-prompt");
 
               // Rotate assistant UUID + set stepOffset only if the handler
               // actually resealed state (background mode might have pre-split
@@ -1310,22 +1407,18 @@ export async function POST(req: Request) {
               // every other model-facing system/replay string in this file —
               // see `canonical-content.ts#makeEphemeralStubResult` for the same
               // rationale).
-              const syntheticShim: ModelMessage[] =
-                orphanToolCalls.length > 0
-                  ? [
-                      {
-                        role: "tool",
-                        content: buildSyntheticModelToolResults(
-                          orphanToolCalls,
-                          "Cancelled — user interjected with a new message",
-                        ),
-                      } as unknown as ModelMessage,
-                    ]
-                  : [];
+              const messagesWithSyntheticResults = insertSyntheticToolResultsAfterMatchingAssistant(
+                stepMessages as ModelMessage[],
+                orphanToolCalls,
+                "Cancelled — user interjected with a new message",
+              );
 
               return {
                 activeTools: currentActiveTools as string[],
-                messages: [...stepMessages, ...syntheticShim, injectedUserMessage],
+                messages: routeMultimodalReadFileResults(
+                  [...messagesWithSyntheticResults, injectedUserMessage],
+                  provider,
+                ),
               };
             }
 
@@ -1380,6 +1473,7 @@ export async function POST(req: Request) {
                     orphanToolCalls,
                     nextAssistantMessageId,
                   });
+                  markDeliveredDelegationPromptEntries(delegationPrompts, "live-prompt");
 
                   if (syncStreamingMessage && streamingState) {
                     assistantMessageId = nextAssistantMessageId;
@@ -1391,18 +1485,11 @@ export async function POST(req: Request) {
                     content: buildUserInjectionContent(delegationPrompts),
                   };
 
-                  const syntheticShim: ModelMessage[] =
-                    orphanToolCalls.length > 0
-                      ? [
-                          {
-                            role: "tool",
-                            content: buildSyntheticModelToolResults(
-                              orphanToolCalls,
-                              "Cancelled — delegation result arrived while tool call was in flight",
-                            ),
-                          } as unknown as ModelMessage,
-                        ]
-                      : [];
+                  const messagesWithSyntheticResults = insertSyntheticToolResultsAfterMatchingAssistant(
+                    stepMessages as ModelMessage[],
+                    orphanToolCalls,
+                    "Cancelled — delegation result arrived while tool call was in flight",
+                  );
 
                   // If more delegations are still running, force the model to
                   // call a tool (even a no-op) so the loop continues to the next
@@ -1412,7 +1499,10 @@ export async function POST(req: Request) {
                   const stillHasRunning = hasRunningDelegationsForSession(characterId, sessionId);
                   const result: Record<string, unknown> = {
                     activeTools: currentActiveTools as string[],
-                    messages: [...stepMessages, ...syntheticShim, injectedUserMessage],
+                    messages: routeMultimodalReadFileResults(
+                      [...messagesWithSyntheticResults, injectedUserMessage],
+                      provider,
+                    ),
                   };
                   if (stillHasRunning) {
                     result.toolChoice = "required" as const;
@@ -1444,7 +1534,10 @@ export async function POST(req: Request) {
               };
             }
 
-            return { activeTools: currentActiveTools as (keyof typeof allToolsWithMCP)[] };
+            return {
+              activeTools: currentActiveTools as (keyof typeof allToolsWithMCP)[],
+              messages: routeMultimodalReadFileResults(stepMessages, provider),
+            };
           },
           experimental_repairToolCall: async ({ error, toolCall, tools }) => {
             console.warn(`[CHAT API] Tool call repair triggered for "${toolCall.toolName}": ${error.message}`);
@@ -1507,12 +1600,6 @@ export async function POST(req: Request) {
                 forceExpireKimiToken();
               } catch { /* non-fatal */ }
             }
-            // Claude Code SDK agents self-correct after tool validation failures —
-            // the stream stays open and onFinish will finalize the run properly.
-            if (provider === "claudecode" && isNonFatalToolError(error)) {
-              console.warn(`[CHAT API] Non-fatal tool error in Claude Code run (skipping finalization): ${errorMessage}`);
-              return;
-            }
             // Let the UI stream wrapper decide whether this is eligible for
             // pre-commit recovery. It will finalize the run if recovery is not possible.
           },
@@ -1545,16 +1632,18 @@ export async function POST(req: Request) {
                 changed = appendReasoningPartToState(streamingState, delta) || changed;
               } else if (chunk.type === "tool-input-start") {
                 changed = recordToolInputStart(streamingState, chunk.id, chunk.toolName) || changed;
+                toolInputStallWatchdog.arm(chunk.id, chunk.toolName);
               } else if (chunk.type === "tool-input-delta") {
                 changed = recordToolInputDelta(streamingState, chunk.id, chunk.delta) || changed;
+                toolInputStallWatchdog.arm(chunk.id);
               } else if (chunk.type === "tool-call") {
+                toolInputStallWatchdog.disarm(chunk.toolCallId);
                 // Detect argsText conflict: streaming deltas already accumulated
                 // but a complete tool-call event arrived (e.g. from repairToolCall).
                 const existingPart = streamingState.toolCallParts.get(chunk.toolCallId);
                 if (existingPart?.argsText && existingPart.argsText.length > 0) {
                   const newArgsText = JSON.stringify(chunk.input ?? {});
-                  // ExitPlanMode uses synthetic argsText (plan approval data) — skip conflict warning
-                  if (chunk.toolName !== "ExitPlanMode" && !newArgsText.startsWith(existingPart.argsText)) {
+                  if (!newArgsText.startsWith(existingPart.argsText)) {
                     console.warn(
                       `[CHAT API] argsText conflict for ${chunk.toolName} (${chunk.toolCallId}): ` +
                         `streaming argsText (${existingPart.argsText.length} chars) replaced by structured input. ` +
@@ -1562,27 +1651,19 @@ export async function POST(req: Request) {
                     );
                   }
                 }
-                if (provider === "claudecode" && chunk.toolName && isDelegatedToolName(chunk.toolName)) {
+                if (chunk.toolName && isDelegatedToolName(chunk.toolName)) {
                   streamingState.provenance = {
                     ...(streamingState.provenance ?? {}),
                     contextScope: "delegated",
                     provenanceVersion: 1,
                   };
                 }
-                // For ExitPlanMode, preserve the synthetic plan approval data
-                // that was injected during streaming. The SDK's raw input ({})
-                // would overwrite the plan content needed by the approval UI.
-                let effectiveInput = chunk.input;
-                if (chunk.toolName === "ExitPlanMode" && existingPart?.argsText && existingPart.argsText.length > 10) {
-                  try {
-                    effectiveInput = JSON.parse(existingPart.argsText);
-                  } catch { /* fall through to original input */ }
-                }
-                changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, effectiveInput) || changed;
+                changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, chunk.input) || changed;
               } else if (chunk.type === "tool-result") {
+                toolInputStallWatchdog.disarm(chunk.toolCallId);
                 changed = recordToolResultChunk(streamingState, chunk.toolCallId, chunk.toolName, chunk.output, chunk.preliminary) || changed;
                 changed = tagIntermediateDelegationParts(streamingState, chunk.toolCallId) || changed;
-                if (provider === "claudecode" && chunk.toolName && isDelegatedToolName(chunk.toolName)) {
+                if (chunk.toolName && isDelegatedToolName(chunk.toolName)) {
                   streamingState.provenance = {
                     ...(streamingState.provenance ?? {}),
                     contextScope: "main",
@@ -1658,7 +1739,35 @@ export async function POST(req: Request) {
             }
           }
 
-          const classification = classifyRecoverability({ provider, error, message: error instanceof Error ? error.message : String(error) });
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (/input exceeds the context window|context window of this model|context length|maximum context/i.test(errorMessage)) {
+            const postErrorCheck = await ContextWindowManager.preFlightCheck(
+              sessionId,
+              currentModelId,
+              5000,
+              currentProvider
+            );
+            if (postErrorCheck.canProceed && postErrorCheck.compactionResult?.success) {
+              if (runId) {
+                await appendRunEvent({
+                  runId,
+                  eventType: "llm_request_failed",
+                  level: "warn",
+                  pipelineName: "chat",
+                  data: {
+                    attempt: attempt + 1,
+                    reason: "context_window_compacted_after_provider_error",
+                    messagesCompacted: postErrorCheck.compactionResult.messagesCompacted,
+                    tokensFreed: postErrorCheck.compactionResult.tokensFreed,
+                    outcome: "retrying_after_compaction",
+                  },
+                });
+              }
+              continue;
+            }
+          }
+
+          const classification = classifyRecoverability({ provider, error, message: errorMessage });
           const retry = shouldRetry({ classification, attempt, maxAttempts: STREAM_RECOVERY_MAX_ATTEMPTS, aborted: streamAbortSignal.aborted });
 
           if (runId) {
@@ -1722,6 +1831,7 @@ export async function POST(req: Request) {
         let closed = false;
         let clientCommitted = false;
         let bufferedChunks: UIMessageChunk[] = [];
+        let visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
 
         const emitChunk = (chunk: UIMessageChunk) => {
           if (closed) return;
@@ -1803,6 +1913,7 @@ export async function POST(req: Request) {
           recreateThinkTagFilter();
           bufferedChunks = [];
           clientCommitted = false;
+          visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
           await sleepWithAbort(delay, streamAbortSignal);
           ({ result, attempt: requestAttempt } = await createStreamResultWithRecovery(requestAttempt + 1));
           return true;
@@ -1816,6 +1927,15 @@ export async function POST(req: Request) {
               while (!closed) {
                 const { done, value } = await activeUiReader.read();
                 if (done) {
+                  const trailingChunks = visibleAssistantChunkSanitizer.flush();
+                  if (!clientCommitted) {
+                    bufferedChunks.push(...trailingChunks);
+                  } else {
+                    for (const trailingChunk of trailingChunks) {
+                      emitChunk(trailingChunk);
+                    }
+                  }
+
                   if (!clientCommitted && bufferedChunks.length > 0) {
                     for (const pendingChunk of bufferedChunks) {
                       emitChunk(pendingChunk);
@@ -1827,27 +1947,34 @@ export async function POST(req: Request) {
                   return;
                 }
 
-                if (value.type === "error") {
-                  shouldRestart = await preparePrecommitRetry(value.errorText ?? "Unknown stream error");
-                  if (shouldRestart) break;
-                  await finalizeAndEmitError(value.errorText ?? "Unknown stream error");
-                  return;
-                }
-
-                if (!clientCommitted && !isUiChunkCommittable(value)) {
-                  bufferedChunks.push(value);
-                  continue;
-                }
-
-                if (!clientCommitted) {
-                  for (const pendingChunk of bufferedChunks) {
-                    emitChunk(pendingChunk);
+                const sanitizedChunks = visibleAssistantChunkSanitizer.process(value);
+                for (const sanitizedChunk of sanitizedChunks) {
+                  if (sanitizedChunk.type === "error") {
+                    shouldRestart = await preparePrecommitRetry(
+                      sanitizedChunk.errorText ?? "Unknown stream error"
+                    );
+                    if (shouldRestart) break;
+                    await finalizeAndEmitError(sanitizedChunk.errorText ?? "Unknown stream error");
+                    return;
                   }
-                  bufferedChunks = [];
-                  clientCommitted = true;
+
+                  if (!clientCommitted && !isUiChunkCommittable(sanitizedChunk)) {
+                    bufferedChunks.push(sanitizedChunk);
+                    continue;
+                  }
+
+                  if (!clientCommitted) {
+                    for (const pendingChunk of bufferedChunks) {
+                      emitChunk(pendingChunk);
+                    }
+                    bufferedChunks = [];
+                    clientCommitted = true;
+                  }
+
+                  emitChunk(sanitizedChunk);
                 }
 
-                emitChunk(value);
+                if (shouldRestart) break;
               }
             } catch (error) {
               const errorMessage = normalizeStreamError(error).message;
@@ -1901,9 +2028,6 @@ export async function POST(req: Request) {
       headers: response.headers,
     });
   } catch (error) {
-    if (sdkToolResultBridge) {
-      sdkToolResultBridge.dispose?.();
-    }
     console.error("[CHAT API] Unhandled error in POST handler:", {
       message: error instanceof Error ? error.message : String(error),
       type: error?.constructor?.name,

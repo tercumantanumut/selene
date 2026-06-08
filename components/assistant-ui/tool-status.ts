@@ -20,7 +20,7 @@ export function getToolBadgeStatus(part: ToolStatusPartLike): ToolCallBadgeStatu
 
   if (hasResult) {
     if (resultIndicatesError) return "error";
-    if (status === "processing") return "running";
+    if (status === "processing" || status === "running") return "running";
     return "completed";
   }
 

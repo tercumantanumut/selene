@@ -4,8 +4,9 @@ const isDev = process.argv.includes("--dev");
 
 // Bundle the Electron main process
 // Native modules must stay external (they contain .node binaries that can't
-// be bundled). All pure-JS deps are inlined — esbuild handles ESM→CJS
-// transpilation, which is required for ESM-only packages like @huggingface/transformers.
+// be bundled). Transformers.js is resolved by lib/ai/transformers-runtime.ts
+// from standalone/node_modules in packaged builds so the startup bundle stays
+// small without relying on Node's fragile package ESM resolver from app.asar.
 // ---------------------------------------------------------------------------
 // Banner: native module resolution for packaged builds
 // This MUST run before any require() in the bundle because esbuild evaluates
@@ -54,6 +55,11 @@ await esbuild.build({
     "onnxruntime-node",
     "sharp",
     "@lancedb/*",
+    "@huggingface/transformers",
+    "@huggingface/hub",
+    "gpt-tokenizer",
+    "pdf-parse",
+    "pdfjs-dist",
   ],
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',

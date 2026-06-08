@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth/local-auth";
-import { listRunningRunsByCharacter, completeAgentRun } from "@/lib/observability/queries";
+import { listRunningRunsByCharacter } from "@/lib/observability/queries";
 import { getOrCreateLocalUser } from "@/lib/db/queries";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { isStale } from "@/lib/utils/timestamp";
@@ -32,10 +32,10 @@ export async function GET(req: Request, { params }: RouteParams) {
 
     let hasRunning = false;
     let activeSessionId: string | null = null;
+    let hasStaleSuspected = false;
     for (const run of runs) {
       if (!hasInteractiveWait && isStale(run.updatedAt ?? run.startedAt, THIRTY_MINUTES)) {
-        await completeAgentRun(run.id, "failed", { error: "stale_run_cleanup" });
-        continue;
+        hasStaleSuspected = true;
       }
       hasRunning = true;
       activeSessionId = run.sessionId;
@@ -44,6 +44,7 @@ export async function GET(req: Request, { params }: RouteParams) {
     return NextResponse.json({
       hasActiveSession: hasRunning,
       activeSessionId,
+      health: hasStaleSuspected ? "stale_suspected" : "running",
     });
   } catch (error) {
     console.error("Check active status error:", error);

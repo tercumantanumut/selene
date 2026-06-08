@@ -41,6 +41,46 @@ describe("live-prompt-queue-registry", () => {
     expect(drained).toHaveLength(0);
   });
 
+  it("deduplicates repeated queue appends by entry id", () => {
+    createLivePromptQueue(RUN_ID, SESSION_ID);
+
+    expect(appendToLivePromptQueue(RUN_ID, {
+      id: "dupe-1",
+      content: "same message",
+      stopIntent: false,
+    })).toBe(true);
+    expect(appendToLivePromptQueue(RUN_ID, {
+      id: "dupe-1",
+      content: "same message",
+      stopIntent: false,
+    })).toBe(true);
+
+    const drained = drainLivePromptQueue(RUN_ID);
+    expect(drained).toHaveLength(1);
+    expect(drained[0].id).toBe("dupe-1");
+  });
+
+  it("does not let a drained entry be dispatched twice if another copy remains queued", () => {
+    createLivePromptQueue(RUN_ID, SESSION_ID);
+    appendToLivePromptQueue(RUN_ID, {
+      id: "handoff-1",
+      content: "race boundary",
+      stopIntent: false,
+    });
+
+    const queue = globalThis.livePromptQueues?.get(RUN_ID);
+    expect(queue).toBeDefined();
+    queue?.push({
+      id: "handoff-1",
+      content: "race boundary",
+      stopIntent: false,
+      timestamp: Date.now(),
+    });
+
+    expect(drainLivePromptQueue(RUN_ID)).toHaveLength(1);
+    expect(drainLivePromptQueue(RUN_ID)).toHaveLength(0);
+  });
+
   it("appendToLivePromptQueue returns true and enqueues after creation", () => {
     createLivePromptQueue(RUN_ID, SESSION_ID);
     const result = appendToLivePromptQueue(RUN_ID, {

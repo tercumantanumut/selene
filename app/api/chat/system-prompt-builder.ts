@@ -133,13 +133,13 @@ export async function buildSystemPromptForRequest(
   if (characterId) {
     try {
       const { getAccessibleSyncFolders } = await import("@/lib/vectordb/accessible-sync-folders");
-      const { getWorkspaceInfo } = await import("@/lib/workspace/types");
+      const { resolveSessionWorkspaceInfo } = await import("@/lib/workspace/metadata");
       const { normalize } = await import("path");
       const syncFolders = await getAccessibleSyncFolders(characterId);
       if (syncFolders.length > 0) {
         const { isWorktreePath } = await import("@/lib/ai/filesystem");
-        // Detect active worktree from session metadata using the shared helper
-        const wsInfo = getWorkspaceInfo(sessionMetadata as Record<string, unknown> | null);
+        // Use the verified resolver so prompt context doesn't trust stale raw metadata.
+        const wsInfo = await resolveSessionWorkspaceInfo(sessionId);
         const activeWorktreePath = wsInfo?.worktreePath ?? null;
 
         // Only apply worktree scoping if the worktree is actually in the sync folders list.
@@ -235,12 +235,13 @@ export async function buildSystemPromptForRequest(
 
   // Append workspace context when Developer Workspace is enabled
   if (devWorkspaceEnabled) {
-    const wsInfo = sessionMetadata?.workspaceInfo as Record<string, unknown> | undefined;
+    const { resolveSessionWorkspaceInfo } = await import("@/lib/workspace/metadata");
+    const wsInfo = await resolveSessionWorkspaceInfo(sessionId);
     // Sanitize a workspace field to prevent prompt injection via branch names / paths
     const sanitizeWsField = (v: unknown): string =>
       String(v || "").replace(/[\r\n]/g, " ").replace(/^[#\[]/g, "");
     let workspaceBlock: string;
-    if (wsInfo && wsInfo.status) {
+    if (wsInfo?.status) {
       const workspaceType = sanitizeWsField(wsInfo.type) || "worktree";
       const workspaceLabel = workspaceType === "local" ? "local git repository workspace" : "git worktree workspace";
       const pathLabel = workspaceType === "local" ? "Repository Path" : "Path";

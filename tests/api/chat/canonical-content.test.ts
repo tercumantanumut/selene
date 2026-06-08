@@ -409,6 +409,8 @@ describe("reconcileDbToolCallResultPairs", () => {
 describe("buildCanonicalAssistantContentFromSteps", () => {
   const leakedPlanningText =
     "I need continue with actual tools available names. Only commentary tools under functions.* not tool. Need sequential edits. Must read current files before edit. Need use editFile and run tests. Let's implement carefully. Need add setting to app/settings/settings-types FormState.";
+  const exactNamespaceLeakText =
+    "Need use actual tool names weird transcript says functions.tool due maybe alias? Need continue. Read route.";
 
   it("returns fallback text when no steps", () => {
     const parts = buildCanonicalAssistantContentFromSteps(undefined, "fallback text");
@@ -448,6 +450,11 @@ describe("buildCanonicalAssistantContentFromSteps", () => {
   it("preserves the same text when there is no tool-call context", () => {
     const parts = buildCanonicalAssistantContentFromSteps([{ text: leakedPlanningText }]);
     expect(parts).toEqual([{ type: "text", text: leakedPlanningText }]);
+  });
+
+  it("drops the exact namespace leak even when no tool-call context exists yet", () => {
+    const parts = buildCanonicalAssistantContentFromSteps([{ text: exactNamespaceLeakText }]);
+    expect(parts).toEqual([]);
   });
 
   it("preserves fake tool-call JSON when STRIP_FAKE_TOOL_JSON is off (default)", () => {

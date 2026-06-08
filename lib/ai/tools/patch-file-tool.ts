@@ -22,6 +22,7 @@ import {
   generateBeforeAfterDiff,
   type DiagnosticResult,
 } from "@/lib/ai/filesystem";
+import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,7 +152,7 @@ export function createPatchFileTool(options: PatchFileToolOptions) {
       let syncedFolders: string[];
       try {
         syncedFolders = await resolveWorkspaceAwarePaths(characterId, sessionId);
-        if (syncedFolders.length === 0) {
+        if (syncedFolders.length === 0 && !areUnsafeAgentPermissionsEnabled()) {
           return {
             status: "no_folders",
             error:

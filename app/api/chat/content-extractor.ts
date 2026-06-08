@@ -13,7 +13,12 @@ import {
   extractPasteBlocks,
   reinsertPasteBlocks,
 } from "./content-sanitizer";
-import { sanitizeInspectMessageContext, buildInspectPromptText } from "@/lib/design/workspace/inspect-context";
+import { sanitizeInspectMessageContext } from "@/lib/design/workspace/inspect-context";
+import {
+  formatDesignContextPrompt,
+  mergeDesignContext,
+  sanitizeDesignContext,
+} from "@/lib/design/workspace/design-context";
 import { reconcileToolCallPairs, toModelToolResultOutput, normalizeToolCallInput } from "./tool-call-utils";
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -30,7 +35,35 @@ const MAX_BASE64_BYTES = 4.5 * 1024 * 1024;
 const BASE64_OVERHEAD = 1.37;
 const MAX_ATTACHMENT_TEXT_CHARS = 20_000;
 
+// --- @-mention v2 (vector-aware mentions) ---------------------------------
+// Each mention contributes either (a) a single semantic chunk pulled from
+// the vector index, or (b) the entire small file the user picked. The full
+// list is capped per-message to stay under context-window budgets.
+const MAX_VECTOR_MENTION_SNIPPET_CHARS = 4_000;
+const MAX_VECTOR_MENTION_FILE_CHARS = 20_000;
+const MAX_VECTOR_MENTION_TOTAL_CHARS = 60_000;
+
+type VectorMentionSnippet = {
+  text: string;
+  startLine?: number;
+  endLine?: number;
+  score?: number;
+  chunkIndex?: number;
+};
+
+type VectorMention = {
+  id?: string;
+  kind: "file" | "chunk";
+  characterId?: string;
+  folderId?: string;
+  relativePath: string;
+  filePath?: string;
+  displayLabel?: string;
+  snippet?: VectorMentionSnippet;
+};
+
 type AttachmentPathMetadata = {
+  id?: string;
   name?: string;
   contentType?: string;
   url?: string;
@@ -38,6 +71,8 @@ type AttachmentPathMetadata = {
   filePath?: string;
   size?: number;
   kind?: string;
+  inline?: boolean;
+  order?: number;
 };
 
 type ModelContentPart = {
@@ -75,7 +110,9 @@ type MessageInput = {
   parts?: Array<{
     type: string;
     text?: string;
+    id?: string;
     image?: string;
+    displayName?: string;
     url?: string;
     localPath?: string;
     filePath?: string;
@@ -91,7 +128,10 @@ type MessageInput = {
   metadata?: {
     custom?: {
       attachments?: AttachmentPathMetadata[];
+      inlineAttachments?: AttachmentPathMetadata[];
       inspectContext?: unknown;
+      designContext?: unknown;
+      vectorMentions?: VectorMention[];
     };
   };
 };
@@ -184,6 +224,7 @@ function buildAttachmentLookup(msg: {
   metadata?: {
     custom?: {
       attachments?: Array<AttachmentPathMetadata>;
+      inlineAttachments?: Array<AttachmentPathMetadata>;
     };
   };
 }): Map<string, AttachmentPathMetadata> {
@@ -196,14 +237,20 @@ function buildAttachmentLookup(msg: {
     const existing = lookup.get(url);
     lookup.set(url, {
       url,
+      id: normalizeAttachmentString(existing?.id) ?? normalizeAttachmentString(attachment.id),
       name: normalizeAttachmentString(existing?.name) ?? normalizeAttachmentString(attachment.name),
       contentType: normalizeAttachmentString(existing?.contentType) ?? normalizeAttachmentString(attachment.contentType),
       filePath: normalizeAttachmentString(existing?.filePath) ?? normalizeAttachmentString(attachment.filePath),
       localPath: normalizeAttachmentString(existing?.localPath) ?? normalizeAttachmentString(attachment.localPath),
       kind: normalizeAttachmentString(existing?.kind) ?? normalizeAttachmentString(attachment.kind),
+      inline: existing?.inline === true || attachment.inline === true,
+      order: typeof existing?.order === "number" ? existing.order : attachment.order,
     });
   };
 
+  for (const attachment of msg.metadata?.custom?.inlineAttachments ?? []) {
+    register(attachment);
+  }
   for (const attachment of msg.metadata?.custom?.attachments ?? []) {
     register(attachment);
   }
@@ -222,12 +269,15 @@ function resolveAttachmentForHelper(
   const fromLookup = url ? lookup.get(url) : undefined;
 
   return {
+    id: normalizeAttachmentString(attachment.id) ?? normalizeAttachmentString(fromLookup?.id),
     name: normalizeAttachmentString(attachment.name) ?? normalizeAttachmentString(fromLookup?.name),
     contentType: normalizeAttachmentString(attachment.contentType) ?? normalizeAttachmentString(fromLookup?.contentType),
     url,
     filePath: normalizeAttachmentString(attachment.filePath) ?? normalizeAttachmentString(fromLookup?.filePath),
     localPath: normalizeAttachmentString(attachment.localPath) ?? normalizeAttachmentString(fromLookup?.localPath),
     kind: normalizeAttachmentString(attachment.kind) ?? normalizeAttachmentString(fromLookup?.kind),
+    inline: attachment.inline === true || fromLookup?.inline === true,
+    order: typeof attachment.order === "number" ? attachment.order : fromLookup?.order,
   };
 }
 
@@ -255,16 +305,18 @@ function maybePreserveImageReference(
   contentParts: ModelContentPart[],
   imageUrl: string,
   shouldConvert: boolean,
-  includeUrlHelpers: boolean,
+  _includeUrlHelpers: boolean,
 ) {
-  if (!shouldConvert && !includeUrlHelpers) {
+  if (!shouldConvert) {
     // Only preserve references that are actual image data or resolvable URLs.
-    // Raw /api/media/ paths are valid for DB persistence (will be converted on
-    // next load). Reject anything that isn't a known scheme.
+    // The message-prep image rewrite consumes this part before provider send,
+    // turning stale images into readFile refs and blind-provider images into
+    // transparent notices.
     if (
       imageUrl.startsWith("data:") ||
       imageUrl.startsWith("http") ||
-      imageUrl.startsWith("/api/media/")
+      imageUrl.startsWith("/api/media/") ||
+      imageUrl.startsWith("local-media://")
     ) {
       contentParts.push(makeImagePart(imageUrl));
     }
@@ -514,21 +566,143 @@ function pushToolCallAndResult(
   }
 }
 
+/**
+ * Format a single vector @-mention into a text content part.
+ *
+ * Mirrors `formatDocumentAttachmentContext` so the LLM sees the same
+ * `[…]\n<text>` shape that document attachments produce. The marker line
+ * doubles as a citation hint — models will routinely reference the path
+ * back when summarising.
+ */
+function formatVectorMentionText(
+  mention: VectorMention,
+  resolvedText: string,
+): string {
+  const range =
+    mention.snippet?.startLine != null && mention.snippet?.endLine != null
+      ? `:L${mention.snippet.startLine}-${mention.snippet.endLine}`
+      : "";
+  const kindLabel = mention.kind === "file" ? "Vector file" : "Vector chunk";
+  const header = `[${kindLabel}: ${mention.relativePath}${range}]`;
+  return `${header}\n${resolvedText}`;
+}
+
+/**
+ * Resolve a vector @-mention to the literal text the LLM should see.
+ *
+ * - kind="chunk": use the snippet text the picker captured at compose-time.
+ * - kind="file":  read the file from disk (capped) when an absolute path is
+ *                 known. If reading fails, fall back to the snippet (if any),
+ *                 then to a stub line.
+ *
+ * Each mention is independently capped; the caller enforces a per-message
+ * total budget.
+ */
+async function resolveVectorMentionText(mention: VectorMention): Promise<string | null> {
+  if (mention.kind === "chunk") {
+    const text = mention.snippet?.text?.trim();
+    if (!text) return null;
+    return text.length > MAX_VECTOR_MENTION_SNIPPET_CHARS
+      ? `${text.slice(0, MAX_VECTOR_MENTION_SNIPPET_CHARS)}\n…[snippet truncated]`
+      : text;
+  }
+
+  // kind === "file"
+  if (mention.filePath) {
+    try {
+      const raw = await fs.readFile(mention.filePath, "utf8");
+      if (raw.length > MAX_VECTOR_MENTION_FILE_CHARS) {
+        return `${raw.slice(0, MAX_VECTOR_MENTION_FILE_CHARS)}\n…[file truncated at ${MAX_VECTOR_MENTION_FILE_CHARS} chars]`;
+      }
+      return raw;
+    } catch (err) {
+      console.warn(`[extractContent] vector mention file read failed: ${mention.filePath}`, err);
+    }
+  }
+
+  const fallback = mention.snippet?.text?.trim();
+  if (fallback) {
+    return fallback.length > MAX_VECTOR_MENTION_SNIPPET_CHARS
+      ? `${fallback.slice(0, MAX_VECTOR_MENTION_SNIPPET_CHARS)}\n…[snippet truncated]`
+      : fallback;
+  }
+
+  return null;
+}
+
+/**
+ * Append vector @-mentions to `contentParts` as text parts. Skips silently
+ * when `mentions` is empty/undefined. Total injected text is capped to
+ * `MAX_VECTOR_MENTION_TOTAL_CHARS`; once the budget is exhausted, the
+ * remaining mentions are summarised in a single trailing marker so the LLM
+ * still knows they were referenced.
+ */
+async function injectVectorMentions(
+  contentParts: ModelContentPart[],
+  mentions: VectorMention[] | undefined,
+): Promise<void> {
+  if (!mentions || mentions.length === 0) return;
+
+  let used = 0;
+  let dropped: VectorMention[] = [];
+
+  for (const mention of mentions) {
+    const text = await resolveVectorMentionText(mention);
+    if (!text) {
+      dropped.push(mention);
+      continue;
+    }
+
+    const formatted = formatVectorMentionText(mention, text);
+    if (used + formatted.length > MAX_VECTOR_MENTION_TOTAL_CHARS) {
+      dropped.push(mention);
+      continue;
+    }
+
+    contentParts.push({ type: "text", text: formatted });
+    used += formatted.length;
+  }
+
+  if (dropped.length > 0) {
+    const list = dropped
+      .map((m) => `${m.relativePath}${m.snippet?.startLine != null ? `:L${m.snippet.startLine}-${m.snippet.endLine ?? ""}` : ""}`)
+      .join(", ");
+    contentParts.push({
+      type: "text",
+      text: `[Vector mentions skipped to stay under context budget: ${list}]`,
+    });
+  }
+}
+
 export async function extractContent(
   msg: MessageInput,
   includeUrlHelpers = false,
   convertUserImagesToBase64 = false,
   sessionId?: string,
 ): Promise<string | ModelContentPart[]> {
-  const inspectContext = sanitizeInspectMessageContext(msg.metadata?.custom?.inspectContext);
-  const inspectPromptText = buildInspectPromptText(inspectContext);
+  // Prefer the unified `designContext` payload (which carries inspect +
+  // measurements + colours) and fall back to the legacy `inspectContext` shape
+  // for messages saved before the unification. When both fields co-exist we
+  // merge instead of branching: a measurements-only `designContext` would
+  // otherwise silently drop a populated legacy `inspectContext`.
+  const sanitizedDesign = sanitizeDesignContext(msg.metadata?.custom?.designContext);
+  const legacyInspect = sanitizeInspectMessageContext(msg.metadata?.custom?.inspectContext);
+  const designContext = mergeDesignContext(sanitizedDesign, { inspect: legacyInspect });
+  const designPromptText = formatDesignContextPrompt(designContext);
+  // After merging, anything legacy carries is already inside `designContext`;
+  // no separate inspect sidecar text is needed.
+  const designSidecarText = designPromptText;
+
   const hasStructuredParts = Array.isArray(msg.parts) && msg.parts.length > 0;
   const hasMetadataAttachments = Array.isArray(msg.metadata?.custom?.attachments)
     && msg.metadata.custom.attachments.length > 0;
   const hasExperimentalAttachments = Array.isArray(msg.experimental_attachments)
     && msg.experimental_attachments.length > 0;
+  const hasVectorMentions = Array.isArray(msg.metadata?.custom?.vectorMentions)
+    && msg.metadata.custom.vectorMentions.length > 0;
   const hasStructuredContent =
-    hasStructuredParts || hasMetadataAttachments || hasExperimentalAttachments || Boolean(inspectPromptText);
+    hasStructuredParts || hasMetadataAttachments || hasExperimentalAttachments
+    || hasVectorMentions || Boolean(designSidecarText);
   if (!hasStructuredContent) {
     const directContent = getStringContent(msg.content, sessionId);
     if (directContent) {
@@ -536,9 +710,9 @@ export async function extractContent(
     }
   }
 
-  if (inspectPromptText && !hasStructuredParts && !hasMetadataAttachments && !hasExperimentalAttachments) {
+  if (designSidecarText && !hasStructuredParts && !hasMetadataAttachments && !hasExperimentalAttachments && !hasVectorMentions) {
     const directContent = getStringContent(msg.content, sessionId);
-    return directContent ? `${inspectPromptText}\n\n${directContent}` : inspectPromptText;
+    return directContent ? `${designSidecarText}\n\n${directContent}` : designSidecarText;
   }
 
   const isUserMessage = msg.role === "user";
@@ -558,8 +732,8 @@ export async function extractContent(
     const contentParts: ModelContentPart[] = [];
     let hasExplicitTextPart = false;
 
-    if (inspectPromptText) {
-      contentParts.push({ type: "text", text: inspectPromptText });
+    if (designSidecarText) {
+      contentParts.push({ type: "text", text: designSidecarText });
     }
 
     for (const part of msg.parts) {
@@ -740,7 +914,7 @@ export async function extractContent(
       const isBase64Placeholder = trimmedDirectContent === BASE64_IMAGE_PLACEHOLDER;
       if (trimmedDirectContent && !isBase64Placeholder) {
         const directTextPart = { type: "text", text: trimmedDirectContent } satisfies ModelContentPart;
-        if (inspectPromptText && contentParts.length > 0) {
+        if (designSidecarText && contentParts.length > 0) {
           contentParts.splice(1, 0, directTextPart);
         } else {
           contentParts.unshift(directTextPart);
@@ -761,6 +935,10 @@ export async function extractContent(
       }
     }
 
+    // v2 @-mention vector chunks: inject after attachments so file content
+    // is grouped together and the user's typed prompt comes first.
+    await injectVectorMentions(contentParts, msg.metadata?.custom?.vectorMentions);
+
     const normalizedParts = reconcileToolCallPairs(contentParts);
     if (normalizedParts.length === 0) {
       return "[Message content not available]";
@@ -773,14 +951,15 @@ export async function extractContent(
 
   if (
     (msg.experimental_attachments && Array.isArray(msg.experimental_attachments)) ||
-    (msg.metadata?.custom?.attachments && Array.isArray(msg.metadata.custom.attachments))
+    (msg.metadata?.custom?.attachments && Array.isArray(msg.metadata.custom.attachments)) ||
+    hasVectorMentions
   ) {
     const attachmentLookup = buildAttachmentLookup(msg);
     const seenAttachmentUrls = new Set<string>();
     const contentParts: ModelContentPart[] = [];
 
-    if (inspectPromptText) {
-      contentParts.push({ type: "text", text: inspectPromptText });
+    if (designSidecarText) {
+      contentParts.push({ type: "text", text: designSidecarText });
     }
 
     if (typeof msg.content === "string" && msg.content) {
@@ -827,6 +1006,9 @@ export async function extractContent(
     for (const attachment of msg.experimental_attachments ?? []) {
       await processAttachment(attachment);
     }
+
+    // v2 @-mention vector chunks: same as the parts-path injection above.
+    await injectVectorMentions(contentParts, msg.metadata?.custom?.vectorMentions);
 
     if (contentParts.length > 0) {
       if (contentParts.length === 1 && contentParts[0].type === "text") {

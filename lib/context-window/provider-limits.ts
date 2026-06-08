@@ -17,6 +17,13 @@ import { normalizeCodexModel } from "@/lib/auth/codex-models";
 export interface ContextWindowConfig {
   /** Maximum tokens for this model's context window */
   maxTokens: number;
+  /**
+   * Provider-enforced prompt/input budget. Some models advertise a larger total
+   * context than the API accepts as request input once output is reserved.
+   */
+  maxInputTokens?: number;
+  /** Maximum output budget for the model, when known */
+  maxOutputTokens?: number;
   /** Percentage threshold to trigger warning (e.g., 0.75 = 75%) */
   warningThreshold: number;
   /** Percentage threshold to force compaction (e.g., 0.90 = 90%) */
@@ -72,6 +79,24 @@ const DEFAULT_CONTEXT_CONFIG: ContextWindowConfig = {
   supportsStreaming: true,
   minMessagesForCompaction: 3, // Lowered from 10 to allow sparse long-running sessions
   keepRecentMessages: 6,
+};
+
+const CODEX_GPT_55_TOTAL_TOKENS = 1_000_000;
+const CODEX_GPT_55_MAX_INPUT_TOKENS = 276_000;
+const CODEX_GPT_55_MAX_OUTPUT_TOKENS = 128_000;
+const CODEX_GPT_55_THRESHOLDS = {
+  // Trigger at 95% with 5% headroom before the provider's real input cap.
+  warningThreshold: 0.80,
+  criticalThreshold: 0.95,
+  hardLimit: 0.95,
+};
+
+const CODEX_GPT_55_CONTEXT_CONFIG: Partial<ContextWindowConfig> = {
+  maxTokens: CODEX_GPT_55_TOTAL_TOKENS,
+  maxInputTokens: CODEX_GPT_55_MAX_INPUT_TOKENS,
+  maxOutputTokens: CODEX_GPT_55_MAX_OUTPUT_TOKENS,
+  supportsStreaming: true,
+  ...CODEX_GPT_55_THRESHOLDS,
 };
 
 // ---------------------------------------------------------------------------
@@ -171,20 +196,12 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     supportsStreaming: true,
   },
 
-  // Codex (GPT-5.5 — 1M context, released 2026-04-23)
+  // Codex (GPT-5.5 — 1M total, but provider currently accepts ~276K input + 128K output)
   "gpt-5.5": {
-    maxTokens: 1000000,
-    supportsStreaming: true,
-    warningThreshold: 0.80,
-    criticalThreshold: 0.92,
-    hardLimit: 0.97,
+    ...CODEX_GPT_55_CONTEXT_CONFIG,
   },
   "gpt-5.5-pro": {
-    maxTokens: 1000000,
-    supportsStreaming: true,
-    warningThreshold: 0.80,
-    criticalThreshold: 0.92,
-    hardLimit: 0.97,
+    ...CODEX_GPT_55_CONTEXT_CONFIG,
   },
   // Codex (GPT-5.4 — 1M context)
   "gpt-5.4": {
@@ -340,18 +357,10 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     supportsStreaming: true,
   },
   "openai/gpt-5.5": {
-    maxTokens: 1000000,
-    supportsStreaming: true,
-    warningThreshold: 0.80,
-    criticalThreshold: 0.92,
-    hardLimit: 0.97,
+    ...CODEX_GPT_55_CONTEXT_CONFIG,
   },
   "openai/gpt-5.5-pro": {
-    maxTokens: 1000000,
-    supportsStreaming: true,
-    warningThreshold: 0.80,
-    criticalThreshold: 0.92,
-    hardLimit: 0.97,
+    ...CODEX_GPT_55_CONTEXT_CONFIG,
   },
   "openai/gpt-5.4": {
     maxTokens: 400000,
@@ -581,11 +590,12 @@ export function getTokenThresholds(
   maxTokens: number;
 } {
   const config = getContextWindowConfig(modelId, provider);
+  const decisionTokens = config.maxInputTokens ?? config.maxTokens;
 
   return {
-    warningTokens: Math.floor(config.maxTokens * config.warningThreshold),
-    criticalTokens: Math.floor(config.maxTokens * config.criticalThreshold),
-    hardLimitTokens: Math.floor(config.maxTokens * config.hardLimit),
+    warningTokens: Math.floor(decisionTokens * config.warningThreshold),
+    criticalTokens: Math.floor(decisionTokens * config.criticalThreshold),
+    hardLimitTokens: Math.floor(decisionTokens * config.hardLimit),
     maxTokens: config.maxTokens,
   };
 }

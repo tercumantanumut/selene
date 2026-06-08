@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type FC } from "react";
-import { CircleNotch, CheckCircle, XCircle } from "@phosphor-icons/react";
+import { CircleNotch, CheckCircle, XCircle, Clock } from "@phosphor-icons/react";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import { getToolIcon } from "@/components/ui/tool-icon-map";
@@ -9,6 +9,7 @@ import { getCanonicalToolName, humanizeToolName, loadToolNameCache } from "./too
 import { useToolExpansion } from "./tool-expansion-context";
 import { stripXmlStatusTags } from "./claude-code-tools/parse-text-result";
 import { DiffStyledPre } from "./diff-styled-pre";
+import { useChatSessionId } from "@/components/chat-provider";
 // Define the tool call component type manually since it's no longer exported
 type ToolCallContentPartComponent = FC<{
   toolName: string;
@@ -65,6 +66,11 @@ interface ToolResult {
   stderr?: string;
   exitCode?: number | null;
   executionTime?: number;
+  // Honest truncation signal from executeCommand / bash. The fallback renderer
+  // surfaces these so users see "output truncated" + a copy-retrieval CTA when
+  // the dedicated tool UIs aren't selected (e.g. unknown alias, MCP wrapper).
+  isTruncated?: boolean;
+  logId?: string;
   // searchTools specific fields
   query?: string;
   message?: string;
@@ -238,6 +244,7 @@ ToolStatus.displayName = "ToolStatus";
 // Memoized Result Display Component
 const ToolResultDisplay: FC<{ toolName: string; result: ToolResult }> = memo(({ toolName, result }) => {
   const tResults = useTranslations("assistantUi.toolResults");
+  const tCommand = useTranslations("assistantUi.commandOutput");
   const canonicalToolName = getCanonicalToolName(toolName);
   const normalizedResult = unwrapMcpTextWrappedResult(result);
   const isCommandLikeTool = canonicalToolName.toLowerCase() === "bash" || canonicalToolName === "executeCommand";
@@ -272,6 +279,34 @@ const ToolResultDisplay: FC<{ toolName: string; result: ToolResult }> = memo(({ 
           <pre className={cn("max-h-64", TOOL_RESULT_ERROR_PRE_CLASS)}>
             {normalizedResult.stderr}
           </pre>
+        )}
+        {/*
+         * Truncation banner — the executor now propagates `isTruncated` + `logId`
+         * honestly (size-clamp or timeout-kill). The dedicated execute-command
+         * and Claude bash UIs already render the same banner via command-output.tsx;
+         * we mirror it here so MCP wrappers / unknown aliases that fall through
+         * to the fallback also surface the signal instead of silently dropping it.
+         */}
+        {normalizedResult.isTruncated && normalizedResult.logId && (
+          <div className="my-1 flex items-center justify-between gap-3 rounded-md border border-terminal-amber/30 bg-terminal-amber/10 p-2">
+            <div className="flex items-center gap-2 text-terminal-amber">
+              <Clock className="h-4 w-4 shrink-0" weight="regular" />
+              <span className="text-xs font-mono">
+                {tCommand("truncated", { logId: normalizedResult.logId })}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(
+                  `executeCommand({ command: "readLog", logId: "${normalizedResult.logId}" })`,
+                );
+              }}
+              className="shrink-0 rounded border border-terminal-amber/20 bg-terminal-amber/20 px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-terminal-amber transition-colors hover:bg-terminal-amber/30"
+            >
+              {tCommand("copyRetrieval")}
+            </button>
+          </div>
         )}
       </div>
     );
@@ -845,6 +880,7 @@ export const ToolFallback: ToolCallContentPartComponent = memo(({
   result,
 }) => {
   const t = useTranslations("assistantUi.tools");
+  const sessionId = useChatSessionId();
   const canonicalToolName = useMemo(() => getCanonicalToolName(toolName), [toolName]);
   const isRunning = result === undefined;
   const parsedResult = result as ToolResult | undefined;
@@ -885,6 +921,33 @@ export const ToolFallback: ToolCallContentPartComponent = memo(({
       cancelled = true;
     };
   }, [canonicalToolName, toolName, t]);
+
+  const dispatchedCompactResultRef = useRef(false);
+  useEffect(() => {
+    if (
+      canonicalToolName !== "compactSession" ||
+      !sessionId ||
+      !parsedResult ||
+      parsedResult.status !== "success"
+    ) {
+      if (parsedResult === undefined) {
+        dispatchedCompactResultRef.current = false;
+      }
+      return;
+    }
+
+    if (dispatchedCompactResultRef.current) {
+      return;
+    }
+    dispatchedCompactResultRef.current = true;
+
+    window.dispatchEvent(new CustomEvent("seline:compact-session-completed", {
+      detail: {
+        sessionId,
+        status: parsedResult,
+      },
+    }));
+  }, [canonicalToolName, parsedResult, sessionId]);
 
   // When the tool completes, prefer the parsed args object if argsText is
   // stale (e.g. "{}" from a streaming race where the result arrives before

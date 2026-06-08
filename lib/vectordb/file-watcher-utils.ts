@@ -42,8 +42,11 @@ export async function getOpenFileDescriptorCount(): Promise<number | null> {
 
 export function getWatcherFdBudget(): number {
   // Electron utilityProcess on macOS becomes fragile well before the process
-  // reaches the OS hard limit, so keep a lower ceiling there.
-  return process.platform === "darwin" ? 5000 : 10000;
+  // reaches the OS hard limit, so keep a lower ceiling there. The budget must
+  // also leave headroom for MCP child-process stdio (~3 FDs each) and the
+  // node-runtime probes that run during startup; EMFILE during chokidar's
+  // initial scan poisons every subsequent spawn() with EBADF.
+  return process.platform === "darwin" ? 3000 : 10000;
 }
 
 export function getWatcherFdWarnThreshold(budget = getWatcherFdBudget()): number {

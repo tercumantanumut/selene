@@ -88,14 +88,28 @@ export interface AppSettings {
         project_id?: string; // Antigravity project ID from loadCodeAssist
     };
 
-    // OpenAI Codex OAuth authentication (ChatGPT Plus/Pro)
+    // OpenAI Codex auth state — backed by the CLIProxyAPI sidecar's
+    // credential dir; we cache a snapshot here so the settings UI doesn't
+    // round-trip the sidecar on every render. Token storage itself lives
+    // inside the sidecar (~/.cli-proxy-api/codex-*.json).
     codexAuth?: {
         isAuthenticated: boolean;
         email?: string;
         accountId?: string;
+        plan?: string;
         expiresAt?: number;
         lastRefresh?: number;
+        tokenSource?: string;
+        authUrl?: string;
+        output?: string[];
+        error?: string;
     };
+    /**
+     * Legacy field — selene's pre-refactor PKCE flow stored its OAuth token
+     * here. `ensureCodexCredentialBridged()` migrates it into the sidecar's
+     * auth-dir on first run; new logins go straight to the sidecar so this
+     * field stays empty going forward. Kept in the type for back-compat.
+     */
     codexToken?: {
         type: "oauth";
         access_token: string;
@@ -202,6 +216,7 @@ export interface AppSettings {
     localUserEmail: string;
 
     // App preferences
+    appLanguage?: "en" | "tr";
     theme: "dark" | "light" | "system";
     chatWorkspaceMode?: ChatWorkspaceMode;
     toolLoadingMode?: "deferred" | "always";  // Tool loading strategy: deferred saves tokens, always loads all upfront
@@ -327,6 +342,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     vllmBaseUrl: "http://localhost:8000/v1",
     localUserId: crypto.randomUUID(),
     localUserEmail: "local@zlutty.ai",
+    appLanguage: "en",
     theme: "dark",
     chatWorkspaceMode: DEFAULT_CHAT_WORKSPACE_MODE,
     toolLoadingMode: "deferred",  // Default to deferred loading to save tokens
@@ -446,12 +462,15 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 function getSettingsPath(): string {
-    // In Electron, LOCAL_DATA_PATH is set to userDataPath/data
+    // turbopackIgnore: process.env.LOCAL_DATA_PATH and process.cwd() are only
+    // resolvable at runtime. Without these markers Turbopack's NFT flags this
+    // function as a "dynamic FS op" and over-traces the whole project into
+    // every route's bundle (next.config.ts → settings-manager → routes chain).
     if (process.env.LOCAL_DATA_PATH) {
-        return join(process.env.LOCAL_DATA_PATH, "settings.json");
+        return join(/*turbopackIgnore: true*/ process.env.LOCAL_DATA_PATH, "settings.json");
     }
-    const dataDir = join(process.cwd(), ".local-data");
-    return join(dataDir, "settings.json");
+    const dataDir = join(/*turbopackIgnore: true*/ process.cwd(), ".local-data");
+    return join(/*turbopackIgnore: true*/ dataDir, "settings.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -503,9 +522,9 @@ export function loadSettings(): AppSettings {
 
     const settingsPath = getSettingsPath();
 
-    if (existsSync(settingsPath)) {
+    if (existsSync(/*turbopackIgnore: true*/ settingsPath)) {
         try {
-            const data = readFileSync(settingsPath, "utf-8");
+            const data = readFileSync(/*turbopackIgnore: true*/ settingsPath, "utf-8");
             const loaded: AppSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
             // NOTE: We no longer clear incompatible models on read.
             // Validation happens at write-time (settings PUT, session model-config PUT)
@@ -536,9 +555,10 @@ export function saveSettings(settings: AppSettings): void {
     const settingsPath = getSettingsPath();
 
     // Ensure directory exists
-    const dir = dirname(settingsPath);
-    if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+    // turbopackIgnore: dirname(settingsPath) is runtime-only.
+    const dir = dirname(/*turbopackIgnore: true*/ settingsPath);
+    if (!existsSync(/*turbopackIgnore: true*/ dir)) {
+        mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
     }
 
     // Sanitize browser profile path: strip null bytes and trim whitespace
@@ -548,7 +568,7 @@ export function saveSettings(settings: AppSettings): void {
             .trim();
     }
 
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    writeFileSync(/*turbopackIgnore: true*/ settingsPath, JSON.stringify(settings, null, 2));
     cachedSettings = settings;
     cachedSettingsTimestamp = Date.now();
 

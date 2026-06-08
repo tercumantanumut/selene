@@ -85,10 +85,7 @@ export const YouTubeInlinePreview = ({
     [messageText]
   );
 
-  // Don't render if no YouTube URLs found
-  if (urls.length === 0) return null;
-
-  // Deduplicate by video ID
+  // Deduplicate by video ID before the early return so hook order stays stable.
   const uniqueUrls = useMemo(() => {
     const seen = new Set<string>();
     return urls.filter((urlRef) => {
@@ -97,6 +94,9 @@ export const YouTubeInlinePreview = ({
       return true;
     });
   }, [urls]);
+
+  // Don't render if no YouTube URLs found
+  if (uniqueUrls.length === 0) return null;
 
   return (
     <div className="mt-3 not-prose">

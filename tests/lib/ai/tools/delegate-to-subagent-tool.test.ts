@@ -18,6 +18,9 @@ const mocks = vi.hoisted(() => ({
   removeFromQueueByDelegationId: vi.fn(),
   removeDelegationCompletionById: vi.fn(),
   addDelegationCompletion: vi.fn(),
+  markDelegationResultDelivered: vi.fn(),
+  getDelegationDeliveryRecord: vi.fn(),
+  clearDelegationDeliveryRecords: vi.fn(),
 }));
 
 vi.mock("@/lib/agents/workflows", () => ({
@@ -56,6 +59,16 @@ vi.mock("@/lib/ai/tools/delegation-completion-store", () => ({
   removeDelegationCompletionById: mocks.removeDelegationCompletionById,
 }));
 
+vi.mock("@/lib/ai/tools/delegation-delivery-registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/tools/delegation-delivery-registry")>();
+  return {
+    ...actual,
+    markDelegationResultDelivered: mocks.markDelegationResultDelivered,
+    getDelegationDeliveryRecord: mocks.getDelegationDeliveryRecord,
+    clearDelegationDeliveryRecords: mocks.clearDelegationDeliveryRecords,
+  };
+});
+
 vi.mock("@/lib/background-tasks/registry", () => ({
   taskRegistry: {
     get: mocks.taskRegistryGet,
@@ -75,6 +88,7 @@ vi.mock("@/lib/interactive-tool-bridge", () => ({
 
 import { createDelegateToSubagentTool } from "@/lib/ai/tools/delegate-to-subagent-tool";
 import { activeDelegations } from "@/lib/ai/tools/delegate-to-subagent-types";
+import { clearDelegationDeliveryRecords } from "@/lib/ai/tools/delegation-delivery-registry";
 
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
@@ -96,6 +110,7 @@ describe("delegate-to-subagent-tool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     activeDelegations.clear();
+    clearDelegationDeliveryRecords();
 
     mocks.getWorkflowByAgentId.mockResolvedValue({
       workflow: { id: "wf-1", name: "Main Workflow" },
@@ -171,6 +186,8 @@ describe("delegate-to-subagent-tool", () => {
     mocks.appendToLivePromptQueueBySession.mockReturnValue(false);
     mocks.removeFromQueueByDelegationId.mockReturnValue(0);
     mocks.removeDelegationCompletionById.mockReturnValue(false);
+    mocks.markDelegationResultDelivered.mockImplementation((record) => record);
+    mocks.getDelegationDeliveryRecord.mockReturnValue(undefined);
 
     fetchMock.mockResolvedValue({
       ok: true,
@@ -457,6 +474,73 @@ describe("delegate-to-subagent-tool", () => {
     });
     expect(secondObserve.success).toBe(true);
     expect(secondObserve.completed).toBe(true);
+  });
+
+  it("observe returns compact metadata after an auto-delivered result unless forced", async () => {
+    let readCount = 0;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (readCount === 0) {
+              readCount += 1;
+              await delay(40);
+              return { done: false, value: new Uint8Array([1]) };
+            }
+            return { done: true, value: undefined };
+          },
+        }),
+      },
+      text: async () => "",
+    });
+
+    mocks.getDelegationDeliveryRecord.mockReturnValue({
+      delegationId: "delivered-id",
+      resultVersion: 1,
+      deliveryId: "deleg-delivery-delivered-id-v1",
+      resultHash: "hash-1",
+      deliveredAt: 123,
+      channel: "live-prompt",
+    });
+
+    const tool = makeTool();
+    const started = await (tool as any).execute({
+      action: "start",
+      agentName: "Research Analyst",
+      task: "Verify duplicate delivery guard",
+      mode: "background",
+    });
+
+    await delay(120);
+
+    const observed = await (tool as any).execute({
+      action: "observe",
+      delegationId: started.delegationId,
+    });
+
+    expect(observed).toEqual(expect.objectContaining({
+      success: true,
+      completed: true,
+      deliveryStatus: "already_delivered",
+      deliveryId: "deleg-delivery-delivered-id-v1",
+      resultVersion: 1,
+      resultHash: "hash-1",
+      deliveredAt: 123,
+    }));
+    expect(observed.lastResponse).toBeUndefined();
+    expect(mocks.getObserveMessageSummary).not.toHaveBeenCalled();
+
+    const forced = await (tool as any).execute({
+      action: "observe",
+      delegationId: started.delegationId,
+      force: true,
+    });
+
+    expect(forced.success).toBe(true);
+    expect(forced.lastResponse).toBe("done");
+    expect(forced.deliveryId).toBe("deleg-delivery-delivered-id-v1");
+    expect(mocks.getObserveMessageSummary).toHaveBeenCalledTimes(1);
   });
 
   it("start always returns immediately in background mode regardless of runInBackground flag", async () => {
