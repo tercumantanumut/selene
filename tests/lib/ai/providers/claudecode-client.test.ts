@@ -1,20 +1,39 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ensureSidecarReady } = vi.hoisted(() => ({
-  ensureSidecarReady: vi.fn(async () => ({
-    port: 8317,
-    apiKey: "selene-test-key",
-    baseUrl: "http://127.0.0.1:8317/v1",
+const {
+  createAnthropicMock,
+  ensureDarioConfig,
+  ensureDarioSidecarReady,
+  getDarioBaseUrl,
+} = vi.hoisted(() => ({
+  createAnthropicMock: vi.fn(),
+  ensureDarioConfig: vi.fn(() => ({
+    dir: "/tmp/selene-dario",
+    apiKey: "selene-dario-test-key",
+    port: 8575,
+    host: "localhost",
   })),
+  ensureDarioSidecarReady: vi.fn(async () => ({
+    port: 8575,
+    apiKey: "selene-dario-test-key",
+    baseUrl: "http://localhost:8575/v1",
+  })),
+  getDarioBaseUrl: vi.fn((port = 8575, host = "127.0.0.1") => `http://${host}:${port}/v1`),
 }));
 
-vi.mock("@/lib/ai/providers/cliproxy/sidecar", () => ({
-  ensureSidecarReady,
-  stopSidecar: vi.fn(),
-  isSidecarReady: vi.fn(() => true),
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: createAnthropicMock,
+}));
+
+vi.mock("@/lib/ai/providers/dario/config", () => ({
+  ensureDarioConfig,
+  getDarioBaseUrl,
+}));
+
+vi.mock("@/lib/ai/providers/dario/sidecar", () => ({
+  ensureDarioSidecarReady,
+  stopDarioSidecar: vi.fn(),
+  isDarioSidecarReady: vi.fn(() => true),
 }));
 
 import {
@@ -23,21 +42,13 @@ import {
 } from "@/lib/ai/providers/claudecode-client";
 
 describe("claudecode-client", () => {
-  let dataDir: string;
-  let prev: string | undefined;
-
   beforeEach(() => {
     invalidateClaudeCodeProvider();
-    ensureSidecarReady.mockClear();
-    dataDir = mkdtempSync(join(tmpdir(), "selene-cc-client-"));
-    prev = process.env.LOCAL_DATA_PATH;
-    process.env.LOCAL_DATA_PATH = dataDir;
-  });
-
-  afterEach(() => {
-    rmSync(dataDir, { recursive: true, force: true });
-    if (prev === undefined) delete process.env.LOCAL_DATA_PATH;
-    else process.env.LOCAL_DATA_PATH = prev;
+    createAnthropicMock.mockReset();
+    createAnthropicMock.mockImplementation(() => (modelId: string) => ({ modelId }));
+    ensureDarioConfig.mockClear();
+    ensureDarioSidecarReady.mockClear();
+    getDarioBaseUrl.mockClear();
   });
 
   it("constructs a provider lazily and returns a LanguageModel per modelId", () => {
@@ -46,29 +57,37 @@ describe("claudecode-client", () => {
 
     const model = provider("claude-opus-4-7");
     expect(model).toBeTruthy();
-    // The AI SDK Anthropic provider tags LanguageModel instances with modelId.
     expect((model as { modelId?: string }).modelId).toBe("claude-opus-4-7");
   });
 
-  it("does not boot the sidecar at construction time (lazy boot via fetch)", () => {
+  it("builds the Anthropic client with the configured Dario host", () => {
     createClaudeCodeProvider();
-    expect(ensureSidecarReady).not.toHaveBeenCalled();
+
+    expect(getDarioBaseUrl).toHaveBeenCalledWith(8575, "localhost");
+    expect(createAnthropicMock).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: "selene-dario-test-key",
+      baseURL: "http://localhost:8575/v1",
+    }));
+  });
+
+  it("does not boot Dario at construction time (lazy boot via fetch)", () => {
+    createClaudeCodeProvider();
+    expect(ensureDarioSidecarReady).not.toHaveBeenCalled();
   });
 
   it("caches the provider across calls so two calls share one instance", () => {
     const a = createClaudeCodeProvider();
     const b = createClaudeCodeProvider();
-    // Both factories return functions; calling each with the same modelId
-    // should produce models pointing at the same underlying provider.
     const ma = a("claude-opus-4-7") as { modelId?: string };
     const mb = b("claude-opus-4-7") as { modelId?: string };
     expect(ma.modelId).toBe(mb.modelId);
+    expect(createAnthropicMock).toHaveBeenCalledTimes(1);
   });
 
   it("invalidateClaudeCodeProvider clears the cache (next call rebuilds)", () => {
     createClaudeCodeProvider();
     invalidateClaudeCodeProvider();
-    // No throw + no error is the contract; re-calling rebuilds without error.
     expect(() => createClaudeCodeProvider()).not.toThrow();
+    expect(createAnthropicMock).toHaveBeenCalledTimes(2);
   });
 });

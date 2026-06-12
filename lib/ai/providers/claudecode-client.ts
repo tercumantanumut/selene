@@ -1,8 +1,8 @@
 /**
  * Claude Code provider — talks Anthropic Messages protocol over the
- * CLIProxyAPI sidecar.
+ * Dario sidecar.
  *
- * The sidecar is the OAuth-bearing process; this module is a thin
+ * Dario is the OAuth-bearing local proxy; this module is a thin
  * `createAnthropic` wrapper that points at `http://127.0.0.1:<port>/v1` and
  * lets the existing AI SDK plumbing (streaming, tool_use, caching headers)
  * handle the rest.
@@ -14,8 +14,8 @@
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModel } from "ai";
-import { ensureCliproxyConfig, getCliproxyBaseUrl } from "./cliproxy/config";
-import { ensureSidecarReady } from "./cliproxy/sidecar";
+import { ensureDarioConfig, getDarioBaseUrl } from "./dario/config";
+import { ensureDarioSidecarReady } from "./dario/sidecar";
 
 type AnthropicProvider = ReturnType<typeof createAnthropic>;
 
@@ -24,21 +24,21 @@ let cached: AnthropicProvider | null = null;
 /**
  * A `fetch` that ensures the sidecar is up before every request.
  *
- * When the sidecar is already healthy this is a single in-process check;
+ * When the sidecar is already listening this is a single in-process check;
  * when it has died, the first request pays the spawn-and-poll cost.
  */
 function createSidecarFetch(): typeof fetch {
   return async (input, init) => {
-    await ensureSidecarReady();
+    await ensureDarioSidecarReady();
     return globalThis.fetch(input, init);
   };
 }
 
 function buildProvider(): AnthropicProvider {
-  const { apiKey, port } = ensureCliproxyConfig();
+  const { apiKey, port, host } = ensureDarioConfig();
   return createAnthropic({
     apiKey,
-    baseURL: getCliproxyBaseUrl(port),
+    baseURL: getDarioBaseUrl(port, host),
     fetch: createSidecarFetch(),
   });
 }

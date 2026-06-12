@@ -14,10 +14,16 @@ import { ChannelConnector, ChannelSendPayload, ChannelSendResult, ChannelStatus,
 // Lazy import to break the inbound ↔ manager circular dependency.
 // inbound.ts needs getChannelManager() at runtime; manager.ts needs
 // handleInboundMessage at runtime. Both are only called after the module
-// graph is fully resolved, so a deferred require is safe here.
+// graph is fully resolved, so a deferred import is safe here.
+// NOTE: must be a dynamic import(), not require() — in the production
+// Turbopack bundle inbound.ts is an async module (its import graph contains
+// top-level await), so a synchronous require returns a pending Promise
+// namespace and `.handleInboundMessage` would be undefined.
 function getHandleInboundMessage(): (msg: ChannelInboundMessage) => Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return (require("./inbound") as { handleInboundMessage: (msg: ChannelInboundMessage) => Promise<void> }).handleInboundMessage;
+  return async (msg: ChannelInboundMessage) => {
+    const { handleInboundMessage } = await import("./inbound");
+    return handleInboundMessage(msg);
+  };
 }
 
 class ChannelManager {

@@ -128,6 +128,7 @@
       "kimiWaitingAuth": "Yetkilendirme bekleniyor...",
       "kimiOpenLoginPage": "Kimi Giriş Sayfasını Aç",
       "claudecodeLoginHint": "Burada giriş yapmadan önce cihazınızda Claude Code'a giriş yaptığınızdan emin olun.",
+      "noAuthUrl": "Dario kimlik doğrulama URL'si döndürmedi. Sorun devam ederse Ayarlar'dan Claude Code kimlik doğrulamasını yeniden deneyin.",
       "apiKeySaved": "API Anahtarı kaydedildi!",
       "saving": "Kaydediliyor...",
       "saveApiKey": "API Anahtarını Kaydet",
@@ -2414,7 +2415,8 @@
         "antigravityWarning": "Hesap banlanma riski vardır, kendi sorumluluğunuzda kullanın",
         "diagnosticDetails": "Tanılama ayrıntıları",
         "manualLoginBefore": "Kimlik doğrulama sayfası otomatik olarak açılamadı. Terminalinizde ",
-        "manualLoginAfter": " komutunu çalıştırın, ardından yetkilendirme kodunu aşağıya yapıştırın."
+        "manualLoginAfter": " komutunu çalıştırın, ardından yetkilendirme kodunu aşağıya yapıştırın.",
+        "noAuthUrl": "Dario kimlik doğrulama URL'si döndürmedi. Aşağıdaki tanılama çıktısını inceleyin ve Claude Code kimlik doğrulamasını yeniden deneyin."
       },
       "fields": {
         "anthropic": {

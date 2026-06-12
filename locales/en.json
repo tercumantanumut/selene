@@ -128,6 +128,7 @@
       "kimiWaitingAuth": "Waiting for authorization...",
       "kimiOpenLoginPage": "Open Kimi Login Page",
       "claudecodeLoginHint": "Make sure you are logged into Claude Code on your device before signing in here.",
+      "noAuthUrl": "Dario did not return an authentication URL. Retry Claude Code authentication from Settings if this persists.",
       "apiKeySaved": "API Key saved!",
       "saving": "Saving...",
       "saveApiKey": "Save API Key",
@@ -2384,7 +2385,8 @@
         "done": "Done",
         "diagnosticDetails": "Diagnostic details",
         "manualLoginBefore": "Could not open the authentication page automatically. Run ",
-        "manualLoginAfter": " in your terminal, then paste the authorization code below."
+        "manualLoginAfter": " in your terminal, then paste the authorization code below.",
+        "noAuthUrl": "Dario did not return an authentication URL. Review the diagnostic output below, then retry Claude Code authentication."
       },
       "fields": {
         "anthropic": {

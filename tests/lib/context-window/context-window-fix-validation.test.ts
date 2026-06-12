@@ -55,7 +55,7 @@ describe("Context Window Fix Validation", () => {
     });
   });
 
-  describe("Claude Model-Specific Configurations (200K)", () => {
+  describe("Claude Model-Specific Configurations", () => {
     const claude200KModels = [
       "claude-sonnet-4-5-20250929",
       "claude-haiku-4-5-20251001",
@@ -70,9 +70,18 @@ describe("Context Window Fix Validation", () => {
       });
     });
 
-    it("should configure claude-opus-4-6 with 1M context window", () => {
-      const config = getContextWindowConfig("claude-opus-4-6");
-      expect(config.maxTokens).toBe(1000000);
+    const claude1MModels = [
+      "claude-opus-4-8",
+      "claude-fable-5",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+    ];
+
+    claude1MModels.forEach((modelId) => {
+      it(`should configure ${modelId} with 1M context window`, () => {
+        const config = getContextWindowConfig(modelId, "claudecode");
+        expect(config.maxTokens).toBe(1000000);
+      });
     });
   });
 
@@ -186,9 +195,17 @@ describe("Context Window Fix Validation", () => {
         expect(config.maxTokens).toBe(200000);
       }
 
-      // claude-opus-4-6 has 1M context (model-catalog contextWindow: "1M")
-      const opusConfig = getContextWindowConfig("claude-opus-4-6");
-      expect(opusConfig.maxTokens).toBe(1000000);
+      // Claude Code flagship models have 1M context (model-catalog contextWindow: "1M")
+      const claude1MModels = [
+        "claude-opus-4-8",
+        "claude-fable-5",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+      ];
+      for (const modelId of claude1MModels) {
+        const config = getContextWindowConfig(modelId, "claudecode");
+        expect(config.maxTokens).toBe(1000000);
+      }
     });
   });
 
