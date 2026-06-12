@@ -423,7 +423,7 @@ export async function findZombieRuns(thresholdMinutes: number = 5): Promise<Agen
 /**
  * Mark a run as failed due to timeout/abandonment
  */
-export async function markRunAsTimedOut(
+async function markRunAsTimedOut(
   runId: string,
   reason: string = "timeout"
 ): Promise<AgentRun | undefined> {

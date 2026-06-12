@@ -448,6 +448,6 @@ export function validateMeasurementsSync(
  * payload is valid; they should still call `validateIframeMessage` to obtain
  * the narrowed payload they intend to act on.
  */
-export function isIframeMessage(value: unknown): value is IframeMessage {
+function isIframeMessage(value: unknown): value is IframeMessage {
   return validateIframeMessage(value) !== null;
 }

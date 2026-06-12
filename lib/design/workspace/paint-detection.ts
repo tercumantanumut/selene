@@ -19,19 +19,6 @@ export interface Rgba {
   a: number;
 }
 
-export type PaintSource =
-  | "background"
-  | "gradient"
-  | "svg-fill"
-  | "svg-stroke"
-  | "pseudo-before"
-  | "pseudo-after";
-
-export interface PaintResult {
-  rgba: Rgba;
-  source: PaintSource;
-}
-
 /** Parse `rgb(...)` / `rgba(...)` strings produced by `getComputedStyle`. */
 export function parseRgbaString(input: string | null | undefined): Rgba | null {
   if (!input) return null;

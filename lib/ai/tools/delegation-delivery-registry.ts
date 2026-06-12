@@ -37,7 +37,7 @@ function pruneExpiredDeliveries(now = Date.now()): void {
   }
 }
 
-export function hashDelegationResult(resultContent: string): string {
+function hashDelegationResult(resultContent: string): string {
   return createHash("sha256").update(resultContent).digest("hex");
 }
 

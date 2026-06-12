@@ -90,8 +90,6 @@ async function deleteCredentials(
 
 // ── Claude ──────────────────────────────────────────────────────────────────
 
-export type ClaudeCredential = SidecarCredential;
-
 export function listClaudeCredentials(): Promise<SidecarCredential[]> {
   return listCredentials("claude");
 }
@@ -105,8 +103,6 @@ export function deleteAllClaudeCredentials(): Promise<void> {
 }
 
 // ── Codex ───────────────────────────────────────────────────────────────────
-
-export type CodexCredential = SidecarCredential;
 
 export function listCodexCredentials(): Promise<SidecarCredential[]> {
   return listCredentials("codex");

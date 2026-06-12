@@ -4,7 +4,7 @@ import { nowISO } from "@/lib/utils/timestamp";
 import { taskRegistry } from "./registry";
 import type { ChatTask, TaskStatus, UnifiedTask } from "./types";
 
-export type BackgroundProcessToolName = "bash" | "executeCommand";
+type BackgroundProcessToolName = "bash" | "executeCommand";
 
 interface RegisterBackgroundProcessTaskInput {
   processId: string;
@@ -47,7 +47,7 @@ function findRecentlyCompletedTask(runId: string): UnifiedTask | undefined {
   return taskRegistry.listRecentlyCompleted().find((task) => task.runId === runId);
 }
 
-export function completeBackgroundProcessTask(
+function completeBackgroundProcessTask(
   processId: string,
   info?: BackgroundProcessInfo | null,
   fallbackStatus: TaskStatus = "cancelled",

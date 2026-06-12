@@ -24,7 +24,7 @@
 import type { PickedColor } from "./types";
 
 /** Full, panel-friendly label for a picked-colour paint source. */
-export function pickedColorSourceLabel(source: PickedColor["source"]): string {
+function pickedColorSourceLabel(source: PickedColor["source"]): string {
   switch (source) {
     case "background":
       return "background";

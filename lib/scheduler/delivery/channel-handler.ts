@@ -15,10 +15,8 @@ const TELEGRAM_SAFE_LIMIT = 3800;
 const TELEGRAM_CHUNK_DELAY_MS = 100;
 
 export class ChannelDeliveryHandler implements DeliveryHandler {
-  // fallow-ignore-next-line unused-class-member
   type = "channel";
 
-  // fallow-ignore-next-line unused-class-member
   async deliver(
     payload: DeliveryPayload,
     rawConfig: Record<string, unknown>

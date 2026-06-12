@@ -9,10 +9,8 @@ import type { DeliveryHandler, DeliveryPayload } from "./types";
 import type { EmailDeliveryConfig } from "@/lib/db/sqlite-schedule-schema";
 
 export class EmailDeliveryHandler implements DeliveryHandler {
-  // fallow-ignore-next-line unused-class-member
   type = "email";
 
-  // fallow-ignore-next-line unused-class-member
   async deliver(
     payload: DeliveryPayload,
     rawConfig: Record<string, unknown>

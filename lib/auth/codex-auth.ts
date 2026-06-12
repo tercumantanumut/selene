@@ -27,9 +27,9 @@ import { getCodexLoginState } from "@/lib/ai/providers/cliproxy/login";
 const TOKEN_SOURCE = "cliproxyapi-oauth";
 
 /** Path on the JWT where OpenAI namespaces its profile claims (email, name). */
-export const CODEX_JWT_PROFILE_CLAIM_PATH = "https://api.openai.com/profile";
+const CODEX_JWT_PROFILE_CLAIM_PATH = "https://api.openai.com/profile";
 /** Path on the JWT where OpenAI namespaces its auth/account claims. */
-export const CODEX_JWT_AUTH_CLAIM_PATH = "https://api.openai.com/auth";
+const CODEX_JWT_AUTH_CLAIM_PATH = "https://api.openai.com/auth";
 
 export interface CodexAuthStatus {
   authenticated: boolean;

@@ -19,7 +19,7 @@ import {
 } from "@/lib/characters/tool-catalog";
 
 /** Tool capability definition for the wizard */
-export interface ToolCapability extends CharacterToolCatalogItem {}
+interface ToolCapability extends CharacterToolCatalogItem {}
 
 
 /** Category display order — matches character-picker's CATEGORY_ICONS */

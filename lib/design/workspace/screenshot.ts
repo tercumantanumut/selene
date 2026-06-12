@@ -88,7 +88,7 @@ function requestFailureText(request: unknown): string {
  * Without these hooks a missing bundle, CSP block, or render exception only
  * appears as a generic Puppeteer timeout.
  */
-export function attachPreviewDiagnostics(page: PreviewDiagnosticPage): void {
+function attachPreviewDiagnostics(page: PreviewDiagnosticPage): void {
   if (typeof page.on !== "function") {
     return;
   }
@@ -302,7 +302,7 @@ function defaultStateLabel(pseudo: string, selector: string): string {
   return `${pseudo}:${selector}`;
 }
 
-export function resolveStateLabel(
+function resolveStateLabel(
   entry: { label?: string; pseudo: string; selector: string },
 ): string {
   if (typeof entry.label === "string" && entry.label.trim().length > 0) {

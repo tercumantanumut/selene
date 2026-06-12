@@ -57,7 +57,7 @@ export interface SessionActivityState {
   updatedAt: number;
 }
 
-export interface SessionContextStatusState {
+interface SessionContextStatusState {
   status: "warning" | "critical" | "exceeded";
   percentage: number;
   updatedAt: number;

@@ -25,7 +25,7 @@ import { stat, readFile } from "fs/promises";
 import { resolveSyncedPath } from "./path-utils";
 
 /** Hard cap for synced-folder reads (5 MiB). Matches the BA-4 spec. */
-export const READ_SYNCED_FILE_MAX_BYTES = 5 * 1024 * 1024;
+const READ_SYNCED_FILE_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
  * Stable error codes for `readSyncedFile()`. Callers SHOULD map these
@@ -44,7 +44,7 @@ export type ReadSyncedFileErrorCode =
  * resolved absolute path — that lives on `resolvedPath` when known),
  * and for `FILE_TOO_LARGE` the observed `bytes` / enforced `limit`.
  */
-export class ReadSyncedFileError extends Error {
+class ReadSyncedFileError extends Error {
   readonly code: ReadSyncedFileErrorCode;
   readonly sourcePath: string;
   readonly resolvedPath?: string;

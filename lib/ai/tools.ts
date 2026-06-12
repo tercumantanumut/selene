@@ -84,8 +84,6 @@ export {
 } from "@/lib/ai/tools/codex-image-tools";
 
 // Runway and Vertex AI video tools
-export { createRunwayVideoTool } from "@/lib/ai/tools/runway-video-tool";
-export { createVertexAIVideoTool } from "@/lib/ai/tools/vertex-ai-video-tool";
 
 // OpenRouter video tool (Phase 3 — 10 models, async polling via /api/v1/videos)
 export {

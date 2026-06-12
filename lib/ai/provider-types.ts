@@ -22,11 +22,11 @@ export type LLMProvider =
   | "vllm";
 
 /** Providers whose chat endpoint does not accept user-message image parts. */
-export const PROVIDERS_REJECTING_INLINE_IMAGES: ReadonlySet<LLMProvider> =
+const PROVIDERS_REJECTING_INLINE_IMAGES: ReadonlySet<LLMProvider> =
   new Set<LLMProvider>(["deepseek"]);
 
 /** Providers that can receive image blocks directly inside tool-result content. */
-export const PROVIDERS_SUPPORTING_IMAGE_TOOL_RESULTS: ReadonlySet<LLMProvider> =
+const PROVIDERS_SUPPORTING_IMAGE_TOOL_RESULTS: ReadonlySet<LLMProvider> =
   new Set<LLMProvider>(["anthropic", "claudecode"]);
 
 /**

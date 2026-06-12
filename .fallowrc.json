@@ -8,7 +8,12 @@
     "@risingstack/react-easy-state",
     "tailwindcss-animate",
     "dotenv",
-    "zlib-sync"
+    "zlib-sync",
+    "gpt-tokenizer",
+    "onnxruntime-node",
+    "pdf-parse",
+    "three",
+    "wait-on"
   ],
   "ignorePatterns": [
     "scripts/bundled-tools/**",
@@ -512,6 +517,46 @@
       "exports": [
         "HistoryStatusInfo"
       ]
+    },
+    {
+      "file": "app/settings/embedding-model-selector.tsx",
+      "exports": ["*"]
+    },
+    {
+      "file": "lib/config/embedding-models.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "lib/ai/media/image-resolver.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "lib/ai/tools/image-tools-utils.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "lib/hooks/use-claudecode-subagent-events.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "lib/stores/claudecode-subagent-activity-store.ts",
+      "exports": ["*"]
+    },
+    {
+      "file": "tailwind.preview.config.cjs",
+      "exports": ["*"]
+    },
+    {
+      "file": "components/chat/chat-interface-utils.ts",
+      "exports": ["getSessionCharacterId", "getSessionCharacterName"]
+    },
+    {
+      "file": "lib/documents/file-types.ts",
+      "exports": ["getDocumentTypeLabel"]
+    },
+    {
+      "file": "lib/design/index.ts",
+      "exports": ["DESIGN_LIBRARIES", "detectAvailableLibraries", "getAvailableLibrariesPrompt", "DesignLibrary"]
     }
   ]
 }

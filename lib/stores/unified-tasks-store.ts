@@ -90,7 +90,7 @@ export const useUnifiedTasksStore = create<UnifiedTasksState>((set, get) => ({
   getActiveCount: () => get().tasks.length,
 }));
 
-export const useActiveTaskCount = () =>
+const useActiveTaskCount = () =>
   useUnifiedTasksStore((state) => state.tasks.length);
 
 export const useActiveTasks = () =>

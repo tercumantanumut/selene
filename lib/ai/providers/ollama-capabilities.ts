@@ -230,7 +230,7 @@ export function clearOllamaCapabilityCache(): void {
  *
  * @returns The context window size in tokens, or null if unknown.
  */
-export async function getOllamaModelContextWindow(
+async function getOllamaModelContextWindow(
   modelId: string,
 ): Promise<number | null> {
   const cacheKey = modelId.toLowerCase();

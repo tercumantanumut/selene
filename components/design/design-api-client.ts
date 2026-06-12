@@ -9,8 +9,6 @@ import {
   type DesignWorkspaceConfig,
 } from "@/lib/design/workspace/config";
 
-export type ExportFormat = "html" | "react" | "png" | "video";
-
 export interface WorkspaceDesignRecord {
   id: string;
   name: string;
@@ -59,32 +57,6 @@ export interface WorkspaceDesignSummary {
   metadata?: Record<string, unknown> | null;
 }
 
-export type GalleryComponent = WorkspaceDesignRecord;
-
-export async function requestExport(
-  code: string,
-  format: ExportFormat,
-  componentName: string,
-): Promise<{
-  success: boolean;
-  data?: { url?: string; code?: string; fileName?: string; renderedHtml?: string };
-  error?: string;
-}> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60_000);
-  try {
-    const response = await fetch("/api/design/export", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, format, componentName }),
-      signal: controller.signal,
-    });
-    return response.json();
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 export async function requestSaveDesign(component: {
   name: string;
   code: string;
@@ -109,8 +81,6 @@ export async function requestSaveDesign(component: {
   return response.json();
 }
 
-export const requestSaveToGallery = requestSaveDesign;
-
 export async function fetchWorkspaceDesignApi(
   action: string,
   params: Record<string, unknown> = {},
@@ -124,8 +94,6 @@ export async function fetchWorkspaceDesignApi(
   });
   return response.json();
 }
-
-export const fetchGalleryApi = fetchWorkspaceDesignApi;
 
 export async function requestDesignWorkspaceSettings(): Promise<{
   success: boolean;

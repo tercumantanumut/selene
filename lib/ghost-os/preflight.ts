@@ -603,7 +603,7 @@ export async function runGhostOsPreflight(
 // Verdict helpers — exported for rendering
 // ---------------------------------------------------------------------------
 
-export function describeVerdict(verdict: PermissionVerdict): string {
+function describeVerdict(verdict: PermissionVerdict): string {
   switch (verdict.kind) {
     case "granted":
       return "Screen Recording granted";

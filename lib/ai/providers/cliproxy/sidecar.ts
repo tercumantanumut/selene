@@ -175,19 +175,13 @@ export async function ensureSidecarReady(): Promise<SidecarReady> {
 }
 
 /** Stop the sidecar if it's running. Safe to call multiple times. */
-export function stopSidecar(): void {
+function stopSidecar(): void {
   const active = getActive();
   if (!active) return;
   if (isAlive(active.child)) {
     active.child.kill("SIGTERM");
   }
   setActive(null);
-}
-
-/** Returns true if the sidecar is currently running and reported ready. */
-export function isSidecarReady(): boolean {
-  const active = getActive();
-  return !!active && isAlive(active.child) && active.ready;
 }
 
 // Best-effort cleanup on process exit so dev restarts don't leave orphan procs.

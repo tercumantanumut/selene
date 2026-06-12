@@ -16,7 +16,7 @@
 import { createTwoFilesPatch } from "diff";
 
 /** Max lines of unified-diff output returned to the agent. */
-export const DEFAULT_PORT_DIFF_MAX_LINES = 400;
+const DEFAULT_PORT_DIFF_MAX_LINES = 400;
 
 export interface PortDiffOptions {
   /** Max lines of unified-diff output. Truncated output gets a trailing marker. */

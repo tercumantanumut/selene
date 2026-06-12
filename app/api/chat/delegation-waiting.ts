@@ -132,7 +132,7 @@ export function hasRunningBackgroundTasksForSession(
   return false;
 }
 
-export function hasUnobservedRunningBackgroundTasksForSession(
+function hasUnobservedRunningBackgroundTasksForSession(
   characterId: string | null,
   sessionId: string,
 ): boolean {

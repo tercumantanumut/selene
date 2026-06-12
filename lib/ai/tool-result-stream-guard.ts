@@ -9,12 +9,12 @@ import { storeFullContent } from "@/lib/ai/truncated-content-store";
 // Outputs ≤ INLINE_PASSTHROUGH_TOKENS: pass through verbatim.
 // INLINE_PASSTHROUGH_TOKENS < output ≤ PREVIEW_TIER_TOKENS: stub + small head preview.
 // Outputs > PREVIEW_TIER_TOKENS: stub only (outline + retrieval, no preview).
-export const INLINE_PASSTHROUGH_TOKENS = 10_000;
-export const PREVIEW_TIER_TOKENS = 25_000;
+const INLINE_PASSTHROUGH_TOKENS = 10_000;
+const PREVIEW_TIER_TOKENS = 25_000;
 /** Tokens of head preview included in the mid-tier stub. */
-export const MID_TIER_PREVIEW_TOKENS = 1_500;
+const MID_TIER_PREVIEW_TOKENS = 1_500;
 
-export const MIN_STREAM_TOOL_RESULT_TOKENS = 1;
+const MIN_STREAM_TOOL_RESULT_TOKENS = 1;
 export const MAX_STREAM_TOOL_RESULT_TOKENS = 25_000;
 
 interface GuardToolResultForStreamingResult {

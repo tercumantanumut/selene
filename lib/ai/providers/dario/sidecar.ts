@@ -247,7 +247,7 @@ async function waitForDarioPortClosed(port: number, timeoutMs: number): Promise<
 }
 
 
-export function stopDarioSidecar(): void {
+function stopDarioSidecar(): void {
   const active = getActive();
   if (!active) return;
   if (isAlive(active.child)) active.child.kill("SIGTERM");
@@ -264,11 +264,6 @@ export async function stopDarioSidecarAndWait(timeoutMs = STOP_TIMEOUT_MS): Prom
   setActive(null);
   await exit;
   await waitForDarioPortClosed(active.port, Math.min(timeoutMs, 1_000));
-}
-
-export function isDarioSidecarReady(): boolean {
-  const active = getActive();
-  return !!active && isAlive(active.child) && active.ready;
 }
 
 if (!g.__seleneDarioExitHooked) {

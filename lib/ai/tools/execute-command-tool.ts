@@ -125,7 +125,7 @@ function prepareCommandInput(
     };
 }
 
-export interface ParsedPatchFile {
+interface ParsedPatchFile {
     filePath: string;
     operation: "add" | "modify" | "delete";
 }
@@ -136,7 +136,7 @@ export interface ParsedPatchFile {
  * *** Modify File: src/bar.tsx  (or *** Update File: ...)
  * *** Delete File: src/baz.ts
  */
-export function parsePatchFileHeaders(patchText: string): ParsedPatchFile[] {
+function parsePatchFileHeaders(patchText: string): ParsedPatchFile[] {
     const files: ParsedPatchFile[] = [];
     const headerRegex = /^\*\*\*\s+(Add|Modify|Update|Delete)\s+File:\s+(.+)$/gm;
     let match;
