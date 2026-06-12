@@ -8,7 +8,7 @@ import { LOCAL_EMBEDDING_MODELS as SHARED_LOCAL_EMBEDDING_MODELS, formatDimensio
 import type { FormState } from "./settings-types";
 
 // Derive local embedding model list from shared registry (single source of truth)
-export const LOCAL_EMBEDDING_MODELS = SHARED_LOCAL_EMBEDDING_MODELS.map((m) => ({
+const LOCAL_EMBEDDING_MODELS = SHARED_LOCAL_EMBEDDING_MODELS.map((m) => ({
   id: m.id,
   name: `${m.name} (${m.dimensions} dims${m.size ? `, ~${m.size}` : ""})`,
   size: m.size || "",

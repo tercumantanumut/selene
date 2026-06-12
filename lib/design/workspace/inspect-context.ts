@@ -168,7 +168,7 @@ export function sanitizeInspectMessageContext(value: unknown): InspectMessageCon
   };
 }
 
-export function attachInspectContextIdentity(
+function attachInspectContextIdentity(
   context: InspectMessageContext | null,
   identity: { sessionId?: string | null; userId?: string | null },
 ): InspectMessageContext | null {

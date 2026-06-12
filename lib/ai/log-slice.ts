@@ -10,12 +10,12 @@
 
 const CHARS_PER_TOKEN = 4;
 export const PER_CALL_TOKEN_BUDGET = 8_000;
-export const PER_CALL_CHAR_BUDGET = PER_CALL_TOKEN_BUDGET * CHARS_PER_TOKEN;
+const PER_CALL_CHAR_BUDGET = PER_CALL_TOKEN_BUDGET * CHARS_PER_TOKEN;
 
 export const DEFAULT_HEAD_LINES = 200;
-export const MAX_HEAD_TAIL_LINES = 5_000;
+const MAX_HEAD_TAIL_LINES = 5_000;
 export const MAX_GREP_MATCHES = 200;
-export const GREP_CONTEXT_LINES = 2;
+const GREP_CONTEXT_LINES = 2;
 
 export interface LogSliceInput {
   head?: number;

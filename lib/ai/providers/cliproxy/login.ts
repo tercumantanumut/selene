@@ -191,26 +191,6 @@ async function awaitFlavor(
   return snapshotState(flavor);
 }
 
-// ── Claude flavor public API ────────────────────────────────────────────────
-
-export function startClaudeLogin(): Promise<LoginStart> {
-  return spawnLoginFlow("claude");
-}
-
-export function getClaudeLoginState(): LoginState | null {
-  return snapshotState("claude");
-}
-
-export function awaitClaudeLoginCompletion(timeoutMs = 120_000): Promise<LoginState | null> {
-  return awaitFlavor("claude", timeoutMs);
-}
-
-export function killClaudeLogin(): void {
-  killActive("claude");
-}
-
-// ── Codex flavor public API ─────────────────────────────────────────────────
-
 export function startCodexLogin(): Promise<LoginStart> {
   return spawnLoginFlow("codex");
 }

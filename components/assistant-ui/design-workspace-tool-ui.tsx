@@ -1187,7 +1187,7 @@ interface StateScreenshotsPanelProps {
   stateScreenshots: NonNullable<DesignWorkspaceResultData["stateScreenshots"]>;
 }
 
-export function StateScreenshotsPanel({ stateScreenshots }: StateScreenshotsPanelProps) {
+function StateScreenshotsPanel({ stateScreenshots }: StateScreenshotsPanelProps) {
   if (!stateScreenshots || stateScreenshots.length === 0) {
     return null;
   }

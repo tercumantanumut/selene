@@ -14,7 +14,7 @@
  * NOTE: `r1` is handled separately via {@link isR1Model} to avoid
  * false positives on model names that incidentally contain "r1".
  */
-export const THINK_TAG_MODEL_PATTERNS = [
+const THINK_TAG_MODEL_PATTERNS = [
   "deepseek",
   "minimax",
   "qwq",

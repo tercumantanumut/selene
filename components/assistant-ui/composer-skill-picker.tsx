@@ -42,7 +42,7 @@ interface ComposerSkillPickerProps {
   composerInputRef: React.RefObject<HTMLTextAreaElement | null>;
 }
 
-export const ComposerSkillPicker: FC<ComposerSkillPickerProps> = ({
+const ComposerSkillPicker: FC<ComposerSkillPickerProps> = ({
   skills,
   filteredSkills,
   isLoadingSkills,

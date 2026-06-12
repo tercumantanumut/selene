@@ -147,7 +147,7 @@ function parseSseStream(sseText: string): ParsedSseResult {
   return { kind: "success", response: responseObj };
 }
 
-export class CodexStreamError extends Error {
+class CodexStreamError extends Error {
   public readonly errorType?: string;
   constructor(message: string, errorType?: string) {
     super(message);

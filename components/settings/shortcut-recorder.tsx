@@ -21,7 +21,7 @@ const KEY_DISPLAY: Record<string, string> = {
   Escape: "Esc",
 };
 
-export function acceleratorToDisplayKeys(accelerator: string): string[] {
+function acceleratorToDisplayKeys(accelerator: string): string[] {
   if (!accelerator) return [];
   return accelerator.split("+").map((part) => {
     if (MODIFIER_MAP[part]) return MODIFIER_MAP[part];
@@ -30,7 +30,7 @@ export function acceleratorToDisplayKeys(accelerator: string): string[] {
   });
 }
 
-export function keysToAccelerator(e: KeyboardEvent): string | null {
+function keysToAccelerator(e: KeyboardEvent): string | null {
   const modifierKeys = new Set(["Control", "Meta", "Alt", "Shift"]);
   if (modifierKeys.has(e.key) || e.key === "Escape") return null;
 

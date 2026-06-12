@@ -183,7 +183,7 @@ export async function saveFile(
  * Save a document file (PDF, text, Markdown, HTML) to local storage
  * under a stable, agent-scoped path.
  */
-export async function saveDocumentFile(
+async function saveDocumentFile(
   file: Buffer,
   userId: string,
   characterId: string,
@@ -215,7 +215,7 @@ export function readLocalFile(relativePath: string): Buffer {
 /**
  * Delete a file from local storage
  */
-export function deleteLocalFile(relativePath: string): void {
+function deleteLocalFile(relativePath: string): void {
   try {
     const fullPath = resolveUnderStorage(relativePath);
     if (existsSync(fullPath)) {

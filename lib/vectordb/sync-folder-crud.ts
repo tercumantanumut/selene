@@ -157,20 +157,6 @@ export async function addSyncFolder(config: SyncFolderConfig): Promise<string> {
 }
 
 /**
- * Set the status of a sync folder directly.
- * Useful for workspace sync folders that skip the normal sync pipeline.
- */
-export async function setSyncFolderStatus(
-  folderId: string,
-  status: "pending" | "syncing" | "synced" | "error" | "paused"
-): Promise<void> {
-  await db
-    .update(agentSyncFolders)
-    .set({ status, updatedAt: new Date().toISOString() })
-    .where(eq(agentSyncFolders.id, folderId));
-}
-
-/**
  * Get all sync folders for all agents
  */
 export async function getAllSyncFolders() {

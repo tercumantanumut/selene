@@ -123,7 +123,7 @@ function resolveModelDir(override?: string): string | undefined {
  * attempting to load the pipeline.  This avoids the opaque
  * "@huggingface/transformers model not found" error.
  */
-export function validateLocalModelExists(modelId?: string): {
+function validateLocalModelExists(modelId?: string): {
   exists: boolean;
   modelId: string;
   expectedPath: string;

@@ -472,7 +472,7 @@ export function resolveSessionUtilityModel(
   return getLanguageModelForProvider(scope.effectiveConfig.provider, scope.effectiveConfig.utilityModel);
 }
 
-export function resolveTranscriberModel(
+function resolveTranscriberModel(
   settings: AppSettings,
   provider?: LLMProvider,
 ): LanguageModel {

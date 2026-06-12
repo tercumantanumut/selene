@@ -48,7 +48,7 @@ function toImageDataUrl(buffer: Buffer, filePath: string): string {
   return `data:${inferImageMimeType(filePath)};base64,${buffer.toString("base64")}`;
 }
 
-export function isApprovedAbsoluteImagePath(absolutePath: string): boolean {
+function isApprovedAbsoluteImagePath(absolutePath: string): boolean {
   const storageRoot = path.resolve(getMediaStoragePath());
   const resolvedPath = path.resolve(absolutePath);
   const relativeToStorage = path.relative(storageRoot, resolvedPath);

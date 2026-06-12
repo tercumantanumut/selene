@@ -20,7 +20,7 @@ registerAllTools();
 /**
  * Configurable tool info returned by the API
  */
-export interface ConfigurableTool {
+interface ConfigurableTool {
   /** Tool identifier (used in enabledTools) */
   id: string;
   /** Human-readable display name */

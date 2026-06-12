@@ -273,7 +273,7 @@ export function defaultCloneMessage(message: UIMessage): UIMessage {
  *   - user-edit/regenerate reads the id from the DOM data attr back to
  *     the DB row.
  */
-export function buildInjectedUserMessage(data: InjectedUserMessageData): UIMessage {
+function buildInjectedUserMessage(data: InjectedUserMessageData): UIMessage {
   return {
     id: data.messageId,
     role: "user",

@@ -125,7 +125,7 @@ export async function getDesignComponent(
  * Sprint 2 W2.1 via an additive migration (see migrations/design-gallery-
  * tables.ts). Rows with `metadata IS NULL` are naturally excluded.
  */
-export async function findDesignComponentBySourcePath(opts: {
+async function findDesignComponentBySourcePath(opts: {
   userId: string;
   sessionId?: string;
   sourcePath: string;

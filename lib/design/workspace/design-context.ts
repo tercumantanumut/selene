@@ -367,4 +367,3 @@ export function formatDesignContextPrompt(ctx: DesignMessageContext | null): str
 }
 
 // Re-export the inspect builder so callers don't need two imports.
-export { buildInspectMessageContext };

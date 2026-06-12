@@ -175,6 +175,6 @@ export function isM4OrLater(): boolean {
 }
 
 /** Reset cached silicon info (for tests). */
-export function _resetAppleSiliconCache(): void {
+function _resetAppleSiliconCache(): void {
   _cachedSiliconInfo = null;
 }

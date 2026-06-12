@@ -37,7 +37,6 @@ export class SlackConnector implements ChannelConnector {
     });
   }
 
-  // fallow-ignore-next-line unused-class-member
   async connect(): Promise<void> {
     this.status = "connecting";
     this.onStatus(this.status);
@@ -117,14 +116,12 @@ export class SlackConnector implements ChannelConnector {
     this.onStatus(this.status);
   }
 
-  // fallow-ignore-next-line unused-class-member
   async disconnect(): Promise<void> {
     await this.app.stop();
     this.status = "disconnected";
     this.onStatus(this.status);
   }
 
-  // fallow-ignore-next-line unused-class-member
   async sendMessage(payload: ChannelSendPayload): Promise<ChannelSendResult> {
     const text = payload.text || "";
     const imageAttachment = payload.attachments?.find((a) => a.type === "image");
@@ -171,12 +168,10 @@ export class SlackConnector implements ChannelConnector {
     return { externalMessageId: String(sent.ts || `${payload.peerId}:${Date.now()}`) };
   }
 
-  // fallow-ignore-next-line unused-class-member
   async sendTyping(_peerId: string): Promise<void> {
     // Slack Web API does not support typing indicators for bots — no-op
   }
 
-  // fallow-ignore-next-line unused-class-member
   async acknowledgeQueued(peerId: string, externalMessageId: string): Promise<void> {
     // Use a reaction rather than an ephemeral message: reactions are silent,
     // persistent, and don't add a chat line that we'd then have to clean up
@@ -198,7 +193,6 @@ export class SlackConnector implements ChannelConnector {
     this.interactiveAnswerHandler = handler;
   }
 
-  // fallow-ignore-next-line unused-class-member
   async sendInteractiveQuestion(payload: InteractiveQuestionPayload): Promise<ChannelSendResult> {
     const blocks = [
       {

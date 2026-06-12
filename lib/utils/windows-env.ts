@@ -133,7 +133,7 @@ const MSYS_ENV_VARS: readonly string[] = [
  * We merge all variants, dedupe by case-insensitive comparison, and normalize
  * to a single path value.
  */
-export function consolidatePathKeys(env: Record<string, string | undefined>): string {
+function consolidatePathKeys(env: Record<string, string | undefined>): string {
   const pathKeys = Object.keys(env).filter((key) => key.toUpperCase() === "PATH");
   let mergedPath = "";
 

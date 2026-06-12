@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// fallow-ignore-file unused-file
 
 const fs = require("fs");
 

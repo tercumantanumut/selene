@@ -84,10 +84,8 @@ function getTavilyApiKey(): string | undefined {
 }
 
 class TavilyProvider implements WebSearchProvider {
-  // fallow-ignore-next-line unused-class-member
   name = "tavily";
 
-  // fallow-ignore-next-line unused-class-member
   isAvailable(): boolean {
     return !!getTavilyApiKey();
   }

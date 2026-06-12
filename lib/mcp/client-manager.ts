@@ -43,7 +43,7 @@ export interface MCPLifecycleEvent {
 }
 
 /** Signature the screen-recording error pattern used by ghost-os tools */
-export const SCREEN_PERMISSION_ERROR_RE =
+const SCREEN_PERMISSION_ERROR_RE =
     /screen\s*recording|screen\s*capture\s*permission|not\s+authorized\s+(?:to|for)\s+screen|cgdisplaycreate|kcgerror|permission\s+not\s+granted/i;
 
 

@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 
 export const CLIPROXY_DEFAULT_PORT = 8317;
 export const CLIPROXY_HOST = "127.0.0.1";
-export const CLIPROXY_BASE_URL_PATH = "/v1";
+const CLIPROXY_BASE_URL_PATH = "/v1";
 
 interface CliproxyConfigFile {
   /** Absolute path to the YAML config the sidecar should be launched with. */

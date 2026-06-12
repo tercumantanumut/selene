@@ -63,7 +63,7 @@ const SidebarContext = createContext<SidebarContextValue>({
 
 const DESKTOP_SIDEBAR_MEDIA_QUERY = "(min-width: 768px)";
 
-export const useSidebarCollapsed = () => useContext(SidebarContext);
+const useSidebarCollapsed = () => useContext(SidebarContext);
 
 function storeReturnUrl() {
   if (typeof window !== "undefined") {

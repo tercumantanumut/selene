@@ -13,7 +13,7 @@ const DOCUMENT_UPLOAD_EXTENSIONS = [
   ".xml",
 ] as const;
 
-export const DOCUMENT_UPLOAD_ACCEPT = DOCUMENT_UPLOAD_EXTENSIONS.join(",");
+const DOCUMENT_UPLOAD_ACCEPT = DOCUMENT_UPLOAD_EXTENSIONS.join(",");
 
 export const CHAT_ATTACHMENT_ACCEPT = [
   "image/*",
@@ -21,7 +21,7 @@ export const CHAT_ATTACHMENT_ACCEPT = [
   "audio/*",
 ].join(",");
 
-export const DOCUMENT_SUPPORT_LABELS = [
+const DOCUMENT_SUPPORT_LABELS = [
   "PDF",
   "DOCX",
   "PPTX",

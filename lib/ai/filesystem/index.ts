@@ -7,11 +7,9 @@
 export {
   isPathAllowed,
   resolveWorkspaceAwarePaths,
-  getActiveWorktreePath,
   ensureParentDirectories,
   findSimilarFiles,
   isWorktreePath,
-  isOtherWorktreePath,
   resolveSyncedPath,
 } from "./path-utils";
 
@@ -30,7 +28,6 @@ export {
 export {
   generateLineNumberDiff,
   generateBeforeAfterDiff,
-  calculateChangedLineCount,
 } from "./diff-utils";
 
 export {

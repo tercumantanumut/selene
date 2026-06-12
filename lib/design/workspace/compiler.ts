@@ -788,7 +788,7 @@ export interface DesignAssetAlias {
 /** Pre-esbuild error code: a `@asset/<alias>` reference has no matching
  * declaration in the per-call `assetAliases` map. Emitted in the compile
  * report's error structure so the agent can react programmatically. */
-export const ASSET_ALIAS_NOT_FOUND = "ASSET_ALIAS_NOT_FOUND";
+const ASSET_ALIAS_NOT_FOUND = "ASSET_ALIAS_NOT_FOUND";
 
 /**
  * Thrown by `rewriteAssetAliases` when the source references an alias that

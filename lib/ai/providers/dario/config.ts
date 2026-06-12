@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 // Must not collide with packaged Electron's Next internal port (3457).
 export const DARIO_DEFAULT_PORT = 8575;
 export const DARIO_HOST = "127.0.0.1";
-export const DARIO_BASE_URL_PATH = "/v1";
+const DARIO_BASE_URL_PATH = "/v1";
 
 export interface DarioConfigFile {
   /** Directory for Selene-owned Dario runtime metadata. */

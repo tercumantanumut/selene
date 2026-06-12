@@ -14,7 +14,7 @@ export interface OverlayAgent {
   lastSessionUpdatedAt?: string;
 }
 
-export interface OverlayAgentsResponse {
+interface OverlayAgentsResponse {
   agents: OverlayAgent[];
   defaultAgentId?: string;
 }

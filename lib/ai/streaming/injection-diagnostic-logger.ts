@@ -49,7 +49,7 @@ function readFlag(): boolean {
   return true;
 }
 
-export const DIAGNOSTIC_ENABLED = readFlag();
+const DIAGNOSTIC_ENABLED = readFlag();
 
 const PREFIX = "[InjectionDiag]";
 
@@ -123,7 +123,7 @@ export function registerChatMessagesSource(args: {
   };
 }
 
-export function getLatestChatStateSnapshot(): {
+function getLatestChatStateSnapshot(): {
   source: "chat.state" | "chat.messages-getter";
   length: number;
   ids: string[];
@@ -437,7 +437,7 @@ let lastReconciliationInput: {
   callerStack: string;
 } | null = null;
 
-export function getLastReconciliationInput() {
+function getLastReconciliationInput() {
   return lastReconciliationInput;
 }
 
@@ -476,7 +476,7 @@ interface MessageRepositoryProtoLike {
   head: RepositoryMessageLike | null;
 }
 
-export async function patchMessageRepository(): Promise<void> {
+async function patchMessageRepository(): Promise<void> {
   if (!DIAGNOSTIC_ENABLED) return;
   if (messageRepositoryPatched) return;
 
@@ -671,7 +671,7 @@ interface ExternalStoreThreadRuntimeCoreLike {
   _messages?: readonly { id: string; role?: string }[];
 }
 
-export async function patchExternalStoreReconciliation(): Promise<void> {
+async function patchExternalStoreReconciliation(): Promise<void> {
   if (!DIAGNOSTIC_ENABLED) return;
   if (reconciliationPatched) return;
 

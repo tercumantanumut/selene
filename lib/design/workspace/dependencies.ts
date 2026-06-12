@@ -95,7 +95,7 @@ function collectPackageMatches(code: string, pattern: RegExp): string[] {
   return matches;
 }
 
-export function extractImportedPackages(componentCode: string): string[] {
+function extractImportedPackages(componentCode: string): string[] {
   return uniqueStrings([
     ...collectPackageMatches(
       componentCode,

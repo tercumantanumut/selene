@@ -58,7 +58,6 @@ import { processFileInBatch, type FileProcessorContext } from "./sync-file-proce
 // Re-export CRUD functions so existing imports from this path continue to work
 export {
   addSyncFolder,
-  setSyncFolderStatus,
   getAllSyncFolders,
   getSyncFolders,
   getPrimarySyncFolder,

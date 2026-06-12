@@ -14,7 +14,7 @@ interface KimiAuthState {
   lastRefresh?: number;
 }
 
-export const KIMI_OAUTH = {
+const KIMI_OAUTH = {
   CLIENT_ID: "17e5f671-d194-4dfb-9706-5516cb48c098",
   DEVICE_AUTH_URL: "https://auth.kimi.com/api/oauth/device_authorization",
   TOKEN_URL: "https://auth.kimi.com/api/oauth/token",
@@ -250,7 +250,7 @@ export async function ensureValidKimiToken(): Promise<boolean> {
   return false;
 }
 
-export function getOrCreateKimiDeviceId(): string {
+function getOrCreateKimiDeviceId(): string {
   const settings = loadSettings();
 
   if (settings.kimiDeviceId) {

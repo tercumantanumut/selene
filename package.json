@@ -120,8 +120,6 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.1.6",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.5.0",
     "@slack/bolt": "^4.1.1",
     "@tiptap/core": "^3.20.4",
     "@tiptap/extension-image": "^3.20.0",
@@ -189,7 +187,6 @@
     "three": "^0.183.2",
     "typescript": "^5.7.2",
     "winston": "^3.17.0",
-    "ws": "^8.17.1",
     "zod": "^3.24.1",
     "zustand": "^5.0.12"
   },

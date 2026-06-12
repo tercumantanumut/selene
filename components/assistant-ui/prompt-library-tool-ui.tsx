@@ -490,5 +490,3 @@ export const PromptLibraryToolUI: ToolCallContentPartComponent = ({
   // ─── Fallback for unknown action shapes ───
   return null;
 };
-
-export default PromptLibraryToolUI;

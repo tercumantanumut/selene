@@ -13,7 +13,7 @@ export interface DarioStatus {
   lastRefreshError?: string;
 }
 
-export class DarioStatusError extends Error {
+class DarioStatusError extends Error {
   constructor(
     message: string,
     public readonly statusCode?: number,
@@ -23,7 +23,7 @@ export class DarioStatusError extends Error {
   }
 }
 
-export function isDarioStatus(value: unknown): value is DarioStatus {
+function isDarioStatus(value: unknown): value is DarioStatus {
   if (!value || typeof value !== "object") return false;
   const obj = value as Partial<DarioStatus>;
   return typeof obj.authenticated === "boolean"

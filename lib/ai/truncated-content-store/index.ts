@@ -26,7 +26,7 @@ import type {
 
 // Re-export shared types so callers can `import { TruncatedContentEntry } from ".../truncated-content-store"`.
 export type { ContentStore, StoredContentSummary, TruncatedContentEntry };
-export { InMemoryContentStore, SqliteContentStore };
+export { InMemoryContentStore };
 
 type Backend = "sqlite" | "memory";
 

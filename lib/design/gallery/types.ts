@@ -106,38 +106,3 @@ export interface ScopedDesignListOpts {
   sessionId?: string;
   limit?: number;
 }
-
-// ---------------------------------------------------------------------------
-// Project types
-// ---------------------------------------------------------------------------
-
-export interface NewDesignProject {
-  name: string;
-  description?: string;
-  tags?: string[];
-}
-
-export interface DesignProjectRow {
-  id: string;
-  userId: string;
-  name: string;
-  description: string | null;
-  coverImageUrl: string | null;
-  tags: string[];
-  isArchived: boolean;
-  componentCount: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ProjectSearchOpts {
-  userId: string;
-  search?: string;
-  includeArchived?: boolean;
-  limit?: number;
-  offset?: number;
-}
-
-export interface DesignProjectWithComponents extends DesignProjectRow {
-  components: DesignComponentRow[];
-}

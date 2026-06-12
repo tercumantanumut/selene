@@ -9,13 +9,13 @@ import {
 import { getCharacter } from "@/lib/characters/queries";
 import { loadSettings } from "@/lib/settings/settings-manager";
 
-export interface ResolveSessionRequest {
+interface ResolveSessionRequest {
   characterId: string;
   sessionId?: string;
   forceNew?: boolean;
 }
 
-export interface ResolveSessionResponse {
+interface ResolveSessionResponse {
   sessionId: string;
   isNew: boolean;
   title: string;

@@ -25,7 +25,7 @@ export type OutputTier =
   | "preview_plus_stub"
   | "stub_only";
 
-export type SliceMode = "default" | "head" | "tail" | "range" | "grep";
+type SliceMode = "default" | "head" | "tail" | "range" | "grep";
 
 interface TierRecord {
   sessionId?: string;

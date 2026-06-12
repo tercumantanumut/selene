@@ -27,7 +27,7 @@ const DatabaseIcon = Database;
 const Plug = PhosphorPlug;
 
 /** Category icons (labels come from translations) */
-export const CATEGORY_ICONS: Record<string, string> = {
+const CATEGORY_ICONS: Record<string, string> = {
   knowledge: "\u{1F4DA}",
   search: "\u{1F50D}",
   "image-generation": "\u{1F3A8}",
@@ -610,14 +610,10 @@ export function McpToolEditorDialog({
 
 // ==========================================================================
 // Re-exports from character-picker-dialogs-2
-// (AddToWorkflowDialog, IdentityEditorDialog, McpRemovalWarningDialog,
-//  DeleteAgentDialog, WorkflowActionDialog)
+// (AddToWorkflowDialog, WorkflowActionDialog)
 // ==========================================================================
 
 export {
   AddToWorkflowDialog,
-  IdentityEditorDialog,
-  McpRemovalWarningDialog,
-  DeleteAgentDialog,
   WorkflowActionDialog,
 } from "@/components/character-picker-dialogs-2";

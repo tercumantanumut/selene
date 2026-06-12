@@ -124,14 +124,14 @@ export function deepseekModelHasThinkingDisabled(modelId: string): boolean {
 /**
  * Check if a DeepSeek model supports vision inputs
  */
-export function deepseekModelSupportsVision(modelId: string): boolean {
+function deepseekModelSupportsVision(modelId: string): boolean {
   return DEEPSEEK_VISION_MODELS.has(modelId);
 }
 
 /**
  * Check if a DeepSeek model supports thinking at all
  */
-export function deepseekModelSupportsThinking(modelId: string): boolean {
+function deepseekModelSupportsThinking(modelId: string): boolean {
   return (
     DEEPSEEK_THINKING_ENABLED_MODELS.has(modelId) ||
     DEEPSEEK_THINKING_DISABLED_MODELS.has(modelId)
@@ -146,4 +146,3 @@ export function deepseekModelSupportsToolChoice(modelId: string): boolean {
 }
 
 export type { DeepSeekModelId };
-export { DEEPSEEK_DEFAULT_MODELS };

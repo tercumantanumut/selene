@@ -171,7 +171,7 @@ export const ClaudeEnterPlanModeToolUI: ToolCallContentPartComponent = ({ result
 /**
  * ExitPlanMode — Claude Code's plan approval step
  */
-export const ClaudeExitPlanModeToolUI: ToolCallContentPartComponent = ({ result }) => {
+const ClaudeExitPlanModeToolUI: ToolCallContentPartComponent = ({ result }) => {
   const t = useTranslations("assistantUi.claudeTools.exitPlanMode");
   const isRunning = result === undefined;
   const hasError = isErrorResult(result);
@@ -209,7 +209,7 @@ export const ClaudeEnterWorktreeToolUI: ToolCallContentPartComponent = ({ args, 
 /**
  * AskUserQuestion — Claude Code's interactive question tool
  */
-export const ClaudeAskUserQuestionToolUI: ToolCallContentPartComponent = ({ args, result }) => {
+const ClaudeAskUserQuestionToolUI: ToolCallContentPartComponent = ({ args, result }) => {
   const t = useTranslations("assistantUi.claudeTools.askUser");
   const questions = Array.isArray(args?.questions) ? args.questions as Array<{ question?: string }> : [];
   const firstQ = questions[0]?.question;

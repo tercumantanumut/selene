@@ -8,7 +8,7 @@ import type { WorkspaceInfo } from "@/lib/workspace/types";
 type WorkspaceIdentityField = "type" | "branch" | "baseBranch" | "worktreePath" | "syncFolderId";
 type WorkspaceLifecycleField = "repoUrl" | "prUrl" | "prNumber" | "prStatus" | "status" | "changedFiles" | "lastSyncedAt";
 
-export type WorkspaceLifecyclePatch = Partial<Pick<WorkspaceInfo, WorkspaceLifecycleField>>;
+type WorkspaceLifecyclePatch = Partial<Pick<WorkspaceInfo, WorkspaceLifecycleField>>;
 
 const WORKSPACE_IDENTITY_FIELDS: readonly WorkspaceIdentityField[] = [
   "type",
@@ -88,7 +88,7 @@ function hasIdentityFields(patch: Partial<WorkspaceInfo>): boolean {
   return WORKSPACE_IDENTITY_FIELDS.some((field) => field in patch);
 }
 
-export function getWorkspaceIdentityFields(): readonly WorkspaceIdentityField[] {
+function getWorkspaceIdentityFields(): readonly WorkspaceIdentityField[] {
   return WORKSPACE_IDENTITY_FIELDS;
 }
 
