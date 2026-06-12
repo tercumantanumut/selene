@@ -1,21 +1,23 @@
 /**
- * Claude Code auth state — backed by the CLIProxyAPI sidecar's credential
- * dir.
+ * Claude Code auth state — backed by Dario's Claude subscription OAuth state.
  *
- * Selene no longer keeps its own OAuth token storage. The sidecar runs the
- * OAuth flow and persists `claude-<email>.json` files; we read those to
- * derive the user-facing auth status and persist a small cached snapshot in
- * `settings.json` so the UI doesn't flicker between page loads.
+ * Selene no longer keeps its own OAuth token storage. Dario owns Claude Code
+ * OAuth discovery/refresh and exposes a local /status endpoint; Selene mirrors
+ * that state into settings.json so the UI doesn't flicker between page loads.
  */
 
 import { loadSettings, saveSettings } from "@/lib/settings/settings-manager";
 import {
-  deleteAllClaudeCredentials,
-  listClaudeCredentials,
-} from "@/lib/ai/providers/cliproxy/credentials";
-import { getClaudeLoginState } from "@/lib/ai/providers/cliproxy/login";
+  fetchDarioStatus,
+  isDarioStatusUsable,
+  type DarioStatus,
+} from "@/lib/ai/providers/dario/status";
+import {
+  getClaudeLoginState,
+  logoutClaudeLogin,
+} from "@/lib/ai/providers/dario/login";
 
-const TOKEN_SOURCE = "cliproxyapi-oauth";
+const TOKEN_SOURCE = "dario-oauth";
 
 export interface ClaudeCodeAuthStatus {
   authenticated: boolean;
@@ -26,6 +28,8 @@ export interface ClaudeCodeAuthStatus {
   authUrl?: string;
   output?: string[];
   error?: string;
+  expiresAt?: number;
+  expiresIn?: string;
 }
 
 interface ClaudeCodeAuthState {
@@ -46,7 +50,7 @@ function buildAuthStateFromStatus(status: ClaudeCodeAuthStatus): ClaudeCodeAuthS
   return {
     isAuthenticated: status.authenticated,
     email: status.email,
-    expiresAt: undefined,
+    expiresAt: status.expiresAt,
     lastRefresh: Date.now(),
     tokenSource: status.tokenSource,
     apiKeySource: status.apiKeySource,
@@ -94,47 +98,53 @@ export function invalidateClaudeCodeAuthCache(): void {
   cachedAuthState = null;
 }
 
-/**
- * Re-read upstream credential files and refresh the persisted snapshot.
- */
+function darioStatusError(status: DarioStatus): string | undefined {
+  if (isDarioStatusUsable(status)) return undefined;
+  if (status.status === "broken") {
+    return status.lastRefreshError
+      ? `Dario OAuth refresh is broken: ${status.lastRefreshError}`
+      : "Dario OAuth refresh is broken. Retry Claude Code authentication through Dario.";
+  }
+  if (status.status === "expired" && status.canRefresh === false) {
+    return "Dario OAuth credentials are expired and cannot be refreshed. Retry Claude Code authentication through Dario.";
+  }
+  return undefined;
+}
+
+function mapDarioStatus(status: DarioStatus, output?: string[]): ClaudeCodeAuthStatus {
+  const loginState = getClaudeLoginState();
+  return {
+    authenticated: isDarioStatusUsable(status),
+    tokenSource: TOKEN_SOURCE,
+    apiKeySource: "dario-local-proxy",
+    authUrl: loginState?.url ?? undefined,
+    output: output ?? loginState?.output,
+    error: darioStatusError(status) ?? loginState?.errorMessage,
+    expiresAt: status.expiresAt,
+    expiresIn: status.expiresIn,
+  };
+}
+
+/** Re-read Dario status and refresh the persisted auth snapshot. */
 export async function getClaudeCodeAuthStatus(): Promise<ClaudeCodeAuthStatus> {
-  let creds;
   try {
-    creds = await listClaudeCredentials();
+    const dario = await fetchDarioStatus();
+    const status = mapDarioStatus(dario);
+    persistAuthState(status);
+    return status;
   } catch (err) {
+    const loginState = getClaudeLoginState();
     const status: ClaudeCodeAuthStatus = {
       authenticated: false,
       tokenSource: TOKEN_SOURCE,
+      apiKeySource: "dario-local-proxy",
+      authUrl: loginState?.url ?? undefined,
+      output: loginState?.output,
       error: err instanceof Error ? err.message : String(err),
     };
     persistAuthState(status);
     return status;
   }
-
-  const loginState = getClaudeLoginState();
-
-  if (creds.length === 0) {
-    const status: ClaudeCodeAuthStatus = {
-      authenticated: false,
-      tokenSource: TOKEN_SOURCE,
-      authUrl: loginState?.url ?? undefined,
-      output: loginState?.output,
-      error: loginState?.errorMessage,
-    };
-    persistAuthState(status);
-    return status;
-  }
-
-  const primary = creds[0];
-  const status: ClaudeCodeAuthStatus = {
-    authenticated: true,
-    email: primary.email,
-    account: primary.email,
-    tokenSource: TOKEN_SOURCE,
-    output: loginState?.output,
-  };
-  persistAuthState(status);
-  return status;
 }
 
 export async function isClaudeCodeAuthenticated(): Promise<boolean> {
@@ -142,18 +152,37 @@ export async function isClaudeCodeAuthenticated(): Promise<boolean> {
   return status.authenticated;
 }
 
-/**
- * Delete the sidecar's stored credentials and reset selene's cached snapshot.
- */
+export async function verifyClaudeCodeAuthenticatedAfterDarioLogin(output: string[] = []): Promise<ClaudeCodeAuthStatus> {
+  try {
+    const dario = await fetchDarioStatus({ ensureReady: true });
+    const status = mapDarioStatus(dario, output);
+    persistAuthState(status);
+    return status;
+  } catch (err) {
+    const status: ClaudeCodeAuthStatus = {
+      authenticated: false,
+      tokenSource: TOKEN_SOURCE,
+      apiKeySource: "dario-local-proxy",
+      output,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    persistAuthState(status);
+    return status;
+  }
+}
+
+/** Clear Dario's stored credentials and reset Selene's cached snapshot. */
 export async function clearClaudeCodeAuth(): Promise<void> {
-  await deleteAllClaudeCredentials().catch((err) => {
-    console.error("[claudecode-auth] failed to delete credentials:", err);
+  await logoutClaudeLogin().catch((err) => {
+    console.error("[claudecode-auth] failed to clear dario credentials:", err);
   });
 
   const settings = loadSettings();
   settings.claudecodeAuth = {
     isAuthenticated: false,
     lastRefresh: Date.now(),
+    tokenSource: TOKEN_SOURCE,
+    apiKeySource: "dario-local-proxy",
   };
   delete settings.claudecodeToken;
   delete settings.pendingClaudeCodeOAuth;

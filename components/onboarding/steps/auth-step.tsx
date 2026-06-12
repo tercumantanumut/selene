@@ -265,7 +265,7 @@ export function AuthStep({ provider, onAuthenticated, onBack, onSkip }: AuthStep
         const isElectron = !!electronAPI?.isElectron;
 
         try {
-            // Plain fetch — no timeout. The authorize endpoint spawns `claude login`
+            // Plain fetch — no timeout. The authorize endpoint spawns `dario login`
             // which can take well over 10s on first run; resilientFetch's default
             // 10s timeout would abort the request prematurely.
             const authResponse = await fetch("/api/auth/claudecode/authorize");
@@ -629,9 +629,7 @@ export function AuthStep({ provider, onAuthenticated, onBack, onSkip }: AuthStep
                                     ) : (
                                         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
                                             <p className="text-sm text-amber-700 font-mono">
-                                                {"Could not open authentication page automatically. Run "}
-                                                <code className="rounded bg-amber-100 px-1 py-0.5">claude login</code>
-                                                {" in your terminal, then paste the authorization code below."}
+                                                {"Dario did not return an authentication URL. Retry Claude Code authentication from Settings if this persists."}
                                             </p>
                                         </div>
                                     )}

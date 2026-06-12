@@ -314,6 +314,7 @@ copyNodeDependencies([
 copyNodeDependencies([
     { name: 'gpt-tokenizer', src: 'gpt-tokenizer', dest: 'gpt-tokenizer' },
     { name: '@huggingface/hub', src: '@huggingface/hub', dest: '@huggingface/hub' },
+    { name: '@askalf/dario', src: '@askalf/dario', dest: '@askalf/dario' },
 ]);
 
 // 7. Copy Puppeteer and bundled Chromium for local web scraping

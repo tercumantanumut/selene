@@ -426,6 +426,17 @@ export default function SettingsPage() {
         throw new Error(authData.error || t("errors.authUrlFailed"));
       }
 
+      if (authData.authenticated) {
+        const authenticated = await loadClaudeCodeAuth({ forceRefresh: true });
+        if (!authenticated) {
+          throw new Error(t("errors.authStartFailed"));
+        }
+        setClaudeCodeAuthSuccess(true);
+        setClaudeCodePasteMode(true);
+        setClaudecodeLoading(false);
+        return;
+      }
+
       if (authData.url) {
         if (isElectron && electronAPI?.shell?.openExternal) {
           await electronAPI.shell.openExternal(authData.url);
@@ -438,7 +449,7 @@ export default function SettingsPage() {
         setClaudeCodeDiagnosticOutput(authData.output || []);
       }
 
-      // Show the verification panel while auth is completed via Agent SDK.
+      // Show the verification panel while auth is completed through Dario.
       setClaudeCodePasteMode(true);
       setClaudecodeLoading(false);
     } catch (err) {

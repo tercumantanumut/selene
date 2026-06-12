@@ -145,7 +145,14 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     supportsStreaming: true,
   },
 
-  // Claude Code — Opus 4.7 / 4.6 have 1M context via Agent SDK
+  // Claude Code — Opus 4.8 / 4.7 / 4.6 and Fable 5 have 1M context via Dario.
+  "claude-opus-4-8": {
+    maxTokens: 1000000,
+    supportsStreaming: true,
+    warningThreshold: 0.80,
+    criticalThreshold: 0.92,
+    hardLimit: 0.97,
+  },
   "claude-opus-4-7": {
     maxTokens: 1000000,
     supportsStreaming: true,
@@ -154,6 +161,13 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     hardLimit: 0.97,
   },
   "claude-opus-4-6": {
+    maxTokens: 1000000,
+    supportsStreaming: true,
+    warningThreshold: 0.80,
+    criticalThreshold: 0.92,
+    hardLimit: 0.97,
+  },
+  "claude-fable-5": {
     maxTokens: 1000000,
     supportsStreaming: true,
     warningThreshold: 0.80,

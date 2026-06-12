@@ -70,9 +70,7 @@ export function ClaudeCodeAuthFlow({
           <div className="space-y-2">
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-600 dark:bg-amber-900/20">
               <p className="font-mono text-xs text-amber-700 dark:text-amber-400">
-                {"Could not open the authentication page automatically. Run "}
-                <code className="rounded bg-amber-100 px-1 py-0.5 dark:bg-amber-800/40">claude login</code>
-                {" in your terminal, then paste the authorization code below."}
+                {"Dario did not return an authentication URL. Review the diagnostic output below, then retry Claude Code authentication."}
               </p>
             </div>
             {diagnosticOutput && diagnosticOutput.length > 0 && (

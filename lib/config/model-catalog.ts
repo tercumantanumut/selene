@@ -39,8 +39,16 @@ const MODEL_METADATA: Record<
   string,
   Partial<Pick<ModelItem, "tier"> & { capabilities: Partial<ModelCapabilities> }>
 > = {
-  // Anthropic direct
-  // --- 4.7 / 4.6 / 4.5 Series ---
+  // Anthropic direct / Claude Code
+  // --- 5 / 4.8 / 4.7 / 4.6 / 4.5 Series ---
+  "claude-fable-5": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
+  "claude-opus-4-8": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
   "claude-opus-4-7": {
     tier: "flagship",
     capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },

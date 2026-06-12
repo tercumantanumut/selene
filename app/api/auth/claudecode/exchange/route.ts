@@ -1,20 +1,19 @@
 import { NextResponse } from "next/server";
 import { getClaudeCodeAuthStatus } from "@/lib/auth/claudecode-auth";
-import { awaitClaudeLoginCompletion, getClaudeLoginState } from "@/lib/ai/providers/cliproxy/login";
+import {
+  awaitClaudeLoginCompletion,
+  getClaudeLoginState,
+  submitClaudeLoginCode,
+} from "@/lib/ai/providers/dario/login";
 
 /**
  * POST /api/auth/claudecode/exchange
  *
- * Blocks (up to ~30s) waiting for the OAuth browser callback to complete
- * into the active `cliproxyapi -claude-login` subprocess, then returns the
- * resulting auth status. Idempotent — if no login session is in flight and a
- * credential already exists, returns the cached state.
- *
- * The body shape `{ code }` is accepted for backwards compatibility with the
- * old Agent-SDK paste flow but the field is ignored — CLIProxyAPI's local
- * HTTP callback collects the code itself.
+ * Writes the pasted Claude OAuth code to the active `dario login --manual`
+ * subprocess, waits briefly for Dario to persist credentials, then returns the
+ * refreshed Dario auth status. Idempotent when already authenticated.
  */
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const before = await getClaudeCodeAuthStatus();
     if (before.authenticated) {
@@ -32,11 +31,15 @@ export async function POST() {
           success: false,
           authenticated: false,
           error:
-            "No active OAuth login. Click 'Login with Claude' to start a new flow.",
+            "No active Dario OAuth login. Click 'Login with Claude' to start a new flow.",
         },
         { status: 409 },
       );
     }
+
+    const body = await request.json().catch(() => ({}));
+    const code = typeof body?.code === "string" ? body.code : "";
+    submitClaudeLoginCode(code);
 
     const final = await awaitClaudeLoginCompletion(30_000);
     const after = await getClaudeCodeAuthStatus();
@@ -46,14 +49,14 @@ export async function POST() {
       authenticated: after.authenticated,
       error: after.authenticated
         ? undefined
-        : final?.errorMessage ?? "OAuth flow did not complete in time. Try again.",
+        : final?.errorMessage ?? after.error ?? "OAuth flow did not complete in time. Try again.",
       output: final?.output ?? after.output,
       url: final?.url ?? after.authUrl ?? null,
     });
   } catch (error) {
     console.error("[ClaudeCodeExchange] Error:", error);
     return NextResponse.json(
-      { success: false, error: "Failed to verify authentication status" },
+      { success: false, error: error instanceof Error ? error.message : "Failed to verify authentication status" },
       { status: 500 },
     );
   }

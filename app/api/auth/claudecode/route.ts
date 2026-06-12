@@ -58,7 +58,7 @@ export async function POST() {
     {
       success: false,
       error:
-        "Manual token submission is disabled. Start OAuth via /api/auth/claudecode/authorize.",
+        "Direct token submission is disabled. Start Dario OAuth via /api/auth/claudecode/authorize.",
     },
     { status: 410 },
   );

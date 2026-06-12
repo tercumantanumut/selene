@@ -104,6 +104,7 @@ const requiredPaths = [
   (platform === 'win32' || platform === 'win')
     ? 'standalone/node_modules/@vscode/ripgrep/bin/rg.exe'
     : 'standalone/node_modules/@vscode/ripgrep/bin/rg',
+  'standalone/node_modules/@askalf/dario/dist/cli.js',
 ];
 
 // RTK bundle is optional at runtime (experimental), but warn if absent in package.
