@@ -124,7 +124,7 @@ async function validateDarioApiKey(port: number, apiKey: string): Promise<void> 
   }
 }
 
-async function startDarioSidecar(): Promise<DarioSidecarReady> {
+async function startDarioSidecar(allowStartupRetry = true): Promise<DarioSidecarReady> {
   const config = ensureDarioConfig();
   const { apiKey, port, host } = config;
   const env = buildDarioEnvironment(config);
@@ -181,9 +181,12 @@ async function startDarioSidecar(): Promise<DarioSidecarReady> {
     // TCP stack can keep it in TIME_WAIT for a brief window. Retry once
     // after settling to avoid a permanent error from a transient bind fail.
     if (process.env.SELENE_DARIO_ALLOW_EXTERNAL !== "1") {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const retry = await startDarioSidecar();
-      return retry;
+      if (allowStartupRetry) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return startDarioSidecar(false);
+      }
+
+      throw new Error("Dario sidecar exited during startup after retry.");
     }
   }
 

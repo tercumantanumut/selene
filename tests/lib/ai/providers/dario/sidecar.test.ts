@@ -172,6 +172,27 @@ describe("dario/sidecar", () => {
     expect(ready.port).toBe(4568);
   });
 
+  it("does not retry indefinitely when spawned dario exits during startup", async () => {
+    spawnMock.mockImplementation(() => {
+      const child = makeChild();
+      setTimeout(() => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      }, 0);
+      return child;
+    });
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/health")) return new Response("{}", { status: 200 });
+      if (url.endsWith("/status")) return darioStatusResponse();
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+
+    const { ensureDarioSidecarReady } = await import("@/lib/ai/providers/dario/sidecar");
+    await expect(ensureDarioSidecarReady()).rejects.toThrow(/exited during startup after retry/);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
   it("fails when /status rejects Selene's API key", async () => {
     const child = makeChild();
     spawnMock.mockReturnValue(child);

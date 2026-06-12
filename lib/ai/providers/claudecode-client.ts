@@ -35,10 +35,10 @@ function createSidecarFetch(): typeof fetch {
 }
 
 function buildProvider(): AnthropicProvider {
-  const { apiKey, port } = ensureDarioConfig();
+  const { apiKey, port, host } = ensureDarioConfig();
   return createAnthropic({
     apiKey,
-    baseURL: getDarioBaseUrl(port),
+    baseURL: getDarioBaseUrl(port, host),
     fetch: createSidecarFetch(),
   });
 }

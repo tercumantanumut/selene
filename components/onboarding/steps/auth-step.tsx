@@ -629,7 +629,7 @@ export function AuthStep({ provider, onAuthenticated, onBack, onSkip }: AuthStep
                                     ) : (
                                         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
                                             <p className="text-sm text-amber-700 font-mono">
-                                                {"Dario did not return an authentication URL. Retry Claude Code authentication from Settings if this persists."}
+                                                {t("noAuthUrl")}
                                             </p>
                                         </div>
                                     )}

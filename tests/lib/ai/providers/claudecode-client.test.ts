@@ -1,14 +1,33 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ensureDarioSidecarReady } = vi.hoisted(() => ({
+const {
+  createAnthropicMock,
+  ensureDarioConfig,
+  ensureDarioSidecarReady,
+  getDarioBaseUrl,
+} = vi.hoisted(() => ({
+  createAnthropicMock: vi.fn(),
+  ensureDarioConfig: vi.fn(() => ({
+    dir: "/tmp/selene-dario",
+    apiKey: "selene-dario-test-key",
+    port: 8575,
+    host: "localhost",
+  })),
   ensureDarioSidecarReady: vi.fn(async () => ({
     port: 8575,
     apiKey: "selene-dario-test-key",
-    baseUrl: "http://127.0.0.1:8575/v1",
+    baseUrl: "http://localhost:8575/v1",
   })),
+  getDarioBaseUrl: vi.fn((port = 8575, host = "127.0.0.1") => `http://${host}:${port}/v1`),
+}));
+
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: createAnthropicMock,
+}));
+
+vi.mock("@/lib/ai/providers/dario/config", () => ({
+  ensureDarioConfig,
+  getDarioBaseUrl,
 }));
 
 vi.mock("@/lib/ai/providers/dario/sidecar", () => ({
@@ -23,21 +42,13 @@ import {
 } from "@/lib/ai/providers/claudecode-client";
 
 describe("claudecode-client", () => {
-  let dataDir: string;
-  let prev: string | undefined;
-
   beforeEach(() => {
     invalidateClaudeCodeProvider();
+    createAnthropicMock.mockReset();
+    createAnthropicMock.mockImplementation(() => (modelId: string) => ({ modelId }));
+    ensureDarioConfig.mockClear();
     ensureDarioSidecarReady.mockClear();
-    dataDir = mkdtempSync(join(tmpdir(), "selene-cc-client-"));
-    prev = process.env.LOCAL_DATA_PATH;
-    process.env.LOCAL_DATA_PATH = dataDir;
-  });
-
-  afterEach(() => {
-    rmSync(dataDir, { recursive: true, force: true });
-    if (prev === undefined) delete process.env.LOCAL_DATA_PATH;
-    else process.env.LOCAL_DATA_PATH = prev;
+    getDarioBaseUrl.mockClear();
   });
 
   it("constructs a provider lazily and returns a LanguageModel per modelId", () => {
@@ -46,8 +57,17 @@ describe("claudecode-client", () => {
 
     const model = provider("claude-opus-4-7");
     expect(model).toBeTruthy();
-    // The AI SDK Anthropic provider tags LanguageModel instances with modelId.
     expect((model as { modelId?: string }).modelId).toBe("claude-opus-4-7");
+  });
+
+  it("builds the Anthropic client with the configured Dario host", () => {
+    createClaudeCodeProvider();
+
+    expect(getDarioBaseUrl).toHaveBeenCalledWith(8575, "localhost");
+    expect(createAnthropicMock).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: "selene-dario-test-key",
+      baseURL: "http://localhost:8575/v1",
+    }));
   });
 
   it("does not boot Dario at construction time (lazy boot via fetch)", () => {
@@ -61,11 +81,13 @@ describe("claudecode-client", () => {
     const ma = a("claude-opus-4-7") as { modelId?: string };
     const mb = b("claude-opus-4-7") as { modelId?: string };
     expect(ma.modelId).toBe(mb.modelId);
+    expect(createAnthropicMock).toHaveBeenCalledTimes(1);
   });
 
   it("invalidateClaudeCodeProvider clears the cache (next call rebuilds)", () => {
     createClaudeCodeProvider();
     invalidateClaudeCodeProvider();
     expect(() => createClaudeCodeProvider()).not.toThrow();
+    expect(createAnthropicMock).toHaveBeenCalledTimes(2);
   });
 });

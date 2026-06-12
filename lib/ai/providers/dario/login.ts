@@ -82,25 +82,56 @@ export function isSuccessfulClaudeLoginOutput(output: string[] | undefined): boo
   return !output.some((line) => LOGIN_FAILURE_PATTERN.test(line));
 }
 
-function attachOutputCapture(session: LoginSession): void {
-  const onData = (chunk: Buffer): void => {
-    const text = chunk.toString();
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      session.outputLines.push(trimmed);
-      if (isSuccessfulClaudeLoginOutput([trimmed])) {
-        session.status = "success";
+function createLineAccumulator(onLine: (line: string) => void): {
+  capture: (chunk: Buffer | string) => void;
+  flush: () => void;
+} {
+  let buffer = "";
+  return {
+    capture(chunk) {
+      buffer += chunk.toString();
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        onLine(buffer.slice(0, newlineIndex));
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf("\n");
       }
-    }
-    if (!session.url) {
-      const match = text.match(URL_PATTERN);
-      if (match) session.url = match[0];
-    }
+    },
+    flush() {
+      if (!buffer) return;
+      onLine(buffer);
+      buffer = "";
+    },
+  };
+}
+
+function recordLoginOutputLine(session: LoginSession, line: string): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  session.outputLines.push(trimmed);
+  if (!session.url) {
+    const match = trimmed.match(URL_PATTERN);
+    if (match) session.url = match[0];
+  }
+  if (isSuccessfulClaudeLoginOutput([trimmed])) {
+    session.status = "success";
+  }
+}
+
+function attachOutputCapture(session: LoginSession): void {
+  const stdout = createLineAccumulator((line) => recordLoginOutputLine(session, line));
+  const stderr = createLineAccumulator((line) => recordLoginOutputLine(session, line));
+  const flush = (): void => {
+    stdout.flush();
+    stderr.flush();
   };
 
-  session.child.stdout?.on("data", onData);
-  session.child.stderr?.on("data", onData);
+  session.child.stdout?.on("data", stdout.capture);
+  session.child.stderr?.on("data", stderr.capture);
+  session.child.stdout?.on("end", stdout.flush);
+  session.child.stderr?.on("end", stderr.flush);
+  session.child.once("exit", flush);
 }
 
 /**
@@ -214,21 +245,32 @@ async function runDarioCommand(args: string[]): Promise<LoginState> {
   });
 
   const outputLines: string[] = [];
-  const capture = (chunk: Buffer): void => {
-    for (const line of chunk.toString().split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed) outputLines.push(trimmed);
-    }
+  const recordLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (trimmed) outputLines.push(trimmed);
   };
-  child.stdout?.on("data", capture);
-  child.stderr?.on("data", capture);
+  const stdout = createLineAccumulator(recordLine);
+  const stderr = createLineAccumulator(recordLine);
+  const flush = (): void => {
+    stdout.flush();
+    stderr.flush();
+  };
+
+  child.stdout?.on("data", stdout.capture);
+  child.stderr?.on("data", stderr.capture);
+  child.stdout?.on("end", stdout.flush);
+  child.stderr?.on("end", stderr.flush);
 
   const status = await new Promise<LoginStatus>((resolve) => {
     child.once("error", (err) => {
+      flush();
       outputLines.push(`spawn error: ${err.message}`);
       resolve("error");
     });
-    child.once("exit", (code) => resolve(code === 0 ? "success" : "error"));
+    child.once("exit", (code) => {
+      flush();
+      resolve(code === 0 ? "success" : "error");
+    });
   });
 
   if (status === "success") {

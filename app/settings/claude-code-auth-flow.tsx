@@ -70,13 +70,13 @@ export function ClaudeCodeAuthFlow({
           <div className="space-y-2">
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-600 dark:bg-amber-900/20">
               <p className="font-mono text-xs text-amber-700 dark:text-amber-400">
-                {"Dario did not return an authentication URL. Review the diagnostic output below, then retry Claude Code authentication."}
+                {t("noAuthUrl") || "Dario did not return an authentication URL. Review the diagnostic output below, then retry Claude Code authentication."}
               </p>
             </div>
             {diagnosticOutput && diagnosticOutput.length > 0 && (
               <details className="rounded border border-terminal-border">
                 <summary className="cursor-pointer px-3 py-1.5 font-mono text-xs text-terminal-muted">
-                  Diagnostic details
+                  {t("diagnosticDetails") || "Diagnostic details"}
                 </summary>
                 <pre className="max-h-24 overflow-auto px-3 py-2 font-mono text-[10px] text-terminal-muted">
                   {diagnosticOutput.join("\n")}

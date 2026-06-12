@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { getClaudeCodeAuthStatus } from "@/lib/auth/claudecode-auth";
+import {
+  getClaudeCodeAuthStatus,
+  verifyClaudeCodeAuthenticatedAfterDarioLogin,
+} from "@/lib/auth/claudecode-auth";
 import {
   awaitClaudeLoginCompletion,
   getClaudeLoginState,
@@ -13,6 +16,12 @@ import {
  * subprocess, waits briefly for Dario to persist credentials, then returns the
  * refreshed Dario auth status. Idempotent when already authenticated.
  */
+function claudeCodeExchangeErrorStatus(message: string): number {
+  if (/No active Dario OAuth login/i.test(message)) return 409;
+  if (/Paste the authorization code/i.test(message)) return 400;
+  return 500;
+}
+
 export async function POST(request: Request) {
   try {
     const before = await getClaudeCodeAuthStatus();
@@ -42,22 +51,23 @@ export async function POST(request: Request) {
     submitClaudeLoginCode(code);
 
     const final = await awaitClaudeLoginCompletion(30_000);
-    const after = await getClaudeCodeAuthStatus();
+    const after = await verifyClaudeCodeAuthenticatedAfterDarioLogin(final?.output ?? []);
 
     return NextResponse.json({
       success: after.authenticated,
       authenticated: after.authenticated,
       error: after.authenticated
         ? undefined
-        : final?.errorMessage ?? after.error ?? "OAuth flow did not complete in time. Try again.",
-      output: final?.output ?? after.output,
+        : after.error ?? final?.errorMessage ?? "OAuth flow did not complete in time. Try again.",
+      output: after.output ?? final?.output,
       url: final?.url ?? after.authUrl ?? null,
     });
   } catch (error) {
     console.error("[ClaudeCodeExchange] Error:", error);
+    const message = error instanceof Error ? error.message : "Failed to verify authentication status";
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : "Failed to verify authentication status" },
-      { status: 500 },
+      { success: false, authenticated: false, error: message },
+      { status: claudeCodeExchangeErrorStatus(message) },
     );
   }
 }

@@ -173,9 +173,12 @@ export async function verifyClaudeCodeAuthenticatedAfterDarioLogin(output: strin
 
 /** Clear Dario's stored credentials and reset Selene's cached snapshot. */
 export async function clearClaudeCodeAuth(): Promise<void> {
-  await logoutClaudeLogin().catch((err) => {
+  try {
+    await logoutClaudeLogin();
+  } catch (err) {
     console.error("[claudecode-auth] failed to clear dario credentials:", err);
-  });
+    throw err;
+  }
 
   const settings = loadSettings();
   settings.claudecodeAuth = {

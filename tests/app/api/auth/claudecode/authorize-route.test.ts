@@ -107,6 +107,29 @@ describe("GET /api/auth/claudecode/authorize", () => {
     });
   });
 
+  it("falls back to a fresh status read when Dario returns no URL and no success output", async () => {
+    getClaudeCodeAuthStatus
+      .mockResolvedValueOnce({ authenticated: false })
+      .mockResolvedValueOnce({ authenticated: false });
+    startClaudeLogin.mockResolvedValueOnce({
+      url: null,
+      output: ["some non-success message"],
+    });
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(getClaudeCodeAuthStatus).toHaveBeenCalledTimes(2);
+    expect(verifyClaudeCodeAuthenticatedAfterDarioLogin).not.toHaveBeenCalled();
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({
+      success: false,
+      authenticated: false,
+      output: ["some non-success message"],
+      error: "Dario did not return an authentication URL or verified credentials.",
+    });
+  });
+
   it("returns the OAuth URL when Dario starts a fresh manual login", async () => {
     startClaudeLogin.mockResolvedValueOnce({
       url: "https://claude.ai/oauth/start",

@@ -149,6 +149,17 @@ describe("claudecode-auth (Dario-backed)", () => {
     expect(status.error).toContain("invalid_grant");
   });
 
+  it("does not reset local auth state when dario logout fails", async () => {
+    fetchDarioStatus.mockResolvedValue({ authenticated: true, status: "healthy" });
+    await getClaudeCodeAuthStatus();
+    logoutClaudeLogin.mockRejectedValueOnce(new Error("logout failed"));
+
+    await expect(clearClaudeCodeAuth()).rejects.toThrow("logout failed");
+
+    expect(logoutClaudeLogin).toHaveBeenCalledTimes(1);
+    expect(getClaudeCodeAuthState().isAuthenticated).toBe(true);
+  });
+
   it("clearClaudeCodeAuth calls dario logout and resets the snapshot", async () => {
     fetchDarioStatus.mockResolvedValue({ authenticated: true, status: "healthy" });
     await getClaudeCodeAuthStatus();
