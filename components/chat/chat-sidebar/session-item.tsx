@@ -21,7 +21,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useSidebarCollapsed } from "@/components/layout/shell";
 import { getSessionActivityTimestamp } from "@/components/chat/chat-interface-utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,14 +33,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  useSessionActivity,
-  useSessionContextStatus,
   useSessionData,
   useSessionHasActiveRun,
-  useSessionSyncStore,
 } from "@/lib/stores/session-sync-store";
 import { CHANNEL_TYPE_ICONS } from "./constants";
-import { SessionActivityBubble } from "./session-activity-bubble";
 import { calendarDaysAgo, parseAsUTC } from "./sidebar-utils";
 import type { SessionInfo } from "./types";
 
@@ -83,12 +78,9 @@ export function SessionItem({
   const t = useTranslations("chat");
   const tChannels = useTranslations("channels");
   const formatter = useFormatter();
-  const itemRef = useRef<HTMLDivElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const skipBlurRef = useRef(false);
   const [mounted, setMounted] = useState(false);
-  const { isVisible: isSidebarVisible } = useSidebarCollapsed();
-
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -96,21 +88,6 @@ export function SessionItem({
   // Sync with global store for real-time updates
   const syncedSession = useSessionData(initialSession.id);
   const hasActiveRun = useSessionHasActiveRun(initialSession.id);
-  const sessionActivity = useSessionActivity(initialSession.id);
-  const contextStatus = useSessionContextStatus(initialSession.id);
-
-  // Clear completed activity when navigating away so stale "Completed" bubbles
-  // don't reappear if the user returns to this session before the store is cleared.
-  useEffect(() => {
-    if (!isCurrent && sessionActivity && !sessionActivity.isRunning) {
-      useSessionSyncStore.getState().setSessionActivity(initialSession.id, null);
-    }
-  }, [isCurrent, initialSession.id, sessionActivity]);
-
-  const handleBubbleDismissed = useCallback(() => {
-    useSessionSyncStore.getState().setSessionActivity(initialSession.id, null);
-  }, [initialSession.id]);
-
   // Merge initial session with synced data
   // Only override fields that are present in syncedSession and relevant for display
   const session = {
@@ -208,7 +185,6 @@ export function SessionItem({
 
   return (
     <div
-      ref={itemRef}
       className={cn(
         "group relative flex items-start gap-2.5 rounded-lg px-3 py-2.5 cursor-pointer border border-transparent",
         "transition-all duration-200 ease-out",
@@ -420,15 +396,6 @@ export function SessionItem({
           </Button>
         )
       ) : null}
-      <SessionActivityBubble
-        activity={sessionActivity}
-        contextStatus={contextStatus}
-        hasActiveRun={hasActiveRun}
-        isCurrent={isCurrent}
-        anchorRef={itemRef}
-        onDismissed={handleBubbleDismissed}
-        hidden={!isSidebarVisible}
-      />
     </div>
   );
 }

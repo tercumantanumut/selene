@@ -3739,16 +3739,6 @@
         "dismiss": "Dismiss"
       }
     },
-    "contextBubble": {
-      "contextLimitReached": "Context limit reached",
-      "percentUsed": "{percentage}% used",
-      "contextNearlyFull": "Context nearly full",
-      "contextClimbing": "Context climbing",
-      "sessionStatus": "Session status",
-      "hint": "hint",
-      "hintLabel": "Hint",
-      "updated": "Updated"
-    },
     "error": {
       "title": "Something went wrong",
       "description": "The chat encountered an error. Your conversation and any background processes are safe.",

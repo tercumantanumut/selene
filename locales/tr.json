@@ -3775,16 +3775,6 @@
         "dismiss": "Kapat"
       }
     },
-    "contextBubble": {
-      "contextLimitReached": "Bağlam limiti doldu",
-      "percentUsed": "%{percentage} kullanıldı",
-      "contextNearlyFull": "Bağlam neredeyse dolu",
-      "contextClimbing": "Bağlam artıyor",
-      "sessionStatus": "Oturum durumu",
-      "hint": "ipucu",
-      "hintLabel": "İpucu",
-      "updated": "Güncellendi"
-    },
     "error": {
       "title": "Bir şeyler ters gitti",
       "description": "Sohbette bir hata oluştu. Konuşmanız ve arka plan işlemleri güvende.",

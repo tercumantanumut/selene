@@ -88,7 +88,7 @@ interface SessionSyncState {
   // Active runs tracking
   activeRuns: Map<string, string>; // sessionId -> runId
 
-  // Rich per-session activity indicators for sidebar bubbles
+  // Rich per-session activity indicators for active task UI
   sessionActivityById: Map<string, SessionActivityState>;
 
   // Context pressure indicators by session
