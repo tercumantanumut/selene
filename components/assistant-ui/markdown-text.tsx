@@ -184,7 +184,7 @@ export const MarkdownText: FC<{ text: string }> = () => {
         // Blockquotes
         blockquote: ({ children, ...props }) => (
           <blockquote
-            className="border-l-4 border-terminal-text/30 pl-4 italic text-terminal-text/80"
+            className="border-l-4 border-terminal-dark/30 pl-4 italic text-terminal-dark/80"
             {...props}
           >
             {children}
