@@ -26,8 +26,9 @@ export const KIMI_OAUTH_CONFIG = {
   REFRESH_THRESHOLD_MS: 15 * 60 * 1000,
   POLL_INTERVAL_MS: 5000,
   POLL_TIMEOUT_MS: 5 * 60 * 1000,
-  VERSION: "1.12.0",
-  PLATFORM: "kimi_cli",
+  VERSION: "0.19.2",
+  PLATFORM: "kimi_code_cli",
+  USER_AGENT_PRODUCT: "kimi-code-cli",
 } as const;
 
 let cachedAuthState: KimiAuthState | null = null;
@@ -268,7 +269,7 @@ export function getKimiDeviceHeaders(): Record<string, string> {
   const os = require("os");
   const deviceId = getOrCreateKimiDeviceId();
   return {
-    "User-Agent": `KimiCLI/${KIMI_OAUTH_CONFIG.VERSION}`,
+    "User-Agent": `${KIMI_OAUTH_CONFIG.USER_AGENT_PRODUCT}/${KIMI_OAUTH_CONFIG.VERSION}`,
     "X-Msh-Platform": KIMI_OAUTH_CONFIG.PLATFORM,
     "X-Msh-Device-Id": deviceId,
     "X-Msh-Version": KIMI_OAUTH_CONFIG.VERSION,

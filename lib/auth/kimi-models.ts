@@ -8,6 +8,8 @@
  * - Native video understanding
  * - Strong agentic capabilities
  *
+ * Kimi K2.7 Code is Moonshot AI's current coding-specialized line.
+ *
  * API: OpenAI-compatible at https://api.moonshot.ai/v1
  */
 
@@ -18,7 +20,9 @@ export const KIMI_MODEL_IDS = [
   // Previous flagship multimodal model
   "kimi-k2.5",
 
-  // Latest coding model (April 2026)
+  // Latest coding models
+  "kimi-k2.7-code",
+  "kimi-k2.7-code-highspeed",
   "kimi-k2.6-code-preview",
 
   // K2 generation models
@@ -54,6 +58,8 @@ const KIMI_VISION_MODELS = new Set<string>([
 
 // Models that support thinking mode
 const KIMI_THINKING_MODELS = new Set<string>([
+  "kimi-k2.7-code",
+  "kimi-k2.7-code-highspeed",
   "kimi-k2.6",
   "kimi-k2.5",
   "kimi-k2-thinking",
@@ -80,6 +86,8 @@ export const KIMI_CONFIG = {
 const MODEL_LABELS: Record<string, string> = {
   "kimi-k2.6": "Kimi K2.6",
   "kimi-k2.5": "Kimi K2.5",
+  "kimi-k2.7-code": "Kimi K2.7 Code",
+  "kimi-k2.7-code-highspeed": "Kimi K2.7 Code HighSpeed",
   "kimi-k2.6-code-preview": "Kimi K2.6 Code Preview",
   "kimi-k2-0905-preview": "Kimi K2 (0905)",
   "kimi-k2-0711-preview": "Kimi K2 (0711)",

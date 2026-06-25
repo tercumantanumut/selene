@@ -60,7 +60,7 @@
         },
         "kimi": {
           "title": "Moonshot Kimi",
-          "desc": "Use Moonshot's Kimi K2.5 with 256K context and vision"
+          "desc": "Use Moonshot's Kimi K2.6 and K2.7 Code with 256K context"
         },
         "ollama": {
           "title": "Ollama",

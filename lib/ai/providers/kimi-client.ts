@@ -4,8 +4,8 @@
  * Lazy-initialized OpenAI-compatible client for the Moonshot Kimi API.
  * Supports dual auth: OAuth (via Kimi device flow) or API key (env vars).
  * OAuth is preferred when available and uses the Kimi coding endpoint.
- * Includes a custom fetch wrapper that disables thinking mode and sets the
- * required fixed parameter values for non-thinking mode per Kimi K2.5 docs.
+ * Includes a custom fetch wrapper that sets Kimi's currently required
+ * fixed generation parameters.
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -15,16 +15,57 @@ import { getAppUrl } from "./openrouter-client";
 
 // ---- Configuration -----------------------------------------------------------
 
+const KIMI_FIXED_TEMPERATURE = 0.6;
+const KIMI_ALWAYS_THINKING_MODELS = new Set([
+  "kimi-k2.7-code",
+  "kimi-k2.7-code-highspeed",
+]);
+
 export function getKimiApiKey(): string | undefined {
   return process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isKimiAlwaysThinkingModel(model: unknown): boolean {
+  return typeof model === "string" && KIMI_ALWAYS_THINKING_MODELS.has(model.toLowerCase());
+}
+
+export function normalizeKimiChatCompletionBody(body: unknown): unknown {
+  if (!isRecord(body)) {
+    return body;
+  }
+
+  const normalized = { ...body };
+
+  if (isKimiAlwaysThinkingModel(normalized.model)) {
+    // K2.7 code models are forced-thinking models; explicitly disabling
+    // thinking causes the coding endpoint to reject otherwise valid requests.
+    delete normalized.thinking;
+  } else {
+    // Non-thinking mode: reasoning outputs should not persist in history.
+    normalized.thinking = { type: "disabled" };
+  }
+
+  // Kimi's coding backend currently validates this as an exact fixed value.
+  // Do not lower it for tool calls; tool requests with 0.4 are rejected with
+  // "invalid temperature: only 0.6 is allowed for this model".
+  normalized.temperature = KIMI_FIXED_TEMPERATURE;
+  normalized.top_p = 0.95;
+  normalized.n = 1;
+  normalized.presence_penalty = 0.0;
+  normalized.frequency_penalty = 0.0;
+
+  return normalized;
 }
 
 // ---- Custom fetch ------------------------------------------------------------
 
 /**
  * Custom fetch wrapper for Kimi API.
- * Disables thinking mode and enforces required parameter values
- * per Kimi K2.5 docs (non-thinking mode requires specific fixed values).
+ * Enforces required parameter values for Kimi's current OpenAI-compatible APIs.
  */
 async function kimiCustomFetch(
   url: RequestInfo | URL,
@@ -45,18 +86,7 @@ async function kimiCustomFetch(
 
   if (init?.body && typeof init.body === "string" && urlStr.includes("/chat/completions")) {
     try {
-      const body = JSON.parse(init.body);
-      // Disable thinking mode — reasoning outputs should not persist in history
-      body.thinking = { type: "disabled" };
-      // Non-thinking mode requires these fixed values per Kimi K2.5 docs
-      // Use lower temperature when tools are present for more deterministic tool selection
-      const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
-      body.temperature = hasTools ? 0.4 : 0.6;
-      body.top_p = 0.95;
-      body.n = 1;
-      body.presence_penalty = 0.0;
-      body.frequency_penalty = 0.0;
-      init = { ...init, body: JSON.stringify(body) };
+      init = { ...init, body: JSON.stringify(normalizeKimiChatCompletionBody(JSON.parse(init.body))) };
     } catch {
       // Not JSON, pass through unchanged
     }

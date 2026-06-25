@@ -118,7 +118,7 @@ Use any combination, or go fully local with no API keys.
 | **OpenRouter** | Claude, Gemini, Grok, DeepSeek, and hundreds more |
 | **Ollama** | Any local model; dynamic thinking detection |
 | **vLLM** | Self-hosted inference |
-| **Kimi / Moonshot** | K2.5, K2.6-code; OAuth device-flow sign-in |
+| **Kimi / Moonshot** | K2.5, K2.6, K2.7 Code; OAuth device-flow sign-in |
 | **Minimax** | Multiple variants |
 | **Antigravity** | Free tier via Google OAuth |
 
