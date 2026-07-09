@@ -15,7 +15,7 @@
  * resolved `scopedPlugins` and `pluginRoots`.
  */
 
-import { type Tool } from "ai";
+import { tool, jsonSchema, type Tool } from "ai";
 import type { ExecuteCommandProgressUpdate } from "@/lib/command-execution/types";
 import {
   createRetrieveFullContentTool,
@@ -54,6 +54,20 @@ import {
   normalizeReadFileInputArgs,
   WEB_SEARCH_NO_RESULT_GUARD,
 } from "./content-sanitizer";
+import { mcpContextStore } from "@/lib/ai/providers/mcp-context-store";
+import { sanitizeToolResultForBase64, attachMediaRefs } from "@/lib/media/base64-extract";
+import {
+  buildMissingSdkPassthroughOutput,
+  normalizeSdkPassthroughOutput,
+} from "./sdk-passthrough-normalizer";
+
+// Inputs above this byte threshold are not echoed back verbatim in the SDK
+// passthrough fallback — only a small preview + metadata is kept.
+const SDK_PASSTHROUGH_LARGE_INPUT_BYTES = (() => {
+  const parsed = Number(process.env.SDK_PASSTHROUGH_LARGE_INPUT_BYTES);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 262_144;
+})();
+
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
 interface ToolsBuildContext {
@@ -75,8 +89,16 @@ interface ToolsBuildContext {
   allowedPluginNames: Set<string>;
   /** Workflow context input for subagent discovery in searchTools */
   workflowPromptContextInput: import("@/lib/agents/workflows").WorkflowPromptContextInput | null;
-  /** LLM provider name — used to register SDK agent passthrough tools for claudecode */
+  /** LLM provider name. */
   provider?: string;
+  /**
+   * Active Claude Code backend ("dario" | "sdk"). When "sdk", the SDK agent
+   * executes its own tools internally and streams back tool_use blocks; we
+   * register no-op passthrough tools so the AI SDK accepts them and the real
+   * results flow through the per-request sdkToolResultBridge. Only meaningful
+   * when provider === "claudecode".
+   */
+  backend?: "dario" | "sdk";
   /**
    * Client-forwarded active design workspace preview theme (from the Zustand
    * `useDesignWorkspaceStore`). Forwarded to `createDesignWorkspaceTool`
@@ -454,12 +476,149 @@ export async function buildToolsForRequest(
     ...customComfyUIToolResult.allTools,
   };
 
-  // Claude Code no longer goes through the Agent SDK — with the CLIProxyAPI
-  // bridge it consumes the same `tools` map as every other provider, with
-  // real descriptions and real executors. The previous SDK-passthrough block
-  // (which stamped every tool with "passthrough tool" and routed execution
-  // through an in-process tool-result bridge) was Agent-SDK-era glue and has
-  // been removed.
+  // When the active Claude Code backend is the Agent SDK, the SDK agent streams
+  // back tool_use blocks for its built-in tools (Bash, Read, Write, etc.) and
+  // Selene MCP tools (prefixed mcp__selene-platform__<name>). The AI SDK
+  // validates tool names against the tools map and rejects unknown ones. These
+  // passthrough tools resolve their real output from the per-request
+  // sdkToolResultBridge; loop prevention is handled by the single-step gate in
+  // delegation-waiting.ts (also gated on backend === "sdk").
+  //
+  // The Dario backend is a plain Anthropic Messages consumer with real tool
+  // execution, so this block must NEVER run for it.
+  const sdkPassthroughNames = new Set<string>();
+  const mcpPassthroughNames = new Set<string>();
+
+  if (ctx.backend === "sdk") {
+    const createSdkPassthroughTool = (registeredToolName: string): Tool =>
+      tool({
+        description: "Claude Agent SDK passthrough tool (executed internally by the SDK agent)",
+        inputSchema: jsonSchema<Record<string, unknown>>({
+          type: "object",
+          additionalProperties: true,
+        }),
+        // Resolve the real SDK tool output from the per-request bridge.
+        // Fallback to passthrough marker only if no bridged output arrives in time.
+        execute: async (args, options) => {
+          const serializedArgs = (() => {
+            try {
+              return JSON.stringify(args ?? {});
+            } catch {
+              return "";
+            }
+          })();
+          const largeInputMetadata =
+            serializedArgs.length > SDK_PASSTHROUGH_LARGE_INPUT_BYTES
+              ? {
+                  _sdkLargeInput: true,
+                  _sdkLargeInputBytes: serializedArgs.length,
+                  _sdkLargeInputPreview: serializedArgs.slice(0, 2_000),
+                }
+              : null;
+
+          const toolCallId =
+            options && typeof options === "object" && "toolCallId" in options &&
+            typeof (options as { toolCallId?: unknown }).toolCallId === "string"
+              ? (options as { toolCallId: string }).toolCallId
+              : "";
+
+          const abortSignal =
+            options && typeof options === "object" && "abortSignal" in options &&
+            (options as { abortSignal?: unknown }).abortSignal instanceof AbortSignal
+              ? (options as { abortSignal: AbortSignal }).abortSignal
+              : undefined;
+
+          const bridge = mcpContextStore.getStore()?.sdkToolResultBridge;
+          if (bridge && toolCallId) {
+            // MCP tools (delegateToSubagent, etc.) and SDK agent tools (Task,
+            // Agent, etc.) can run arbitrarily long — never time them out.
+            const isLongRunningTool =
+              mcpPassthroughNames.has(registeredToolName) ||
+              registeredToolName === "Task" ||
+              registeredToolName === "Agent" ||
+              registeredToolName === "TaskCreate" ||
+              registeredToolName === "TaskGet" ||
+              registeredToolName === "TaskUpdate" ||
+              registeredToolName === "TaskList";
+
+            try {
+              const resolved = await bridge.waitFor(toolCallId, {
+                timeoutMs: isLongRunningTool ? null : 300_000,
+                abortSignal,
+              });
+              if (resolved) {
+                // Strip base64 image/document envelopes emitted by SDK-native
+                // built-ins like Read before the payload reaches the executor.
+                const { sanitized, mediaRefs } = await sanitizeToolResultForBase64(
+                  resolved.output,
+                  { sessionId, role: "generated" }
+                );
+                const normalized = normalizeSdkPassthroughOutput(
+                  resolved.toolName || registeredToolName,
+                  sanitized,
+                  args
+                );
+                const withMediaRefs = attachMediaRefs(normalized, mediaRefs);
+                if (largeInputMetadata) {
+                  return { ...withMediaRefs, ...largeInputMetadata };
+                }
+                return withMediaRefs;
+              }
+              console.warn(
+                `[CHAT API] SDK passthrough wait ended without result: ${toolCallId} tool=${registeredToolName}`
+              );
+              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
+                reason: `No bridged SDK tool result arrived for toolCallId=${toolCallId}. The underlying tool likely failed before publishing a structured result.`,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.warn(
+                `[CHAT API] SDK passthrough bridge wait failed: toolCallId=${toolCallId} tool=${registeredToolName} error=${message}`
+              );
+              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
+                reason: `SDK passthrough bridge wait failed for toolCallId=${toolCallId}: ${message}`,
+              });
+            }
+          }
+
+          return { _sdkPassthrough: true, ...(largeInputMetadata ?? {}) };
+        },
+      });
+
+    // (a) SDK built-in tools (Bash, Read, Write, etc.)
+    //
+    // Harness-only SDK tools (ScheduleWakeup, Cron*, Monitor, PushNotification,
+    // RemoteTrigger, EnterWorktree, ExitWorktree) are intentionally absent —
+    // they are blocked at the SDK level via HARNESS_ONLY_DISALLOWED_TOOLS in
+    // claudecode-sdk/provider.ts. Keep the two lists in sync.
+    const SDK_AGENT_TOOLS = [
+      "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep",
+      "Task", "WebFetch", "WebSearch", "NotebookEdit", "TodoRead",
+      "TodoWrite", "AskFollowupQuestion",
+      "AskUserQuestion", "Agent", "TaskOutput", "TaskStop",
+      "Skill", "EnterPlanMode", "ExitPlanMode",
+      "TaskCreate", "TaskGet", "TaskUpdate", "TaskList",
+    ] as const;
+
+    for (const name of SDK_AGENT_TOOLS) {
+      if (!allToolsWithMCP[name]) {
+        allToolsWithMCP[name] = createSdkPassthroughTool(name);
+        sdkPassthroughNames.add(name);
+      }
+    }
+
+    // (b) Selene platform MCP tools — the SDK agent calls these via the
+    // "selene-platform" MCP server, which handles real execution. Replace the
+    // original tool entries with passthrough versions so the AI SDK doesn't
+    // double-execute.
+    const existingToolNames = Object.keys(allToolsWithMCP);
+    for (const name of existingToolNames) {
+      if (sdkPassthroughNames.has(name)) continue;
+      allToolsWithMCP[name] = createSdkPassthroughTool(name);
+      sdkPassthroughNames.add(name);
+      mcpPassthroughNames.add(name);
+    }
+  }
 
   // Wrap tools with plugin hooks and streaming guardrails.
   const hasPreHooks = getRegisteredHooks("PreToolUse").length > 0;
@@ -671,6 +830,12 @@ export async function buildToolsForRequest(
       `pre:${hasPreHooks}, post:${hasPostHooks}, failure:${hasFailureHooks})`
   );
 
+  // SDK passthrough tools must always be active (even in deferred mode) so the
+  // AI SDK accepts SDK-emitted tool_use blocks on any step.
+  const sdkPassthroughToolNames = ctx.backend === "sdk"
+    ? Object.keys(allToolsWithMCP).filter((name) => sdkPassthroughNames.has(name))
+    : [];
+
   const initialActiveToolNames = useDeferredLoading
     ? [
         ...new Set([
@@ -678,6 +843,7 @@ export async function buildToolsForRequest(
           ...previouslyDiscoveredTools,
           ...mcpToolResult.alwaysLoadToolIds,
           ...customComfyUIToolResult.alwaysLoadToolIds,
+          ...sdkPassthroughToolNames,
         ]),
       ]
     : Object.keys(allToolsWithMCP);

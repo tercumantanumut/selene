@@ -294,11 +294,26 @@ describe("delegate-to-subagent-tool", () => {
     expect(stopped.success).toBe(true);
     expect(mocks.listAgentRunsBySession).toHaveBeenCalledWith("delegation-session-1");
     expect(mocks.abortChatRun).toHaveBeenCalledWith("run-delegated-1", "user_cancelled");
-    expect(mocks.markRunAsCancelled).toHaveBeenCalledWith("run-delegated-1", "user_cancelled");
+    expect(mocks.markRunAsCancelled).toHaveBeenCalledWith(
+      "run-delegated-1",
+      "user_cancelled",
+      expect.objectContaining({
+        terminalStatus: "stopped",
+        delegationId: start.delegationId,
+        stoppedAt: expect.any(String),
+      }),
+    );
     expect(mocks.taskRegistryUpdateStatus).toHaveBeenCalledWith(
       "run-delegated-1",
       "cancelled",
-      expect.objectContaining({ durationMs: expect.any(Number) }),
+      expect.objectContaining({
+        durationMs: expect.any(Number),
+        metadata: expect.objectContaining({
+          terminalStatus: "stopped",
+          delegationId: start.delegationId,
+          stoppedAt: expect.any(String),
+        }),
+      }),
     );
     expect(mocks.removeChatAbortController).toHaveBeenCalledWith("run-delegated-1");
   });
@@ -323,6 +338,60 @@ describe("delegate-to-subagent-tool", () => {
     expect(mocks.markRunAsCancelled).not.toHaveBeenCalled();
     expect(mocks.taskRegistryUpdateStatus).not.toHaveBeenCalled();
     expect(mocks.removeChatAbortController).not.toHaveBeenCalled();
+  });
+
+  it("reports an explicitly stopped sub-agent as stopped, not completed", async () => {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        });
+      });
+    });
+
+    const tool = makeTool();
+    const start = await (tool as any).execute({
+      action: "start",
+      agentName: "Research Analyst",
+      task: "Cancel and report status accurately",
+      mode: "background",
+    });
+
+    const stopped = await (tool as any).execute({
+      action: "stop",
+      delegationId: start.delegationId,
+    });
+
+    await delay(20);
+
+    expect(stopped).toEqual(expect.objectContaining({
+      success: true,
+      delegationId: start.delegationId,
+      running: false,
+      completed: false,
+      status: "stopped",
+    }));
+
+    expect(mocks.addDelegationCompletion).toHaveBeenCalled();
+    const completion = mocks.addDelegationCompletion.mock.calls.at(-1)?.[0];
+    expect(completion).toEqual(expect.objectContaining({
+      delegationId: start.delegationId,
+      status: "stopped",
+      error: undefined,
+    }));
+    expect(completion.resultContent).toContain('status="stopped"');
+    expect(completion.resultContent).not.toContain('status="completed"');
+
+    const observed = await (tool as any).execute({
+      action: "observe",
+      delegationId: start.delegationId,
+    });
+    expect(observed).toEqual(expect.objectContaining({
+      success: true,
+      running: false,
+      completed: false,
+      status: "stopped",
+    }));
   });
 
   it("observe supports waitSeconds so callers can avoid tight polling loops", async () => {

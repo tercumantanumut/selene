@@ -22,11 +22,30 @@ interface KillBackgroundProcessTaskResult {
   task?: UnifiedTask;
 }
 
-function statusForBackgroundProcess(info?: BackgroundProcessInfo, fallback: TaskStatus = "cancelled"): TaskStatus {
+export function statusForBackgroundProcess(info?: BackgroundProcessInfo, fallback: TaskStatus = "cancelled"): TaskStatus {
   if (!info) return fallback;
   if (info.running) return "running";
+  // Explicit stop (user Stop button / kill API). Checked before signal and
+  // exit code: at kill time the child's async "close" event has usually not
+  // fired yet, so exitCode/signal are still null.
+  if (info.settleReason === "killed") return "cancelled";
+  if (info.settleReason === "timeout") return "failed";
+  if (info.settleReason === "spawn-error") return "failed";
   if (info.signal) return "cancelled";
+  // Settled but no exit code and no explicit reason: we cannot claim the
+  // process failed — treat as the caller-provided fallback (interrupted).
+  if (info.exitCode === null || info.exitCode === undefined) return fallback;
   return info.exitCode === 0 ? "succeeded" : "failed";
+}
+
+function errorForBackgroundProcess(info: BackgroundProcessInfo | undefined, status: TaskStatus): string | undefined {
+  if (!info || status !== "failed") return undefined;
+  if (info.settleReason === "timeout") return "Process timed out";
+  if (info.settleReason === "spawn-error") return "Process failed to start";
+  if (info.exitCode !== null && info.exitCode !== undefined && info.exitCode !== 0) {
+    return `Process exited with code ${info.exitCode}`;
+  }
+  return "Process failed";
 }
 
 function backgroundProcessMetadata(
@@ -38,6 +57,7 @@ function backgroundProcessMetadata(
       cwd: info.cwd,
       exitCode: info.exitCode,
       signal: info.signal,
+      settleReason: info.settleReason,
       settledAt: info.settledAt ? new Date(info.settledAt).toISOString() : undefined,
     } : {}),
   };
@@ -60,8 +80,10 @@ function completeBackgroundProcessTask(
 
   const startedAt = new Date(existing.startedAt).getTime();
   const settledAt = info?.settledAt ?? Date.now();
+  console.log(`[BackgroundProcessTask] ${processId} settled: status=${status} exitCode=${info?.exitCode ?? "null"} signal=${info?.signal ?? "null"} reason=${info?.settleReason ?? "unknown"}`);
   return taskRegistry.updateStatus(processId, status, {
     durationMs: Math.max(0, settledAt - startedAt),
+    error: errorForBackgroundProcess(info ?? undefined, status),
     metadata: {
       ...(existing.metadata ?? {}),
       ...backgroundProcessMetadata(info ?? undefined),

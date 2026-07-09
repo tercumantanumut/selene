@@ -9,7 +9,9 @@ import { getCanonicalToolName, humanizeToolName, loadToolNameCache } from "./too
 import { useToolExpansion } from "./tool-expansion-context";
 import { stripXmlStatusTags } from "./claude-code-tools/parse-text-result";
 import { DiffStyledPre } from "./diff-styled-pre";
+import { MarkdownFilePreview } from "./markdown-file-preview";
 import { useChatSessionId } from "@/components/chat-provider";
+import { isMarkdownFile, stripReadFileLineNumbers } from "@/lib/markdown/file-preview";
 // Define the tool call component type manually since it's no longer exported
 type ToolCallContentPartComponent = FC<{
   toolName: string;
@@ -244,6 +246,7 @@ ToolStatus.displayName = "ToolStatus";
 // Memoized Result Display Component
 const ToolResultDisplay: FC<{ toolName: string; result: ToolResult }> = memo(({ toolName, result }) => {
   const tResults = useTranslations("assistantUi.toolResults");
+  const tMarkdown = useTranslations("assistantUi.markdownFilePreview");
   const tCommand = useTranslations("assistantUi.commandOutput");
   const canonicalToolName = getCanonicalToolName(toolName);
   const normalizedResult = unwrapMcpTextWrappedResult(result);
@@ -588,9 +591,21 @@ const ToolResultDisplay: FC<{ toolName: string; result: ToolResult }> = memo(({ 
     // For readFile, allow a much larger display limit since users explicitly requested this content
     const content = readResult.content || "";
     const READ_FILE_DISPLAY_LIMIT = 20_000;
-    const displayContent = content.length > READ_FILE_DISPLAY_LIMIT
+    const contentWasDisplayLimited = content.length > READ_FILE_DISPLAY_LIMIT;
+    const displayContent = contentWasDisplayLimited
       ? content.substring(0, READ_FILE_DISPLAY_LIMIT) + `\n\n... [${tResults("moreCharsFullContent", { count: (content.length - READ_FILE_DISPLAY_LIMIT).toLocaleString() })}]`
       : content;
+    const shouldRenderMarkdownPreview =
+      isMarkdownFile(readResult.filePath, readResult.language) &&
+      displayContent.trim().length > 0;
+    const markdownPreviewContent = shouldRenderMarkdownPreview
+      ? stripReadFileLineNumbers(displayContent)
+      : "";
+    const sourceView = displayContent ? (
+      <pre className={cn("mt-1 max-h-96 overflow-y-auto", TOOL_RESULT_PRE_CLASS)}>
+        {displayContent}
+      </pre>
+    ) : null;
 
     return (
       <div className={cn("font-mono", TOOL_RESULT_TEXT_CLASS)}>
@@ -608,11 +623,13 @@ const ToolResultDisplay: FC<{ toolName: string; result: ToolResult }> = memo(({ 
             {lineInfo}{truncatedLabel}
           </p>
         )}
-        {displayContent && (
-          <pre className={cn("mt-1 max-h-96 overflow-y-auto", TOOL_RESULT_PRE_CLASS)}>
-            {displayContent}
-          </pre>
-        )}
+        {sourceView && (shouldRenderMarkdownPreview ? (
+          <MarkdownFilePreview
+            content={markdownPreviewContent}
+            sourceView={sourceView}
+            previewNotice={readResult.truncated || contentWasDisplayLimited ? tMarkdown("previewMayBeIncomplete") : undefined}
+          />
+        ) : sourceView)}
       </div>
     );
   }

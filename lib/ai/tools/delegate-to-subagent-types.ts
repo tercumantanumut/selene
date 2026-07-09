@@ -21,6 +21,9 @@ export interface DelegateToSubagentToolOptions {
 
 type DelegateAction = "start" | "observe" | "continue" | "answer" | "stop" | "list";
 
+export type DelegationTerminalStatus = "completed" | "failed" | "stopped";
+export type DelegationStatus = "running" | DelegationTerminalStatus;
+
 export interface DelegateToSubagentInput {
   action: DelegateAction;
   agentId?: string;
@@ -64,6 +67,7 @@ export interface DelegateResult {
   mode?: "blocking" | "background";
   running?: boolean;
   completed?: boolean;
+  status?: DelegationStatus;
   /** Compact final response text. Returned in blocking mode instead of lastResponse/allResponses. */
   result?: string;
   messageCount?: number;
@@ -95,6 +99,7 @@ export interface DelegateResult {
     task: string;
     running: boolean;
     completed?: boolean;
+    status?: DelegationStatus;
     elapsed: number;
   }>;
 }
@@ -127,6 +132,8 @@ export interface ActiveDelegation {
   streamPromise: Promise<void>;
   settled: boolean;
   executionId: number;
+  terminalStatus?: DelegationTerminalStatus;
+  stopRequestedAt?: number;
   error?: string;
   /** Watermark for incremental observe — tracks the last orderingIndex seen by the caller. */
   lastObservedOrderingIndex: number;

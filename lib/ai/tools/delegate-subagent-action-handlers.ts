@@ -33,6 +33,9 @@ import {
   buildSubagentCandidates,
   toAvailableAgents,
   resolveSubagentCandidate,
+  getDelegationStatus,
+  isDelegationCompleted,
+  markDelegationSettled,
 } from "./delegate-to-subagent-handlers";
 import { getCharacterFull } from "@/lib/characters/queries";
 import {
@@ -135,7 +138,10 @@ async function waitForDelegationPausePoint(
   }
 }
 
-async function cancelDelegationSessionRun(sessionId: string): Promise<void> {
+async function cancelDelegationSessionRun(
+  sessionId: string,
+  delegationId: string,
+): Promise<void> {
   const runs = await listAgentRunsBySession(sessionId);
   const activeRun = runs.find((run) => run.status === "running");
   if (!activeRun) {
@@ -146,11 +152,20 @@ async function cancelDelegationSessionRun(sessionId: string): Promise<void> {
   const registryDurationMs = registryTask
     ? Date.now() - new Date(registryTask.startedAt).getTime()
     : undefined;
+  const stoppedMetadata = {
+    terminalStatus: "stopped",
+    delegationId,
+    stoppedAt: new Date().toISOString(),
+  };
 
   abortChatRun(activeRun.id, "user_cancelled");
-  await markRunAsCancelled(activeRun.id, "user_cancelled");
+  await markRunAsCancelled(activeRun.id, "user_cancelled", stoppedMetadata);
   taskRegistry.updateStatus(activeRun.id, "cancelled", {
     durationMs: registryDurationMs,
+    metadata: {
+      ...((registryTask?.metadata as Record<string, unknown> | undefined) ?? {}),
+      ...stoppedMetadata,
+    },
   });
   removeChatAbortController(activeRun.id);
 }
@@ -383,6 +398,8 @@ export async function handleObserve(
     ? await waitForDelegationPausePoint(delegation, waitValidation.waitMs)
     : getDelegationPendingInteractivePrompts(delegation.sessionId);
 
+  const status = getDelegationStatus(delegation);
+  const completed = isDelegationCompleted(delegation);
   const deliveryRecord = delegation.settled
     ? getDelegationDeliveryRecord(delegationId, delegation.resultVersion)
     : undefined;
@@ -394,7 +411,8 @@ export async function handleObserve(
       sessionId: delegation.sessionId,
       delegateAgent: delegation.delegateName,
       running: false,
-      completed: true,
+      completed,
+      status,
       elapsed: Date.now() - delegation.startedAt,
       waitedMs,
       waitTimedOut: false,
@@ -410,6 +428,24 @@ export async function handleObserve(
     };
   }
 
+  if (status === "stopped") {
+    const waitedMs = Date.now() - observeStart;
+    return {
+      success: true,
+      delegationId,
+      sessionId: delegation.sessionId,
+      delegateAgent: delegation.delegateName,
+      running: false,
+      completed: false,
+      status,
+      elapsed: Date.now() - delegation.startedAt,
+      waitedMs,
+      waitTimedOut: false,
+      message: `Delegation ${delegationId} was stopped by the initiator.`,
+      delegations: buildDelegationsSummary(characterId, initiatorSessionId),
+    };
+  }
+
   // If delegation failed, return the error immediately
   if (delegation.error) {
     const waitedMs = Date.now() - observeStart;
@@ -420,7 +456,8 @@ export async function handleObserve(
       delegateAgent: delegation.delegateName,
       error: `Delegation failed: ${delegation.error}`,
       running: false,
-      completed: true,
+      completed: false,
+      status: "failed",
       elapsed: Date.now() - delegation.startedAt,
       waitedMs,
       waitTimedOut: waitValidation.waitMs > 0 && !delegation.settled,
@@ -465,7 +502,8 @@ export async function handleObserve(
     (observeSummary.assistantMessageCount - 1) - allResponses.length,
   );
 
-  const isRunning = !delegation.settled;
+  const currentStatus = getDelegationStatus(delegation);
+  const isRunning = currentStatus === "running";
   const waitedMs = Date.now() - observeStart;
 
   // ── Prevent stale queued delivery ─────────────────────────────────────────
@@ -482,7 +520,8 @@ export async function handleObserve(
     sessionId: delegation.sessionId,
     delegateAgent: delegation.delegateName,
     running: isRunning,
-    completed: delegation.settled,
+    completed: currentStatus === "completed",
+    status: currentStatus,
     elapsed: Date.now() - delegation.startedAt,
     waitedMs,
     waitTimedOut: waitValidation.waitMs > 0 && isRunning,
@@ -696,15 +735,26 @@ export async function handleStop(
   }
 
   // Stop both the delegation wrapper and the underlying chat run so UI state clears.
-  delegation.abortController.abort();
-  await cancelDelegationSessionRun(delegation.sessionId);
-  delegation.settled = true;
-  activeDelegations.delete(delegationId);
+  if (!delegation.settled) {
+    delegation.stopRequestedAt = Date.now();
+    markDelegationSettled(delegation, "stopped", delegation.stopRequestedAt);
+    delegation.abortController.abort();
+    await cancelDelegationSessionRun(delegation.sessionId, delegationId);
+  }
+
+  const status = getDelegationStatus(delegation);
 
   return {
     success: true,
     delegationId,
-    message: `Delegation ${delegationId} stopped and cancelled.`,
+    sessionId: delegation.sessionId,
+    delegateAgent: delegation.delegateName,
+    running: false,
+    completed: status === "completed",
+    status,
+    message: status === "stopped"
+      ? `Delegation ${delegationId} stopped and cancelled.`
+      : `Delegation ${delegationId} is already ${status}.`,
     delegations: buildDelegationsSummary(characterId, initiatorSessionId),
   };
 }

@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { useToolExpansion } from "./tool-expansion-context";
 import { DiffStyledPre } from "./diff-styled-pre";
+import { MarkdownFilePreview } from "./markdown-file-preview";
+import { isMarkdownFile } from "@/lib/markdown/file-preview";
 import {
   type ToolDiagnosticResult,
   getDiagnosticCounts,
@@ -37,7 +39,13 @@ interface WriteFileResult {
 type ToolCallContentPartComponent = FC<{
   toolName: string;
   argsText?: string;
-  args: { filePath?: string; oldString?: string; newString?: string; content?: string };
+  args: {
+    filePath?: string;
+    oldString?: string;
+    newString?: string;
+    content?: string;
+    edits?: Array<{ oldString?: string; newString?: string }>;
+  };
   result?: EditFileResult | WriteFileResult;
 }>;
 
@@ -77,6 +85,7 @@ export const EditFileToolUI: ToolCallContentPartComponent = ({
 }) => {
   const result = useMemo(() => unwrapResult(rawResult), [rawResult]);
   const t = useTranslations("assistantUi.editFileTool");
+  const tMarkdown = useTranslations("assistantUi.markdownFilePreview");
   const [expanded, setExpanded] = useState(false);
   const [showFullDiff, setShowFullDiff] = useState(false);
   const [showFullDiagnostics, setShowFullDiagnostics] = useState(false);
@@ -93,11 +102,18 @@ export const EditFileToolUI: ToolCallContentPartComponent = ({
   const filePath = (args?.filePath as string) || "";
   const fileName = filePath.split("/").pop() || filePath;
 
-  // Determine action label based on tool type and result status
+  // Determine action label based on tool type and result status.
+  // Once a result exists, prefer the backend's explicit `created` flag over
+  // input-shape heuristics so stale/extra oldString fields cannot make an edit
+  // render as a creation.
   const isWrite = toolName === "writeFile";
-  const isCreating = isWrite
-    ? (result as WriteFileResult)?.created
-    : (result as EditFileResult)?.created ?? !(args?.oldString as string);
+  const hasEditsArray = Array.isArray(args?.edits) && args.edits.length > 0;
+  const createModeRequested = args?.oldString === "" && !hasEditsArray;
+  const isCreating = result
+    ? result.created === true || (result.status === "error" && createModeRequested)
+    : isWrite
+      ? false
+      : createModeRequested;
 
   // Dynamic label based on result status
   const getActionLabel = () => {
@@ -132,6 +148,19 @@ export const EditFileToolUI: ToolCallContentPartComponent = ({
     !showFullDiff && isDiffTruncated
       ? diffLines.slice(0, maxDiffLines)
       : diffLines;
+  const markdownContentCandidate = isMarkdownFile(filePath)
+    ? typeof args?.content === "string"
+      ? args.content
+      : createModeRequested && typeof args?.newString === "string"
+        ? args.newString
+        : null
+    : null;
+  const markdownPreviewContent = markdownContentCandidate?.trim()
+    ? markdownContentCandidate
+    : null;
+  const shouldShowMarkdownPreview = Boolean(
+    result && result.status !== "error" && diffText && markdownPreviewContent
+  );
 
   // Status icon
   const StatusIcon = !result
@@ -149,6 +178,22 @@ export const EditFileToolUI: ToolCallContentPartComponent = ({
       : result.status === "warning"
         ? "text-terminal-amber"
         : "text-destructive";
+
+  const diffSourceView = diffText ? (
+    <div className="space-y-2">
+      <DiffStyledPre lines={visibleDiffLines} />
+
+      {isDiffTruncated && (
+        <button
+          type="button"
+          onClick={() => setShowFullDiff(!showFullDiff)}
+          className="text-[11px] text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 underline"
+        >
+          {showFullDiff ? `▲ ${t("showLess")}` : `▼ ${t("showAll", { count: diffLines.length })}`}
+        </button>
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className="my-1 rounded-md border border-border bg-terminal-cream/50 dark:bg-terminal-cream/80 font-mono text-xs overflow-hidden">
@@ -215,21 +260,14 @@ export const EditFileToolUI: ToolCallContentPartComponent = ({
           </div>
 
           {/* Show backend-provided diff first, fallback to args-derived diff */}
-          {diffText && (
-            <div className="space-y-2">
-              <DiffStyledPre lines={visibleDiffLines} />
-
-              {isDiffTruncated && (
-                <button
-                  type="button"
-                  onClick={() => setShowFullDiff(!showFullDiff)}
-                  className="text-[11px] text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 underline"
-                >
-                  {showFullDiff ? `▲ ${t("showLess")}` : `▼ ${t("showAll", { count: diffLines.length })}`}
-                </button>
-              )}
-            </div>
-          )}
+          {diffSourceView && (shouldShowMarkdownPreview && markdownPreviewContent ? (
+            <MarkdownFilePreview
+              content={markdownPreviewContent}
+              sourceView={diffSourceView}
+              sourceLabel={tMarkdown("diff")}
+              previewClassName="text-xs"
+            />
+          ) : diffSourceView)}
 
           {/* Result message */}
           {result && (

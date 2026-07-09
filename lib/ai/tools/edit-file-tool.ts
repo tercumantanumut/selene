@@ -58,6 +58,42 @@ interface EditFileResult {
   dryRun?: boolean;
 }
 
+const globalForEditFileLocks = globalThis as typeof globalThis & {
+  editFileOperationLocks?: Map<string, Promise<void>>;
+};
+
+function getEditFileOperationLocks(): Map<string, Promise<void>> {
+  if (!globalForEditFileLocks.editFileOperationLocks) {
+    globalForEditFileLocks.editFileOperationLocks = new Map();
+  }
+  return globalForEditFileLocks.editFileOperationLocks;
+}
+
+async function withFileOperationLock<T>(
+  filePath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const locks = getEditFileOperationLocks();
+  const previous = locks.get(filePath) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => current);
+  locks.set(filePath, tail);
+
+  await previous.catch(() => undefined);
+
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (locks.get(filePath) === tail) {
+      locks.delete(filePath);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
@@ -163,8 +199,9 @@ export function createEditFileTool(options: EditFileToolOptions) {
       }
       const { validPath, syncedFolders } = resolved;
 
-      // CREATE MODE: oldString is empty (Legacy support)
-      if (oldString === "" && newString !== undefined && fileEdits.length === 0) {
+      return withFileOperationLock(validPath, async () => {
+        // CREATE MODE: oldString is empty (Legacy support)
+        if (oldString === "" && newString !== undefined && fileEdits.length === 0) {
         if (dryRun) {
            return {
              status: "success",
@@ -301,12 +338,13 @@ export function createEditFileTool(options: EditFileToolOptions) {
           diagnostics: diagnostics ?? undefined,
           diff,
         };
-      } catch (error) {
-        return {
-          status: "error",
-          error: `Failed to write file: ${error instanceof Error ? error.message : "Unknown error"}`,
-        };
-      }
+        } catch (error) {
+          return {
+            status: "error",
+            error: `Failed to write file: ${error instanceof Error ? error.message : "Unknown error"}`,
+          };
+        }
+      });
     },
   });
 }

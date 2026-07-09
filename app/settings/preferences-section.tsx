@@ -466,6 +466,45 @@ export function PreferencesSection({ formState, updateField, reloadSettings }: P
         </div>
       </div>
 
+      {/* Claude Code backend */}
+      <div className="space-y-4 rounded border border-terminal-border bg-terminal-cream/30 p-4">
+        <div>
+          <label className="mb-2 block font-mono text-sm text-terminal-muted">
+            {t("preferences.claudecodeBackend.label")}
+          </label>
+          <div className="space-y-3">
+            <label className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="claudecodeBackend"
+                value="dario"
+                checked={formState.claudecodeBackend === "dario" || !formState.claudecodeBackend}
+                onChange={() => updateField("claudecodeBackend", "dario")}
+                className="mt-1 size-4 accent-terminal-green"
+              />
+              <div>
+                <span className="font-mono text-terminal-dark">{t("preferences.claudecodeBackend.dario")}</span>
+                <p className="font-mono text-xs text-terminal-muted">{t("preferences.claudecodeBackend.darioHelper")}</p>
+              </div>
+            </label>
+            <label className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="claudecodeBackend"
+                value="sdk"
+                checked={formState.claudecodeBackend === "sdk"}
+                onChange={() => updateField("claudecodeBackend", "sdk")}
+                className="mt-1 size-4 accent-terminal-green"
+              />
+              <div>
+                <span className="font-mono text-terminal-dark">{t("preferences.claudecodeBackend.sdk")}</span>
+                <p className="font-mono text-xs text-terminal-muted">{t("preferences.claudecodeBackend.sdkHelper")}</p>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
       {/* Tool Loading Mode */}
       <div className="space-y-4 rounded border border-terminal-border bg-terminal-cream/30 p-4">
         <div>

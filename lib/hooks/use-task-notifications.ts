@@ -21,6 +21,7 @@ import {
 } from "@/lib/stores/session-sync-store";
 import {
   isBackgroundLifecycleTask,
+  isBackgroundProcessTask,
   type TaskEvent,
   type TaskProgressEvent,
   type UnifiedTask,
@@ -399,7 +400,7 @@ function deriveProgressIndicators(event: TaskProgressEvent): {
 }
 
 function isPersistentBackgroundChatTask(task: UnifiedTask): boolean {
-  if (isBackgroundLifecycleTask(task)) {
+  if (isBackgroundLifecycleTask(task) || isBackgroundProcessTask(task)) {
     return true;
   }
 
@@ -551,7 +552,9 @@ export function reconcileTaskSnapshotWithStores(
     event: Extract<TaskEvent, { eventType: "task:completed" }>,
   ) => {
     callbacks.completeTask(completionTask);
-    if (task.sessionId) {
+    // Background shell processes never own the session's active-run marker,
+    // so their completion must not clear it or rewrite session activity.
+    if (task.sessionId && !isBackgroundProcessTask(task)) {
       sessionSyncState.setActiveRun(task.sessionId, null);
       const previous = sessionSyncState.getSessionActivity(task.sessionId);
       sessionSyncState.setSessionActivity(
@@ -585,7 +588,7 @@ export function reconcileTaskSnapshotWithStores(
       callbacks.addTask(task);
     }
 
-    if (task.sessionId) {
+    if (task.sessionId && !isBackgroundProcessTask(task)) {
       sessionSyncState.setActiveRun(task.sessionId, task.runId);
       const previous = sessionSyncState.getSessionActivity(task.sessionId);
       if (previous && !previous.isRunning && previous.runId === task.runId) {
@@ -702,6 +705,13 @@ export function useTaskNotifications() {
     handleTaskStartedRef.current = (event: TaskEvent) => {
       if (event.eventType !== "task:started") return;
       const task = event.task;
+      if (isBackgroundProcessTask(task)) {
+        // Background shell processes have their own indicator UI. Track them
+        // in the store, but never overwrite the session's active-run marker
+        // (that belongs to the actual chat run) and never toast for them.
+        addTask(task);
+        return;
+      }
       const { isScheduledChat, isDelegationChat, displayName } = classifyTask(task);
       if (isScheduledChat) {
         return;
@@ -759,6 +769,30 @@ export function useTaskNotifications() {
     handleTaskCompletedRef.current = (event: TaskEvent) => {
       if (event.eventType !== "task:completed") return;
       const task = event.task;
+      if (isBackgroundProcessTask(task)) {
+        // Background shell process settled. Update the store so the indicator
+        // reflects the final state, but do NOT clear the session's active run
+        // (a chat run may still be streaming) and do NOT dispatch the
+        // chat-completion lifecycle event (it triggers message reloads).
+        progressBatchRef.current.delete(task.runId);
+        completeTask(task);
+        if (task.status === "failed") {
+          const metadata =
+            task.metadata && typeof task.metadata === "object"
+              ? (task.metadata as Record<string, unknown>)
+              : {};
+          const command = typeof metadata.command === "string" ? metadata.command : undefined;
+          const description = [command, task.error]
+            .filter((part): part is string => Boolean(part))
+            .join(" — ")
+            .slice(0, 140);
+          toast.error(t("processFailed"), {
+            description: description || undefined,
+            duration: 10000,
+          });
+        }
+        return;
+      }
       const { isScheduledChat, isDelegationChat, displayName } = classifyTask(task);
       if (isScheduledChat) {
         return;
@@ -1222,7 +1256,7 @@ export function useTaskNotifications() {
             if (!serverRunIds.has(task.runId)) {
               const realCompletion = recentlyCompletedMap.get(task.runId);
               store.completeTask(realCompletion ?? task);
-              if (task.sessionId) {
+              if (task.sessionId && !isBackgroundProcessTask(task)) {
                 syncStore.setActiveRun(task.sessionId, null);
                 syncStore.setSessionActivity(task.sessionId, null);
               }

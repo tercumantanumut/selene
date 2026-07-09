@@ -11,6 +11,29 @@ import { AsyncLocalStorage } from "async_hooks";
 import type { LivePromptEntry } from "@/lib/background-tasks/live-prompt-queue-registry";
 
 /**
+ * A single Claude Agent SDK tool result, keyed by tool_use_id.
+ * Used only by the optional "sdk" Claude Code backend.
+ */
+export interface SdkToolResultRecord {
+  output: unknown;
+  toolName?: string;
+}
+
+/**
+ * Per-request bridge between the Agent SDK's internally-executed tool results
+ * (published by tool_use_id) and the AI SDK passthrough tool executors that
+ * await them. Present on the MCP context only when backend === "sdk".
+ */
+export interface SdkToolResultBridge {
+  publish: (toolCallId: string, output: unknown, toolName?: string) => void;
+  waitFor: (
+    toolCallId: string,
+    options?: { timeoutMs?: number | null; abortSignal?: AbortSignal },
+  ) => Promise<SdkToolResultRecord | undefined>;
+  dispose?: () => void;
+}
+
+/**
  * Per-request context used to build the Selene platform MCP server that
  * exposes ToolRegistry tools and per-agent MCP tools to in-process callers.
  */
@@ -91,6 +114,14 @@ export interface SeleneMcpContext {
    * active run so the chat route can split/persist messages.
    */
   onQueueMessages?: (entries: LivePromptEntry[]) => Promise<void>;
+
+  /**
+   * Bridge for the optional Agent SDK Claude Code backend. The SDK adapter
+   * publishes internally-executed tool results here keyed by tool_use_id, and
+   * the AI SDK passthrough tool executors await them. Only set when the active
+   * Claude Code backend is "sdk".
+   */
+  sdkToolResultBridge?: SdkToolResultBridge;
 }
 
 export const mcpContextStore = new AsyncLocalStorage<SeleneMcpContext>();

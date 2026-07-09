@@ -39,6 +39,8 @@ export interface LLMEnhancementOptions {
   conversationContext?: Array<{ role: string; content: string }>;
   /** Server-side chat messages fetched from DB (authoritative source) */
   dbMessages?: Array<{ role: string; content: string }>;
+  /** Current composer uploads/images and attachment metadata, formatted as reference context */
+  currentAttachmentContext?: string;
   /** User ID for tool access */
   userId?: string;
   /** Session ID for strict enhancement session scoping */
@@ -439,6 +441,7 @@ export async function enhancePromptWithLLM(
       searchResults: searchResultsFormatted || "No file context available - enhance the prompt based on clarity, specificity, and best practices.",
       fileTree: fileTreeMarkdown,
       recentMessages,
+      currentAttachmentContext: options.currentAttachmentContext,
       memories: memoryInjection.injectedMarkdown,
       inputType,
       agentName: options.agentName,

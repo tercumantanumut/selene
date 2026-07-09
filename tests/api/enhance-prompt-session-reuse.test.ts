@@ -214,6 +214,106 @@ describe("POST /api/enhance-prompt session reuse", () => {
     expect(stamps[stamps.length - 1]).toBe(11);
   });
 
+  it("includes image and attachment references from persisted chat history", async () => {
+    dbMocks.getSession.mockResolvedValue({
+      id: "chat-session-with-attachments",
+      userId: "user-123",
+      metadata: {},
+      title: "Attachment chat",
+    });
+
+    messagesMocks.getMessages.mockResolvedValue([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Use the uploaded mockup and spec for the enhancement." },
+          {
+            type: "image",
+            image: "/api/media/sessions/chat-session-with-attachments/uploads/mockup.png",
+            displayName: "mockup.png",
+            mediaType: "image/png",
+          },
+        ],
+        metadata: {
+          custom: {
+            attachments: [
+              {
+                name: "spec.pdf",
+                contentType: "application/pdf",
+                url: "/api/media/sessions/chat-session-with-attachments/uploads/spec.pdf",
+                filePath: "/tmp/spec.pdf",
+                size: 1234,
+              },
+            ],
+          },
+        },
+        orderingIndex: 1,
+        id: "msg-attachment",
+        sessionId: "chat-session-with-attachments",
+      },
+    ] as never);
+
+    const req = new Request("http://localhost/api/enhance-prompt", {
+      method: "POST",
+      body: JSON.stringify({
+        input: "enhance with all context",
+        sessionId: "chat-session-with-attachments",
+        useLLM: true,
+      }),
+      headers: { "content-type": "application/json" },
+    });
+
+    const res = await POST(req as never);
+    expect(res.status).toBe(200);
+
+    const llmOptions = enhancementMocks.enhancePromptWithLLM.mock.calls[0][2];
+    const dbMessages: Array<{ role: string; content: string }> = llmOptions.dbMessages;
+    expect(dbMessages).toHaveLength(1);
+    expect(dbMessages[0].content).toContain("Use the uploaded mockup and spec");
+    expect(dbMessages[0].content).toContain("[Image: mockup.png");
+    expect(dbMessages[0].content).toContain("/api/media/sessions/chat-session-with-attachments/uploads/mockup.png");
+    expect(dbMessages[0].content).toContain("[Attachment: spec.pdf");
+    expect(dbMessages[0].content).toContain("/tmp/spec.pdf");
+  });
+
+  it("passes current composer attachment references to the LLM enhancer", async () => {
+    dbMocks.getSession.mockResolvedValue({
+      id: "chat-session-current-attachments",
+      userId: "user-123",
+      metadata: {},
+      title: "Current attachment chat",
+    });
+
+    const req = new Request("http://localhost/api/enhance-prompt", {
+      method: "POST",
+      body: JSON.stringify({
+        input: "describe this screenshot",
+        sessionId: "chat-session-current-attachments",
+        useLLM: true,
+        currentAttachments: [
+          {
+            name: "current-screenshot.png",
+            contentType: "image/png",
+            url: "/api/media/sessions/chat-session-current-attachments/uploads/current-screenshot.png",
+            filePath: "/tmp/current-screenshot.png",
+            size: 4321,
+            status: "complete",
+          },
+        ],
+      }),
+      headers: { "content-type": "application/json" },
+    });
+
+    const res = await POST(req as never);
+    expect(res.status).toBe(200);
+
+    const llmOptions = enhancementMocks.enhancePromptWithLLM.mock.calls[0][2];
+    expect(llmOptions.currentAttachmentContext).toContain("Current composer attachments");
+    expect(llmOptions.currentAttachmentContext).toContain("[Image: current-screenshot.png");
+    expect(llmOptions.currentAttachmentContext).toContain("/tmp/current-screenshot.png");
+    expect(llmOptions.currentAttachmentContext).toContain("status: complete");
+  });
+
   it("falls through to metadata-keyed session when provided sessionId is not owned by user", async () => {
     dbMocks.getSession.mockResolvedValue({
       id: "chat-session-1",

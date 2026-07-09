@@ -27,6 +27,50 @@ describe("applyFileEdits", () => {
     expect(result.newContent).toContain(`  console.log("universe");`);
   });
 
+  it("falls back to common JSON-escaped snippets when raw oldString is not found", () => {
+    const content = `      <StepHeading eyebrow="Who you are - 1 of 6" title="What should we call you?" body="First name is fine." />`;
+    const oldString = String.raw`      <StepHeading eyebrow=\"Who you are - 1 of 6\" title=\"What should we call you?\" body=\"First name is fine.\" />`;
+    const newString = String.raw`      <StepHeading eyebrow=\"Who you are - 1 of 6\" title=\"What should we call you?\" />`;
+
+    const result = applyFileEdits(content, [{ oldString, newString }]);
+
+    expect(result.success).toBe(true);
+    expect(result.newContent).toBe(`      <StepHeading eyebrow="Who you are - 1 of 6" title="What should we call you?" />`);
+    expect(result.newContent).not.toContain(String.raw`\"`);
+  });
+
+  it("decodes escaped newline snippets before matching and replacement", () => {
+    const content = `      <StepHeading
+        eyebrow="Who you are - 2 of 6"
+        title="When's your birthday?"
+        body="We use this to personalize lessons to your life stage."
+      />`;
+    const oldString = String.raw`      <StepHeading\n        eyebrow=\"Who you are - 2 of 6\"\n        title=\"When's your birthday?\"\n        body=\"We use this to personalize lessons to your life stage.\"\n      />`;
+    const newString = String.raw`      <StepHeading\n        eyebrow=\"Who you are - 2 of 6\"\n        title=\"When is your birthday\"\n      />`;
+
+    const result = applyFileEdits(content, [{ oldString, newString }]);
+
+    expect(result.success).toBe(true);
+    expect(result.newContent).toBe(`      <StepHeading
+        eyebrow="Who you are - 2 of 6"
+        title="When is your birthday"
+      />`);
+    expect(result.newContent).not.toContain(String.raw`\n`);
+    expect(result.newContent).not.toContain(String.raw`\"`);
+  });
+
+  it("keeps literal escape sequences when they are the exact file content", () => {
+    const content = String.raw`const escaped = \"keep me\";`;
+    const oldString = String.raw`\"keep me\"`;
+    const newString = String.raw`\"replace me\"`;
+
+    const result = applyFileEdits(content, [{ oldString, newString }]);
+
+    expect(result.success).toBe(true);
+    expect(result.newContent).toBe(String.raw`const escaped = \"replace me\";`);
+    expect(result.newContent).not.toContain(`"replace me"`);
+  });
+
   it("handles multi-line indentation mismatch", () => {
     const content = `if (true) {
     doSomething();

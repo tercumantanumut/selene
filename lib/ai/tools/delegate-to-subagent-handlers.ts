@@ -29,6 +29,8 @@ import {
   type ActiveDelegation,
   type DelegateToSubagentInput,
   type DelegateResult,
+  type DelegationStatus,
+  type DelegationTerminalStatus,
   type SubagentCandidate,
   type AvailableSubagent,
 } from "./delegate-to-subagent-types";
@@ -55,19 +57,40 @@ function isDelegationExpired(delegation: ActiveDelegation, now = Date.now()): bo
   return now - referenceTime > DELEGATION_STALE_TTL_MS;
 }
 
+export function getDelegationStatus(delegation: ActiveDelegation): DelegationStatus {
+  if (!delegation.settled) return "running";
+  return delegation.terminalStatus ?? (delegation.error ? "failed" : "completed");
+}
+
+export function markDelegationSettled(
+  delegation: ActiveDelegation,
+  status: DelegationTerminalStatus,
+  settledAt = Date.now(),
+): void {
+  delegation.settled = true;
+  delegation.settledAt = settledAt;
+  delegation.terminalStatus = status;
+}
+
+export function isDelegationCompleted(delegation: ActiveDelegation): boolean {
+  return getDelegationStatus(delegation) === "completed";
+}
+
 function toDelegationSummary(
   delegationId: string,
   delegation: ActiveDelegation,
   now = Date.now(),
 ): NonNullable<DelegateResult["delegations"]>[number] {
+  const status = getDelegationStatus(delegation);
   return {
     delegationId,
     sessionId: delegation.sessionId,
     delegateAgentId: delegation.delegateId,
     delegateAgent: delegation.delegateName,
     task: delegation.task.length > 100 ? delegation.task.slice(0, 100) + "..." : delegation.task,
-    running: !delegation.settled,
-    completed: delegation.settled,
+    running: status === "running",
+    completed: status === "completed",
+    status,
     elapsed: now - delegation.startedAt,
   };
 }
@@ -83,6 +106,7 @@ export function getActiveDelegationsForCharacter(
   task: string;
   running: boolean;
   completed?: boolean;
+  status?: DelegationStatus;
   elapsed: number;
 }> {
   const results: Array<{
@@ -93,6 +117,7 @@ export function getActiveDelegationsForCharacter(
     task: string;
     running: boolean;
     completed?: boolean;
+    status?: DelegationStatus;
     elapsed: number;
   }> = [];
 
@@ -399,10 +424,19 @@ async function extractFinalResponse(sessionId: string): Promise<string | undefin
  * actual subagent result so the model can react without calling observe().
  */
 async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation): Promise<void> {
-  // Fetch the actual final response from the subagent's session
+  // Fetch the actual final response from the subagent's session only for normal
+  // successful completion. Explicit stops should report a stopped terminal state,
+  // not masquerade as a successful completed result with whatever partial output
+  // happened to be present.
   let resultContent: string;
   let shouldAppendObserveReminder = false;
-  if (delegation.error) {
+  let terminalStatus = getDelegationStatus(delegation);
+
+  if (terminalStatus === "stopped") {
+    resultContent = "Delegation was stopped by the initiator.";
+  } else if (delegation.error) {
+    terminalStatus = "failed";
+    delegation.terminalStatus = "failed";
     resultContent = `<error>${delegation.error}</error>`;
   } else {
     try {
@@ -417,16 +451,21 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Delegation] Failed to read final response for ${delegation.id}:`, error);
       delegation.error = delegation.error ?? `Failed to read subagent response: ${message}`;
+      markDelegationSettled(delegation, "failed", delegation.settledAt ?? Date.now());
+      terminalStatus = "failed";
       resultContent = `<error>${delegation.error}</error>`;
     }
   }
+
+  const completionStatus: DelegationTerminalStatus =
+    terminalStatus === "running" ? "completed" : terminalStatus;
 
   const elapsed = delegation.settledAt
     ? delegation.settledAt - delegation.startedAt
     : Date.now() - delegation.startedAt;
 
   const completionMessageParts = [
-    `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${delegation.error ? "failed" : "completed"}" elapsed="${elapsed}ms" resultVersion="${delegation.resultVersion}">`,
+    `<delegation-result delegationId="${delegation.id}" delegate="${delegation.delegateName}" status="${completionStatus}" elapsed="${elapsed}ms" resultVersion="${delegation.resultVersion}">`,
     resultContent,
     `</delegation-result>`,
   ];
@@ -454,6 +493,7 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
       kind: "delegation_completion",
       delegationId: delegation.id,
       delegateName: delegation.delegateName,
+      status: completionStatus,
       resultVersion: deliveryMetadata.resultVersion,
       deliveryId: deliveryMetadata.deliveryId,
       resultHash: deliveryMetadata.resultHash,
@@ -473,6 +513,7 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     initiatorSessionId: delegation.initiatorSessionId,
     characterId: delegation.delegatorId,
     completedAt: delegation.settledAt ?? Date.now(),
+    status: completionStatus,
     error: delegation.error,
     resultContent: completionMessage,
     resultVersion: deliveryMetadata.resultVersion,
@@ -496,6 +537,8 @@ export function startBackgroundExecution(
   delegation.executionId = executionId;
   delegation.settled = false;
   delegation.settledAt = undefined;
+  delegation.terminalStatus = undefined;
+  delegation.stopRequestedAt = undefined;
   delegation.error = undefined;
 
   const streamPromise = executeDelegation(
@@ -507,25 +550,30 @@ export function startBackgroundExecution(
   )
     .then(async () => {
       if (delegation.executionId !== executionId) return;
-      delegation.settled = true;
-      delegation.settledAt = Date.now();
+      markDelegationSettled(
+        delegation,
+        delegation.stopRequestedAt ? "stopped" : "completed",
+      );
       await notifyInitiatorSessionOfCompletion(delegation);
     })
     .catch(async (err) => {
       if (delegation.executionId !== executionId) return;
-      delegation.settled = true;
-      delegation.settledAt = Date.now();
 
       const isAbortError =
         (err instanceof DOMException && err.name === "AbortError") ||
         (err instanceof Error && err.name === "AbortError");
 
       if (isAbortError) {
+        markDelegationSettled(
+          delegation,
+          delegation.stopRequestedAt ? "stopped" : "completed",
+        );
         await notifyInitiatorSessionOfCompletion(delegation);
         return;
       }
 
       delegation.error = err instanceof Error ? err.message : String(err);
+      markDelegationSettled(delegation, "failed");
       console.error(`[Delegation] ${delegation.id} failed:`, delegation.error);
       await notifyInitiatorSessionOfCompletion(delegation);
     });

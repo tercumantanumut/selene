@@ -73,4 +73,34 @@ describe("EditFileToolUI", () => {
     expect(container.textContent).not.toContain("line1");
     expect(container.textContent).not.toContain("line6");
   });
+
+  it("labels editFile calls with an edits array as edited, not created", () => {
+    flushSync(() => {
+      root.render(
+        createElement(EditFileToolUI, {
+          toolName: "editFile",
+          args: {
+            filePath: "/workspace/StepHeading.tsx",
+            oldString: "",
+            edits: [
+              {
+                oldString: "body: string;",
+                newString: "body?: string;",
+              },
+            ],
+          },
+          result: {
+            status: "success",
+            filePath: "/workspace/StepHeading.tsx",
+            message: "Edited StepHeading.tsx (1 line changed)",
+            linesChanged: 1,
+            diff: "--- StepHeading.tsx\n+++ StepHeading.tsx\n@@ -22,1 +22,1 @@\n22 | -   body: string;\n22 | +   body?: string;",
+          },
+        })
+      );
+    });
+
+    expect(container.textContent).toContain("edited");
+    expect(container.textContent).not.toContain("created");
+  });
 });

@@ -117,8 +117,28 @@ export interface AppSettings {
         expires_at: number;
     };
 
-    // Claude Code OAuth authentication (Claude Pro/MAX subscription)
+    // Claude Code backend transport. "dario" (default) routes through the local
+    // Dario sidecar; "sdk" routes through the official @anthropic-ai/claude-agent-sdk.
+    // Both keep separate credential stores (Dario dir vs ~/.claude).
+    claudecodeBackend?: "dario" | "sdk";
+
+    // Claude Code OAuth authentication (Claude Pro/MAX subscription).
+    // This slot holds the Dario-backend auth state.
     claudecodeAuth?: {
+        isAuthenticated: boolean;
+        email?: string;
+        expiresAt?: number;
+        lastRefresh?: number;
+        tokenSource?: string;
+        apiKeySource?: string;
+        authUrl?: string;
+        output?: string[];
+        error?: string;
+    };
+    // Backend-scoped auth state for the Agent SDK backend (credentials in ~/.claude).
+    // Kept separate from claudecodeAuth so a stale Dario "authenticated" can't mask
+    // an unauthenticated SDK (and vice versa).
+    claudecodeSdkAuth?: {
         isAuthenticated: boolean;
         email?: string;
         expiresAt?: number;
@@ -338,6 +358,7 @@ export interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = {
     llmProvider: "anthropic",
+    claudecodeBackend: "dario",
     ollamaBaseUrl: "http://localhost:11434/v1",
     vllmBaseUrl: "http://localhost:8000/v1",
     localUserId: crypto.randomUUID(),

@@ -213,8 +213,9 @@ export async function buildSystemPromptForRequest(
   if (completedDelegations.length > 0) {
     const completionLines = completedDelegations.map((completion) => {
       const ageSeconds = Math.max(0, Math.floor((Date.now() - completion.completedAt) / 1000));
+      const status = completion.status ?? (completion.error ? "failed" : "completed");
       const suffix = completion.error ? ` with error: ${completion.error}` : "";
-      return `- ${completion.delegationId}: "${completion.delegateName}" completed ${ageSeconds}s ago${suffix}. Results will be delivered automatically as inline messages.`;
+      return `- ${completion.delegationId}: "${completion.delegateName}" ${status} ${ageSeconds}s ago${suffix}. Results will be delivered automatically as inline messages.`;
     });
 
     systemPromptValue = appendBlock(

@@ -65,7 +65,7 @@ function extractDelegationResult(result: unknown): DelegationResult {
     const r = result as Record<string, unknown>;
     // Handle MCP content wrapper
     const text = parseTextResult(result);
-    if (text && !r.completed && !r.delegationId && !r.lastResponse) {
+    if (text && r.status === undefined && !r.completed && !r.delegationId && !r.lastResponse) {
       try {
         return JSON.parse(text) as DelegationResult;
       } catch {
@@ -109,8 +109,9 @@ export const DelegationToolUI: ToolCallContentPartComponent = ({ args, result, s
   const dr = extractDelegationResult(result);
   const isProjectedPending = active === true && state === "input-available" && result === undefined;
   const isRunning = isProjectedPending || result === undefined;
+  const isStopped = dr.status === "stopped";
   const isWaiting = isProjectedPending || dr.running === true || (dr.completed !== true && dr.status === "waiting");
-  const hasError = !isWaiting && isErrorResult(dr);
+  const hasError = !isWaiting && !isStopped && isErrorResult(dr);
   const delegationId = dr.delegationId || delegationIdFromArgs;
   const resolvedAgentName = dr.delegateAgent || agentName;
 
@@ -151,7 +152,9 @@ export const DelegationToolUI: ToolCallContentPartComponent = ({ args, result, s
     ? "text-terminal-muted"
     : hasError
       ? "text-red-600 dark:text-red-400"
-      : "text-emerald-600 dark:text-emerald-400";
+      : isStopped
+        ? "text-amber-700 dark:text-amber-300"
+        : "text-emerald-600 dark:text-emerald-400";
 
   const statusLabel = isWaiting
     ? t("waiting", { agent: resolvedAgentName })
@@ -159,7 +162,9 @@ export const DelegationToolUI: ToolCallContentPartComponent = ({ args, result, s
       ? t("delegating", { agent: resolvedAgentName })
     : hasError
       ? t("failed", { agent: resolvedAgentName })
-      : t("done", { agent: resolvedAgentName });
+      : isStopped
+        ? t("stopped", { agent: resolvedAgentName })
+        : t("done", { agent: resolvedAgentName });
 
   return (
     <div className="my-1 rounded-md border border-border bg-terminal-cream/50 dark:bg-terminal-cream/80 font-mono text-xs overflow-hidden">

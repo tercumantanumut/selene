@@ -1009,7 +1009,7 @@
       "skipped": "Could not enhance prompt",
       "success": "Enhanced with {files} files ({chunks} chunks){llmIndicator}",
       "tooltipEnhanced": "Enhanced with {files} files - click Send to use",
-      "tooltipDefault": "Enhance with context from synced folders",
+      "tooltipDefault": "Enhance with synced-folder and chat context",
       "inputChangedDuringEnhance": "Input changed during enhancement \u2014 kept your version. Click \u2728 again to enhance the new text."
     },
     "deepResearch": {
@@ -1231,6 +1231,12 @@
       "voiceNotSupported": "Voice input is not supported in this environment.",
       "voiceRecordingFailed": "Voice recording failed.",
       "skillFileTooLarge": "Skill file exceeds 50MB limit"
+    },
+    "markdownFilePreview": {
+      "preview": "Preview",
+      "source": "Source",
+      "diff": "Diff",
+      "previewMayBeIncomplete": "Preview may be incomplete"
     },
     "toolResults": {
       "errorOccurred": "An error occurred",
@@ -1580,6 +1586,7 @@
         "delegating": "Delegating to {agent}...",
         "waiting": "Waiting for {agent}",
         "failed": "{agent} failed",
+        "stopped": "{agent} stopped",
         "done": "{agent}",
         "task": "Task",
         "result": "Result",
@@ -2915,6 +2922,13 @@
         "en": "English",
         "tr": "Türkçe",
         "updateError": "Failed to update language. Please try again."
+      },
+      "claudecodeBackend": {
+        "label": "Claude Code backend",
+        "dario": "Dario sidecar (default)",
+        "darioHelper": "Routes Claude Pro/MAX OAuth through the local Dario proxy. Recommended.",
+        "sdk": "Anthropic Agent SDK",
+        "sdkHelper": "Routes through the official @anthropic-ai/claude-agent-sdk (credentials in ~/.claude). Switching backends may require a one-time re-login."
       },
       "toolLoading": {
         "label": "How tools are loaded",
@@ -4673,6 +4687,7 @@
       "taskCompleted": "Task {taskName} completed",
       "chatCompleted": "Chat session completed",
       "taskFailed": "Task {taskName} failed",
+      "processFailed": "Background process failed",
       "taskStale": "Task timed out",
       "taskStaleDescription": "{taskName} was automatically stopped after {duration} of inactivity",
       "taskCreditExhausted": "Task stopped - insufficient credits",

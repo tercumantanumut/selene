@@ -317,11 +317,12 @@ export async function startBackgroundProcess(
         });
 
         let backgroundProcessSettledNotified = false;
-        const settleBackgroundProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId">> = {}) => {
+        const settleBackgroundProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId" | "settleReason">> = {}) => {
             if (info.timeoutId) { clearTimeout(info.timeoutId); info.timeoutId = null; }
             if (!info.settledAt) info.settledAt = Date.now();
             info.running = false;
             Object.assign(info, updates);
+            if (!info.settleReason) info.settleReason = "exit";
             if (!backgroundProcessSettledNotified) {
                 backgroundProcessSettledNotified = true;
                 onBackgroundProcessSettled?.(info);
@@ -369,6 +370,7 @@ export async function startBackgroundProcess(
                         stdout: fb.stdout,
                         stderr,
                         logId,
+                        settleReason: fb.timedOut ? "timeout" : "exit",
                     });
                     commandLogger.logExecutionComplete(
                         command, fb.exitCode, Date.now() - info.startedAt,
@@ -378,7 +380,7 @@ export async function startBackgroundProcess(
                 } catch (fbErr) {
                     info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
                     const logId = saveBackgroundLogSnapshot(info, true);
-                    settleBackgroundProcess({ stderr: info.stderr, logId });
+                    settleBackgroundProcess({ stderr: info.stderr, logId, settleReason: "spawn-error" });
                     commandLogger.logExecutionError(command, info.stderr, { characterId });
                 }
                 return;
@@ -386,8 +388,13 @@ export async function startBackgroundProcess(
 
             if (shouldRetryThroughShellOnMessage(error.message) && isShellRetryEligibleCommand(command)) {
                 const retryResult = await retryThroughShell();
-                settleBackgroundProcess();
                 if (retryResult.processId) {
+                    // The retried process takes over this process ID. Suppress the
+                    // settled notification for the failed original spawn so the
+                    // tracked task is not marked completed while the retried
+                    // process is still running.
+                    backgroundProcessSettledNotified = true;
+                    settleBackgroundProcess();
                     const retriedInfo = backgroundProcesses.get(retryResult.processId);
                     if (retriedInfo) {
                         retriedInfo.id = id;
@@ -396,13 +403,14 @@ export async function startBackgroundProcess(
                     }
                 } else {
                     info.stderr += "\n[Shell retry failed to start]";
+                    settleBackgroundProcess({ stderr: info.stderr, settleReason: "spawn-error" });
                 }
                 return;
             }
 
             info.stderr += `\n[Spawn error] ${error.message}`;
             const logId = saveBackgroundLogSnapshot(info, true);
-            settleBackgroundProcess({ stderr: info.stderr, logId });
+            settleBackgroundProcess({ stderr: info.stderr, logId, settleReason: "spawn-error" });
             commandLogger.logExecutionError(command, error.message, { characterId });
         });
 
@@ -411,7 +419,7 @@ export async function startBackgroundProcess(
             if (info.running) {
                 info.stderr += "\n[Background process timed out]";
                 const logId = saveBackgroundLogSnapshot(info, true);
-                settleBackgroundProcess({ stderr: info.stderr, logId });
+                settleBackgroundProcess({ stderr: info.stderr, logId, settleReason: "timeout" });
                 terminateChildProcess(child, "timeout", undefined, useProcessGroup);
             }
         }, timeout);
@@ -444,10 +452,11 @@ export async function startBackgroundProcess(
             commandLogger.logExecutionStart(command, args, cwd, { characterId });
 
             let fallbackProcessSettledNotified = false;
-            const settleFallbackProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId">> = {}) => {
+            const settleFallbackProcess = (updates: Partial<Pick<BackgroundProcessInfo, "exitCode" | "signal" | "stdout" | "stderr" | "logId" | "settleReason">> = {}) => {
                 if (!info.settledAt) info.settledAt = Date.now();
                 info.running = false;
                 Object.assign(info, updates);
+                if (!info.settleReason) info.settleReason = "exit";
                 if (!fallbackProcessSettledNotified) {
                     fallbackProcessSettledNotified = true;
                     onBackgroundProcessSettled?.(info);
@@ -474,6 +483,7 @@ export async function startBackgroundProcess(
                     stdout: fb.stdout,
                     stderr,
                     logId,
+                    settleReason: fb.timedOut ? "timeout" : "exit",
                 });
                 commandLogger.logExecutionComplete(
                     command, fb.exitCode, Date.now() - info.startedAt,
@@ -483,7 +493,7 @@ export async function startBackgroundProcess(
             }).catch((fbErr) => {
                 info.stderr += `\n[EBADF file-capture fallback failed] ${fbErr instanceof Error ? fbErr.message : fbErr}`;
                 const logId = saveBackgroundLogSnapshot(info, true);
-                settleFallbackProcess({ stderr: info.stderr, logId });
+                settleFallbackProcess({ stderr: info.stderr, logId, settleReason: "spawn-error" });
                 commandLogger.logExecutionError(command, info.stderr, { characterId });
             });
 
@@ -536,6 +546,10 @@ export function killBackgroundProcess(processId: string): boolean {
     saveBackgroundLogSnapshot(info, true);
     info.running = false;
     info.settledAt = Date.now();
+    // Mark the settle reason BEFORE the child's async "close" event fires so
+    // status consumers see an explicit user/API-initiated stop ("cancelled")
+    // instead of inferring a failure from the still-null exit code.
+    info.settleReason = "killed";
     if (info.timeoutId) clearTimeout(info.timeoutId);
     terminateChildProcess(info.process, "abort", undefined, isUnixLikePlatform());
     return true;

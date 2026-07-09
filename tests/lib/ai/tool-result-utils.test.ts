@@ -304,4 +304,23 @@ describe("normalizeToolResultOutput - readFile exemption", () => {
     expect(normalized.status).toBe("error");
     expect(normalized.error).toBeTruthy();
   });
+
+  it("uses explicit stopped status for delegation summaries instead of completed", () => {
+    const result = normalizeToolResultOutput(
+      "delegateToSubagent",
+      {
+        success: true,
+        delegationId: "del-123",
+        delegateAgent: "Reviewer",
+        running: false,
+        completed: true,
+        status: "stopped",
+      },
+      { action: "stop", agentName: "Reviewer" },
+      { mode: "canonical" },
+    );
+
+    expect(result.summary).toContain("[stopped]");
+    expect(result.summary).not.toContain("[completed]");
+  });
 });

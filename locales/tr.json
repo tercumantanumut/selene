@@ -1045,7 +1045,7 @@
       "skipped": "Prompt geliştirilemedi",
       "success": "{files} dosya ({chunks} parça) ile geliştirildi{llmIndicator}",
       "tooltipEnhanced": "{files} dosya ile geliştirildi - göndermek için tıklayın",
-      "tooltipDefault": "Senkronize klasörlerden bağlamla geliştir",
+      "tooltipDefault": "Senkronize klasör ve sohbet bağlamıyla geliştir",
       "inputChangedDuringEnhance": "Geliştirme sırasında giriş değişti \u2014 sizin sürümünüz korundu. Yeni metni geliştirmek için \u2728'a tekrar tıklayın."
     },
     "deepResearch": {
@@ -1267,6 +1267,12 @@
       "voiceNotSupported": "Bu ortamda ses girişi desteklenmiyor.",
       "voiceRecordingFailed": "Ses kaydı başarısız oldu.",
       "skillFileTooLarge": "Beceri dosyası 50MB sınırını aşıyor"
+    },
+    "markdownFilePreview": {
+      "preview": "Önizleme",
+      "source": "Kaynak",
+      "diff": "Fark",
+      "previewMayBeIncomplete": "Önizleme eksik olabilir"
     },
     "toolResults": {
       "errorOccurred": "Bir hata oluştu",
@@ -1616,6 +1622,7 @@
         "delegating": "{agent} ajanına devrediliyor...",
         "waiting": "{agent} bekleniyor",
         "failed": "{agent} başarısız",
+        "stopped": "{agent} durduruldu",
         "done": "{agent}",
         "task": "Görev",
         "result": "Sonuç",
@@ -2740,6 +2747,13 @@
         "en": "English",
         "tr": "Türkçe",
         "updateError": "Dil güncellenemedi. Lütfen tekrar deneyin."
+      },
+      "claudecodeBackend": {
+        "label": "Claude Code arka ucu",
+        "dario": "Dario yardımcı süreci (varsayılan)",
+        "darioHelper": "Claude Pro/MAX OAuth'u yerel Dario proxy üzerinden yönlendirir. Önerilen.",
+        "sdk": "Anthropic Agent SDK",
+        "sdkHelper": "Resmi @anthropic-ai/claude-agent-sdk üzerinden yönlendirir (kimlik bilgileri ~/.claude içinde). Arka ucu değiştirmek bir kez yeniden giriş gerektirebilir."
       },
       "toolLoading": {
         "label": "Araç Yükleme Modu",
@@ -4709,6 +4723,7 @@
       "taskCompleted": "{taskName} görevi tamamlandı",
       "chatCompleted": "Sohbet oturumu tamamlandı",
       "taskFailed": "{taskName} görevi başarısız oldu",
+      "processFailed": "Arka plan işlemi başarısız oldu",
       "taskStale": "Görev zaman aşımına uğradı",
       "taskStaleDescription": "{taskName}, {duration} hareketsizlik sonrası otomatik olarak durduruldu",
       "taskCreditExhausted": "Görev durduruldu - yetersiz kredi",

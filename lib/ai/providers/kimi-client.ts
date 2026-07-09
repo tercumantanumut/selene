@@ -16,6 +16,7 @@ import { getAppUrl } from "./openrouter-client";
 // ---- Configuration -----------------------------------------------------------
 
 const KIMI_FIXED_TEMPERATURE = 0.6;
+const KIMI_THINKING_TEMPERATURE = 1.0;
 const KIMI_ALWAYS_THINKING_MODELS = new Set([
   "kimi-k2.7-code",
   "kimi-k2.7-code-highspeed",
@@ -49,10 +50,12 @@ export function normalizeKimiChatCompletionBody(body: unknown): unknown {
     normalized.thinking = { type: "disabled" };
   }
 
-  // Kimi's coding backend currently validates this as an exact fixed value.
-  // Do not lower it for tool calls; tool requests with 0.4 are rejected with
-  // "invalid temperature: only 0.6 is allowed for this model".
-  normalized.temperature = KIMI_FIXED_TEMPERATURE;
+  // Kimi's coding backend validates temperature per model family. Non-thinking
+  // models currently require 0.6, while K2.7 Code forced-thinking models require
+  // 1.0 and reject the 0.6 default.
+  normalized.temperature = isKimiAlwaysThinkingModel(normalized.model)
+    ? KIMI_THINKING_TEMPERATURE
+    : KIMI_FIXED_TEMPERATURE;
   normalized.top_p = 0.95;
   normalized.n = 1;
   normalized.presence_penalty = 0.0;

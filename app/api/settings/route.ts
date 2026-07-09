@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadSettings, saveSettings, validateSettingsModels, type AppSettings } from "@/lib/settings/settings-manager";
 import { invalidateProviderCache } from "@/lib/ai/providers";
+import { invalidateClaudeCodeAuthCache } from "@/lib/auth/claudecode-auth";
 import { validateModelConfiguration } from "@/lib/config/embedding-models";
 import { locales, type Locale } from "@/i18n/config";
 
@@ -61,6 +62,8 @@ export async function PUT(request: NextRequest) {
     // Detect provider change early so we can clear stale model fields
     const newProvider = body.llmProvider ?? currentSettings.llmProvider;
     const providerIsChanging = newProvider !== currentSettings.llmProvider;
+    const newClaudecodeBackend = body.claudecodeBackend ?? currentSettings.claudecodeBackend ?? "dario";
+    const backendIsChanging = newClaudecodeBackend !== (currentSettings.claudecodeBackend ?? "dario");
 
     // Build updated settings, preserving API keys if not explicitly changed
     // When provider changes and the request doesn't explicitly set model fields,
@@ -69,6 +72,7 @@ export async function PUT(request: NextRequest) {
     const updatedSettings: AppSettings = {
       ...currentSettings,
       llmProvider: newProvider,
+      claudecodeBackend: body.claudecodeBackend !== undefined ? body.claudecodeBackend : currentSettings.claudecodeBackend,
       ollamaBaseUrl: body.ollamaBaseUrl !== undefined ? body.ollamaBaseUrl : currentSettings.ollamaBaseUrl,
       vllmBaseUrl: body.vllmBaseUrl !== undefined ? body.vllmBaseUrl : currentSettings.vllmBaseUrl,
       appLanguage: body.appLanguage !== undefined ? body.appLanguage : currentSettings.appLanguage,
@@ -333,6 +337,19 @@ export async function PUT(request: NextRequest) {
       console.log(
         `[Settings API] Provider changed: ${currentSettings.llmProvider} -> ${newProvider}, ` +
         `invalidated provider cache and cleared model fields`
+      );
+    }
+
+    // Claude Code backend toggle: drop both cached claudecode provider singletons
+    // (Dario + SDK) and the auth cache so the next request and status read use the
+    // newly-selected transport and its own credential store.
+    if (backendIsChanging) {
+      invalidateProviderCache();
+      invalidateClaudeCodeAuthCache();
+      console.log(
+        `[Settings API] Claude Code backend changed: ` +
+        `${currentSettings.claudecodeBackend ?? "dario"} -> ${newClaudecodeBackend}, ` +
+        `invalidated provider + auth caches`
       );
     }
 

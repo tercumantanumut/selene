@@ -60,6 +60,9 @@ await esbuild.build({
     "gpt-tokenizer",
     "pdf-parse",
     "pdfjs-dist",
+    // Claude Agent SDK - loaded lazily from standalone/node_modules at runtime;
+    // its cli.js must not be inlined into the Electron main bundle.
+    "@anthropic-ai/claude-agent-sdk",
   ],
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',
