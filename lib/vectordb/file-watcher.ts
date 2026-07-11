@@ -29,6 +29,7 @@ import {
   processWithConcurrency,
 } from "./file-watcher-utils";
 import { parseJsonArray, normalizeExtensions } from "./sync-helpers";
+import { getResourceErrorCode, isWatcherResourceLimitError } from "./resource-errors";
 import {
   registerFolder,
   unregisterFolder,
@@ -130,10 +131,13 @@ interface WatcherConfig {
   forcePolling?: boolean;
 }
 
-// Track EMFILE retry attempts per path to prevent infinite restart loops
-const emfileRetryCounts = new Map<string, number>();
-const MAX_EMFILE_RETRIES = 3;
-const EMFILE_BACKOFF_MS = [3000, 10000, 30000];
+// Track watcher resource-limit retries per path to prevent restart loops.
+const watcherResourceRetryCounts = new Map<string, number>();
+const watcherResourceRetryTimers = new Map<string, NodeJS.Timeout>();
+const watcherResourceRetrySubscribers = new Map<string, Set<string>>();
+const watcherResourceRecoveries = new Map<string, Promise<void>>();
+const MAX_WATCHER_RESOURCE_RETRIES = 3;
+const WATCHER_RESOURCE_BACKOFF_MS = [3000, 10000, 30000];
 
 // Cap concurrent recursive watchers. macOS Electron utilityProcess hits FD
 // pressure long before chokidar's per-subdirectory FDs from a 4th large tree
@@ -186,7 +190,7 @@ async function safeClosePathWatcher(resolvedPath: string): Promise<void> {
  *
  * Closes the chokidar watcher, pauses all subscriber folders in DB, clears all
  * in-memory state, and removes all registry entries. Only call this for
- * unrecoverable errors (permission threshold, EMFILE exhaustion, FD budget exceeded).
+ * unrecoverable errors (permission threshold, watcher resource exhaustion, FD budget exceeded).
  *
  * Returns the list of affected folder IDs (useful for retry logic).
  */
@@ -207,9 +211,145 @@ async function teardownPathFatally(resolvedPath: string, errorMsg: string): Prom
   // Clear path-level state
   pollingModePaths.delete(resolvedPath);
   permissionErrorCounts.delete(resolvedPath);
-  emfileRetryCounts.delete(resolvedPath);
+  watcherResourceRetryCounts.delete(resolvedPath);
+  const pendingRetry = watcherResourceRetryTimers.get(resolvedPath);
+  if (pendingRetry) {
+    clearTimeout(pendingRetry);
+    watcherResourceRetryTimers.delete(resolvedPath);
+  }
+  watcherResourceRetrySubscribers.delete(resolvedPath);
 
   return affectedFolderIds;
+}
+
+function recoverFromWatcherResourceLimit(
+  resolvedPath: string,
+  folderPath: string,
+  error: unknown
+): Promise<void> {
+  const scheduledRetry = watcherResourceRetryTimers.get(resolvedPath);
+  if (scheduledRetry) {
+    return Promise.resolve();
+  }
+
+  const existingRecovery = watcherResourceRecoveries.get(resolvedPath);
+  if (existingRecovery) {
+    return existingRecovery;
+  }
+
+  const recovery = performWatcherResourceRecovery(resolvedPath, folderPath, error);
+  watcherResourceRecoveries.set(resolvedPath, recovery);
+  void recovery
+    .finally(() => {
+      if (watcherResourceRecoveries.get(resolvedPath) === recovery) {
+        watcherResourceRecoveries.delete(resolvedPath);
+      }
+    })
+    .catch(() => {
+      // The original recovery promise is awaited by the caller. This catch only
+      // prevents an unhandled rejection on the Promise returned by finally().
+    });
+  return recovery;
+}
+
+async function performWatcherResourceRecovery(
+  resolvedPath: string,
+  folderPath: string,
+  error: unknown
+): Promise<void> {
+  const code = getResourceErrorCode(error) ?? "WATCHER_RESOURCE_LIMIT";
+  const retryCount = (watcherResourceRetryCounts.get(resolvedPath) ?? 0) + 1;
+  watcherResourceRetryCounts.set(resolvedPath, retryCount);
+  pollingModePaths.add(resolvedPath);
+
+  if (retryCount > MAX_WATCHER_RESOURCE_RETRIES) {
+    console.error(
+      `[FileWatcher] ${code} recovery exhausted (${MAX_WATCHER_RESOURCE_RETRIES} retries) for ${folderPath}. ` +
+      `Pausing all subscriber folders to keep the app responsive.`
+    );
+    const errorMsg =
+      `Paused: watcher resource limit (${code}) persisted after ${MAX_WATCHER_RESOURCE_RETRIES} retries for ${folderPath}. ` +
+      `Dependency, cache, virtualenv, build, and unrequested asset trees are excluded automatically; ` +
+      `sync a smaller subfolder if the limit persists.`;
+    await teardownPathFatally(resolvedPath, errorMsg);
+    return;
+  }
+
+  // Capture all subscribers before cleanup so the retry restores shared paths.
+  // Merge with folders queued while an earlier retry was pending.
+  const affectedFolderIdSet = new Set(watcherResourceRetrySubscribers.get(resolvedPath) ?? []);
+  for (const subId of getSubscribers(resolvedPath)) {
+    affectedFolderIdSet.add(subId);
+  }
+  watcherResourceRetrySubscribers.set(resolvedPath, affectedFolderIdSet);
+  const affectedFolderIds = Array.from(affectedFolderIdSet);
+
+  await safeClosePathWatcher(resolvedPath);
+  for (const subId of affectedFolderIds) {
+    await cleanupFolderSubscriber(subId);
+    unregisterFolder(resolvedPath, subId);
+  }
+
+  const backoffMs = WATCHER_RESOURCE_BACKOFF_MS[retryCount - 1]
+    ?? WATCHER_RESOURCE_BACKOFF_MS[WATCHER_RESOURCE_BACKOFF_MS.length - 1];
+  console.warn(
+    `[FileWatcher] ${code} watcher resource limit for ${folderPath} ` +
+    `(attempt ${retryCount}/${MAX_WATCHER_RESOURCE_RETRIES}); ` +
+    `closed the watcher and will retry in polling mode after ${backoffMs / 1000}s.`
+  );
+
+  const existingTimer = watcherResourceRetryTimers.get(resolvedPath);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const retryTimer = setTimeout(() => {
+    watcherResourceRetryTimers.delete(resolvedPath);
+    const retryFolderIds = Array.from(
+      watcherResourceRetrySubscribers.get(resolvedPath) ?? affectedFolderIds
+    );
+    watcherResourceRetrySubscribers.delete(resolvedPath);
+
+    void (async () => {
+      console.error(
+        `[FileWatcher] Restarting watcher for ${folderPath} in polling mode ` +
+        `(attempt ${retryCount}, ${retryFolderIds.length} subscriber(s))...`
+      );
+
+      for (const subFolderId of retryFolderIds) {
+        if (isWatching(subFolderId)) continue;
+        try {
+          const [folder] = await db
+            .select()
+            .from(agentSyncFolders)
+            .where(eq(agentSyncFolders.id, subFolderId));
+          if (!folder || folder.status === "paused") continue;
+
+          const subIncludeExts = normalizeExtensions(parseJsonArray(folder.includeExtensions));
+          const subFileTypeFilters = normalizeExtensions(parseJsonArray(folder.fileTypeFilters));
+
+          await startWatching({
+            folderId: folder.id,
+            characterId: folder.characterId,
+            folderPath: folder.folderPath,
+            recursive: folder.recursive,
+            includeExtensions: subFileTypeFilters.length > 0 ? subFileTypeFilters : subIncludeExts,
+            excludePatterns: parseJsonArray(folder.excludePatterns),
+            forcePolling: true,
+          });
+        } catch (restartError) {
+          console.error(
+            `[FileWatcher] Failed to restart watcher for subscriber ${subFolderId} in polling mode:`,
+            restartError
+          );
+        }
+      }
+    })().catch((restartError) => {
+      console.error(`[FileWatcher] Unexpected watcher retry failure for ${folderPath}:`, restartError);
+    });
+  }, backoffMs);
+  retryTimer.unref?.();
+  watcherResourceRetryTimers.set(resolvedPath, retryTimer);
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +528,17 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
 
   let { folderId, characterId, folderPath, recursive, includeExtensions, excludePatterns, forcePolling: configForcePolling } = config;
   const resolvedPath = await resolveRegistryPathAsync(folderPath);
+  const pendingRetry = watcherResourceRetryTimers.get(resolvedPath);
+  if (pendingRetry) {
+    const retrySubscribers = watcherResourceRetrySubscribers.get(resolvedPath) ?? new Set<string>();
+    retrySubscribers.add(folderId);
+    watcherResourceRetrySubscribers.set(resolvedPath, retrySubscribers);
+    console.warn(
+      `[FileWatcher] Watcher retry already scheduled for ${folderPath}; ` +
+      `queued folder ${folderId} for the same recovery attempt.`
+    );
+    return;
+  }
 
   // --- 1. Clean up any previous state for this specific folderId ---
   // Unregister from old path first to prevent phantom registry entries
@@ -529,19 +680,42 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
     `path=${folderPath}`
   );
 
-  const watcher = chokidar.watch(folderPath, {
-    persistent: true,
-    ignoreInitial: true,
-    depth: recursive ? undefined : 0,
-    ignored: aggressiveIgnore,
-    awaitWriteFinish: {
-      stabilityThreshold: 200,
-      pollInterval: 100,
-    },
-    usePolling,
-    interval: usePolling ? 2000 : undefined,
-    binaryInterval: usePolling ? 5000 : undefined,
-  });
+  let watcher: FSWatcher;
+  try {
+    watcher = chokidar.watch(folderPath, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: recursive ? undefined : 0,
+      ignored: aggressiveIgnore,
+      awaitWriteFinish: {
+        stabilityThreshold: 200,
+        pollInterval: 100,
+      },
+      usePolling,
+      interval: usePolling ? 2000 : undefined,
+      binaryInterval: usePolling ? 5000 : undefined,
+    });
+  } catch (error) {
+    if (isWatcherResourceLimitError(error)) {
+      await recoverFromWatcherResourceLimit(resolvedPath, folderPath, error);
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    await teardownPathFatally(
+      resolvedPath,
+      `Deferred: watcher creation failed for ${folderPath} (${message}).`
+    );
+    throw error;
+  }
+
+  // Store immediately so an error during chokidar's asynchronous initial scan
+  // can always close the partially initialized watcher.
+  pathWatchers.set(resolvedPath, watcher);
+  console.error(
+    `[FileWatcher] Watcher stored for ${folderPath}. ` +
+    `Total active path watchers: ${pathWatchers.size}, subscribers: ${folderSubscribers.size}`
+  );
 
   // --- 7a. Track readiness so callers can serialize watcher startup ---
   // chokidar.watch returns synchronously but its initial recursive scan (which
@@ -681,112 +855,57 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
     }
   };
 
+  let watcherResourceRecovery: Promise<void> | null = null;
+
+  const handleWatcherError = async (error: unknown): Promise<void> => {
+    const fsError = error as NodeJS.ErrnoException;
+
+    // --- Permission errors (EACCES / EPERM) ---
+    if (fsError?.code === "EACCES" || fsError?.code === "EPERM") {
+      const count = (permissionErrorCounts.get(resolvedPath) ?? 0) + 1;
+      permissionErrorCounts.set(resolvedPath, count);
+
+      if (count === 1) {
+        console.warn(
+          `[FileWatcher] Permission error watching ${folderPath}: ${fsError.path || fsError.message}. ` +
+          `Will stop watcher if errors persist.`
+        );
+      }
+
+      if (count >= PERMISSION_ERROR_THRESHOLD) {
+        console.error(
+          `[FileWatcher] ${PERMISSION_ERROR_THRESHOLD} permission errors for ${folderPath}. ` +
+          `Stopping watcher and marking all subscriber folders as errored.`
+        );
+        const errorMsg =
+          `Paused: repeated permission errors watching ${folderPath}. ` +
+          `This directory likely contains paths the app cannot access. Pick a more specific folder.`;
+        await teardownPathFatally(resolvedPath, errorMsg);
+      }
+      return;
+    }
+
+    if (isWatcherResourceLimitError(error)) {
+      await recoverFromWatcherResourceLimit(resolvedPath, folderPath, error);
+      return;
+    }
+
+    console.error(`[FileWatcher] Error watching ${folderPath}:`, error);
+  };
+
   watcher
     .on("add", handleFileChange)
     .on("change", handleFileChange)
     .on("unlink", handleFileRemove)
-    .on("error", async (error: any) => {
-      // --- Permission errors (EACCES / EPERM) ---
-      if (error?.code === 'EACCES' || error?.code === 'EPERM') {
-        const count = (permissionErrorCounts.get(resolvedPath) ?? 0) + 1;
-        permissionErrorCounts.set(resolvedPath, count);
-
-        if (count === 1) {
-          console.warn(
-            `[FileWatcher] Permission error watching ${folderPath}: ${error.path || error.message}. ` +
-            `Will stop watcher if errors persist.`
-          );
-        }
-
-        if (count >= PERMISSION_ERROR_THRESHOLD) {
-          console.error(
-            `[FileWatcher] ${PERMISSION_ERROR_THRESHOLD} permission errors for ${folderPath}. ` +
-            `Stopping watcher and marking all subscriber folders as errored.`
-          );
-          const errorMsg =
-            `Paused: repeated permission errors watching ${folderPath}. ` +
-            `This directory likely contains paths the app cannot access. Pick a more specific folder.`;
-          await teardownPathFatally(resolvedPath, errorMsg);
-        }
-        return;
+    .on("error", (error: unknown) => {
+      const handling = handleWatcherError(error);
+      if (isWatcherResourceLimitError(error)) {
+        watcherResourceRecovery = handling;
       }
-
-      console.error(`[FileWatcher] Error watching ${folderPath}:`, error);
-
-      // --- File-descriptor exhaustion (EMFILE / EBADF) ---
-      if (error?.code === 'EMFILE' || error?.code === 'EBADF') {
-        const retryCount = (emfileRetryCounts.get(resolvedPath) ?? 0) + 1;
-        emfileRetryCounts.set(resolvedPath, retryCount);
-
-        pollingModePaths.add(resolvedPath);
-
-        if (retryCount > MAX_EMFILE_RETRIES) {
-          console.error(
-            `[FileWatcher] EMFILE recovery exhausted (${MAX_EMFILE_RETRIES} retries) for ${folderPath}. ` +
-            `Pausing all subscriber folders to prevent app hang.`
-          );
-          const errorMsg =
-            `Paused: file descriptor limit reached after ${MAX_EMFILE_RETRIES} retries while watching ${folderPath}. ` +
-            `Exclude virtualenvs, caches, and large asset folders, or sync a smaller subfolder.`;
-          await teardownPathFatally(resolvedPath, errorMsg);
-          return;
-        }
-
-        // Capture ALL affected subscriber IDs before cleanup so we can re-subscribe them all
-        const affectedFolderIds = getSubscribers(resolvedPath);
-
-        // Close watcher and clean all in-memory state (but don't pause in DB — we'll retry)
-        await safeClosePathWatcher(resolvedPath);
-        for (const subId of affectedFolderIds) {
-          await cleanupFolderSubscriber(subId);
-          unregisterFolder(resolvedPath, subId);
-        }
-
-        const backoffMs = EMFILE_BACKOFF_MS[retryCount - 1] ?? EMFILE_BACKOFF_MS[EMFILE_BACKOFF_MS.length - 1];
-        console.warn(
-          `[FileWatcher] Hit file descriptor limit for ${folderPath} (attempt ${retryCount}/${MAX_EMFILE_RETRIES}), ` +
-          `will retry in polling mode after ${backoffMs / 1000}s...`
-        );
-
-        setTimeout(async () => {
-          console.error(
-            `[FileWatcher] Restarting watcher for ${folderPath} in polling mode ` +
-            `(attempt ${retryCount}, ${affectedFolderIds.length} subscriber(s))...`
-          );
-          // Re-subscribe ALL affected folders, not just the original owner
-          for (const subFolderId of affectedFolderIds) {
-            try {
-              const [folder] = await db
-                .select()
-                .from(agentSyncFolders)
-                .where(eq(agentSyncFolders.id, subFolderId));
-              if (!folder || folder.status === "paused") continue;
-
-              const subIncludeExts = normalizeExtensions(parseJsonArray(folder.includeExtensions));
-              const subFileTypeFilters = normalizeExtensions(parseJsonArray(folder.fileTypeFilters));
-
-              await startWatching({
-                folderId: folder.id,
-                characterId: folder.characterId,
-                folderPath: folder.folderPath,
-                recursive: folder.recursive,
-                includeExtensions: subFileTypeFilters.length > 0 ? subFileTypeFilters : subIncludeExts,
-                excludePatterns: parseJsonArray(folder.excludePatterns),
-                forcePolling: true,
-              });
-            } catch (err) {
-              console.error(`[FileWatcher] Failed to restart watcher for subscriber ${subFolderId} in polling mode:`, err);
-            }
-          }
-        }, backoffMs);
-      }
+      void handling.catch((handlingError) => {
+        console.error(`[FileWatcher] Error while handling watcher failure for ${folderPath}:`, handlingError);
+      });
     });
-
-  pathWatchers.set(resolvedPath, watcher);
-  console.error(
-    `[FileWatcher] Watcher stored for ${folderPath}. ` +
-    `Total active path watchers: ${pathWatchers.size}, subscribers: ${folderSubscribers.size}`
-  );
 
   // --- 9. Wait for chokidar's initial scan to complete before returning ---
   // This is the load-bearing line for serialized startup: it ensures the next
@@ -796,9 +915,22 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[FileWatcher] Watcher failed to become ready for ${folderPath}: ${message}`);
-    // The chokidar "error" handler below already runs teardownPathFatally for
-    // EMFILE / permission errors. Only run it ourselves if the watcher is
-    // still registered (e.g., on ready timeout, the error handler never fires).
+
+    if (isWatcherResourceLimitError(err)) {
+      try {
+        if (watcherResourceRecovery) {
+          await watcherResourceRecovery;
+        } else {
+          await recoverFromWatcherResourceLimit(resolvedPath, folderPath, err);
+        }
+      } catch (recoveryError) {
+        console.error(`[FileWatcher] Resource-limit cleanup failed for ${folderPath}:`, recoveryError);
+      }
+      throw err;
+    }
+
+    // For timeouts and other startup failures, close the watcher and pause its
+    // subscribers instead of leaving a partially initialized tree alive.
     if (pathWatchers.has(resolvedPath)) {
       const lastError =
         `Deferred: watcher did not become ready (${message}). ` +
@@ -808,8 +940,8 @@ export async function startWatching(config: WatcherConfig): Promise<void> {
     throw err;
   }
 
-  // Watcher started successfully — reset EMFILE retry state
-  emfileRetryCounts.delete(resolvedPath);
+  // Watcher started successfully — reset resource-limit retry state.
+  watcherResourceRetryCounts.delete(resolvedPath);
 
   // Update folder status
   await db
@@ -1109,7 +1241,13 @@ export async function stopAllWatchers(): Promise<void> {
   // Clear path-level state
   pollingModePaths.clear();
   permissionErrorCounts.clear();
-  emfileRetryCounts.clear();
+  watcherResourceRetryCounts.clear();
+  for (const retryTimer of watcherResourceRetryTimers.values()) {
+    clearTimeout(retryTimer);
+  }
+  watcherResourceRetryTimers.clear();
+  watcherResourceRetrySubscribers.clear();
+  watcherResourceRecoveries.clear();
   pathReadyPromises.clear();
   recursiveWatcherPaths.clear();
 }

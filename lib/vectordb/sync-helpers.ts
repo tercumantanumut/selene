@@ -9,6 +9,7 @@ import { readdir } from "fs/promises";
 import { join, relative, extname } from "path";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { DEFAULT_PARALLEL_CONFIG, type ParallelConfig } from "./sync-types";
+import { getResourceErrorCode, isFileDescriptorLimitError } from "./resource-errors";
 
 // ---------------------------------------------------------------------------
 // Parallel config
@@ -243,6 +244,17 @@ export async function discoverFiles(
       }
     }
   } catch (error) {
+    if (isFileDescriptorLimitError(error)) {
+      if (folderPath === basePath) {
+        const code = getResourceErrorCode(error) ?? "file-descriptor limit";
+        console.warn(
+          `[SyncService] ${code} while discovering ${folderPath}; aborting this scan ` +
+          `so a partial result cannot remove previously indexed files.`
+        );
+      }
+      throw error;
+    }
+
     console.error(`[SyncService] Error reading folder ${folderPath}:`, error);
   }
 

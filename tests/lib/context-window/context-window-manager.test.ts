@@ -221,6 +221,20 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
 });
 
 describe("Codex model context window limits", () => {
+  it("returns 372K for normalized GPT-5.6 variants", () => {
+    const codex56Models = [
+      "gpt-5.6-sol",
+      "gpt-5.6-sol-ultra",
+      "gpt-5.6-terra-max",
+      "gpt-5.6-luna-xhigh",
+    ];
+
+    for (const modelId of codex56Models) {
+      const config = getContextWindowConfig(modelId, "codex");
+      expect(config.maxTokens, `${modelId} should have 372K context`).toBe(372_000);
+    }
+  });
+
   it("returns 400K for legacy codex models", () => {
     const codexModels = [
       "gpt-5.3-codex",

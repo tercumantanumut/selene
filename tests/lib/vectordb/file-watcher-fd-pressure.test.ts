@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => {
   // Each chokidar.watch call returns a fresh emitter so the test can drive
   // ready/error events independently per path.
   const emitters: Array<EventEmitter & { close: () => Promise<void> }> = [];
-  const watchSpy = vi.fn((_path: string) => {
+  const watchSpy = vi.fn((_path: string, _options?: Record<string, unknown>) => {
     const em = new EventEmitter() as EventEmitter & { close: () => Promise<void> };
     em.close = vi.fn(async () => {});
     emitters.push(em);
@@ -92,6 +92,7 @@ vi.mock("@/lib/vectordb/sync-mode-resolver", () => ({
 }));
 
 import {
+  isWatching,
   startWatching,
   stopAllWatchers,
 } from "@/lib/vectordb/file-watcher";
@@ -207,6 +208,112 @@ describe("startWatching FD-pressure handling", () => {
     fireReady(0);
     await promise;
     expect(resolved).toBe(true);
+  });
+
+  it("passes an early directory-pruning matcher to chokidar", async () => {
+    mocks.getOpenFdCount.mockResolvedValue(100);
+
+    const promise = startWatching(makeConfig("f-ignore", "/tmp/ignore"));
+    promise.catch(() => {});
+    await waitForWatch(1, "f-ignore");
+
+    const options = mocks.watchSpy.mock.calls[0]?.[1] as {
+      ignored?: (path: string) => boolean;
+    };
+    expect(options.ignored).toBeTypeOf("function");
+    expect(options.ignored!("/tmp/ignore/node_modules")).toBe(true);
+    expect(options.ignored!("/tmp/ignore/.venv")).toBe(true);
+    expect(options.ignored!("/tmp/ignore/public/images")).toBe(true);
+    expect(options.ignored!("/tmp/ignore/src/icons/ButtonIcon.tsx")).toBe(false);
+
+    fireReady(0);
+    await promise;
+  });
+
+  it("handles ENFILE during watcher startup with a clear warning and cleanup", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      mocks.getOpenFdCount.mockResolvedValue(100);
+
+      const promise = startWatching(makeConfig("f-enfile", "/tmp/enfile"));
+      promise.catch(() => {});
+
+      await waitForWatch(1, "f-enfile");
+      const error = Object.assign(new Error("ENFILE: file table overflow, watch '/tmp/enfile'"), {
+        code: "ENFILE",
+        path: "/tmp/enfile",
+      });
+      mocks.emitters[0].emit("error", error);
+
+      await expect(promise).rejects.toMatchObject({ code: "ENFILE" });
+      expect(mocks.emitters[0].close).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/ENFILE.*watcher resource limit/i));
+    } finally {
+      vi.clearAllTimers();
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces duplicate ENFILE events into one recovery attempt", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      mocks.getOpenFdCount.mockResolvedValue(100);
+
+      const promise = startWatching(makeConfig("f-enfile-duplicate", "/tmp/enfile-duplicate"));
+      promise.catch(() => {});
+      await waitForWatch(1, "f-enfile-duplicate");
+
+      const error = Object.assign(new Error("ENFILE: file table overflow, watch '/tmp/enfile-duplicate'"), {
+        code: "ENFILE",
+        path: "/tmp/enfile-duplicate",
+      });
+      mocks.emitters[0].emit("error", error);
+      mocks.emitters[0].emit("error", error);
+
+      await expect(promise).rejects.toMatchObject({ code: "ENFILE" });
+      await Promise.resolve();
+
+      const resourceWarnings = warnSpy.mock.calls.filter(([message]) =>
+        typeof message === "string" && /ENFILE.*watcher resource limit/i.test(message)
+      );
+      expect(resourceWarnings).toHaveLength(1);
+    } finally {
+      vi.clearAllTimers();
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cleans subscriber state when chokidar throws ENFILE synchronously", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      mocks.getOpenFdCount.mockResolvedValue(100);
+      const error = Object.assign(new Error("ENFILE: file table overflow, watch '/tmp/sync-enfile'"), {
+        code: "ENFILE",
+        path: "/tmp/sync-enfile",
+      });
+      mocks.watchSpy.mockImplementationOnce(() => {
+        throw error;
+      });
+
+      await expect(
+        startWatching(makeConfig("f-sync-enfile", "/tmp/sync-enfile"))
+      ).rejects.toMatchObject({ code: "ENFILE" });
+
+      expect(isWatching("f-sync-enfile")).toBe(false);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/ENFILE.*watcher resource limit/i));
+    } finally {
+      vi.clearAllTimers();
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("defers the 4th recursive watcher on darwin once 3 are already active", async () => {

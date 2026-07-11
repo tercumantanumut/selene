@@ -122,6 +122,19 @@ const MODEL_METADATA: Record<
     capabilities: { vision: false, contextWindow: "128K", speed: "standard" },
   },
 
+  // Codex GPT-5.6 family (372K context)
+  "gpt-5.6-sol": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "372K", speed: "standard" },
+  },
+  "gpt-5.6-terra": {
+    tier: "standard",
+    capabilities: { vision: true, thinking: true, contextWindow: "372K", speed: "standard" },
+  },
+  "gpt-5.6-luna": {
+    tier: "utility",
+    capabilities: { vision: true, thinking: true, contextWindow: "372K", speed: "fast" },
+  },
   // Codex (GPT-5.5 — 1M context, released 2026-04-23)
   "gpt-5.5": {
     tier: "flagship",

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { readdir, readFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join, basename, extname } from "path";
-import { DEFAULT_IGNORE_PATTERNS, createIgnoreMatcher } from "@/lib/vectordb/ignore-patterns";
+import { DEFAULT_IGNORE_PATTERNS, createAggressiveIgnore } from "@/lib/vectordb/ignore-patterns";
 import { validateSyncFolderPath } from "@/lib/vectordb/path-validation";
 import { loadSettings } from "@/lib/settings/settings-manager";
 
@@ -110,14 +110,20 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Remove duplicates and merge with defaults
-    const defaultPatterns = ["node_modules", ".git", "dist", "build", ".next", "__pycache__", ".venv", "venv"];
-    const allPatterns = [...new Set([...defaultPatterns, ...DEFAULT_IGNORE_PATTERNS, ...detectedPatterns])];
+    // Remove duplicates and merge with defaults. Mandatory runtime exclusions
+    // are always retained even when the caller supplies a custom list.
+    const allPatterns = [...new Set([...DEFAULT_IGNORE_PATTERNS, ...detectedPatterns])];
 
     // Count files that would be indexed (with a limit to avoid slowness)
     const extensions = includeExtensions || [".txt", ".md", ".json", ".ts", ".tsx", ".js", ".jsx", ".py", ".html", ".css"];
-    const excludes = excludePatterns || allPatterns;
-    const shouldIgnore = createIgnoreMatcher(excludes, normalizedPath);
+    const requestedExcludes = Array.isArray(excludePatterns)
+      ? excludePatterns.filter((pattern): pattern is string => typeof pattern === "string")
+      : [];
+    const excludes = [...new Set([
+      ...DEFAULT_IGNORE_PATTERNS,
+      ...(requestedExcludes.length > 0 ? requestedExcludes : allPatterns),
+    ])];
+    const shouldIgnore = createAggressiveIgnore(excludes, normalizedPath, extensions);
     const shouldRecurse = recursive !== false;
 
     let fileCount = 0;
