@@ -136,7 +136,7 @@
     "@types/cross-spawn": "^6.0.6",
     "@types/three": "^0.183.1",
     "@vscode/ripgrep": "^1.15.9",
-    "@whiskeysockets/baileys": "^6.7.12",
+    "@whiskeysockets/baileys": "^6.7.22",
     "ai": "^6.0.168",
     "animejs": "^4.2.2",
     "autoprefixer": "^10.4.27",
