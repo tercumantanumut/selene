@@ -81,10 +81,48 @@ describe("transformCodexRequest", () => {
     },
   );
 
+  it.each([
+    ["gpt-5.6-sol-low", "gpt-5.6-sol", "low"],
+    ["gpt-5.6-sol-ultra", "gpt-5.6-sol", "ultra"],
+    ["gpt-5.6-terra-max", "gpt-5.6-terra", "max"],
+    ["gpt-5.6-terra-ultra", "gpt-5.6-terra", "ultra"],
+    ["gpt-5.6-luna-max", "gpt-5.6-luna", "max"],
+  ] as const)(
+    "maps %s to %s with %s reasoning effort",
+    async (modelId, baseModel, effort) => {
+      const transformed = await transformCodexRequest(
+        { model: modelId, input: [] } as Record<string, any>,
+        "",
+      );
+
+      expect(transformed.model).toBe(baseModel);
+      expect(transformed.reasoning?.effort).toBe(effort);
+    },
+  );
+
+  it.each([
+    ["gpt-5.6-sol", "low"],
+    ["gpt-5.6-terra", "medium"],
+    ["gpt-5.6-luna", "medium"],
+  ] as const)("uses the catalog default reasoning effort for %s", async (modelId, effort) => {
+    const transformed = await transformCodexRequest(
+      { model: modelId, input: [] } as Record<string, any>,
+      "",
+    );
+
+    expect(transformed.reasoning?.effort).toBe(effort);
+  });
+
   it("keeps the Codex model picker aligned with CLIProxyAPI Codex models and variants", () => {
-    const ids = getCodexModels().map((model) => model.id);
+    const models = getCodexModels();
+    const ids = models.map((model) => model.id);
 
     expect(ids).toEqual(expect.arrayContaining([
+      "gpt-5.6-sol-low",
+      "gpt-5.6-sol-ultra",
+      "gpt-5.6-terra-max",
+      "gpt-5.6-terra-ultra",
+      "gpt-5.6-luna-max",
       "gpt-5.5-low",
       "gpt-5.5-high",
       "gpt-5.5-xhigh",
@@ -94,6 +132,13 @@ describe("transformCodexRequest", () => {
     ]));
     expect(ids).not.toContain("gpt-5.5-none");
     expect(ids).not.toContain("gpt-5.4-none");
+    expect(ids).not.toContain("gpt-5.6-luna-ultra");
+    expect(models.find((model) => model.id === "gpt-5.6-sol-ultra")?.name)
+      .toBe("GPT-5.6 Sol (Ultra)");
+    expect(models.find((model) => model.id === "gpt-5.6-terra-xhigh")?.name)
+      .toBe("GPT-5.6 Terra (Extra High)");
+    expect(models.find((model) => model.id === "gpt-5.6-luna-max")?.name)
+      .toBe("GPT-5.6 Luna (Max)");
   });
 
   it("preserves non-streaming generateText mode instead of forcing SSE", async () => {
@@ -115,6 +160,9 @@ describe("transformCodexRequest", () => {
   });
 
   it("normalizes CLIProxyAPI suffix variants to supported base model IDs", () => {
+    expect(normalizeCodexModel("gpt-5.6-sol-ultra")).toBe("gpt-5.6-sol");
+    expect(normalizeCodexModel("gpt-5.6-terra-max")).toBe("gpt-5.6-terra");
+    expect(normalizeCodexModel("gpt-5.6-luna-xhigh")).toBe("gpt-5.6-luna");
     expect(normalizeCodexModel("gpt-5.5-xhigh")).toBe("gpt-5.5");
     expect(normalizeCodexModel("gpt-5.4-mini-high")).toBe("gpt-5.4-mini");
     expect(normalizeCodexModel("gpt-5.3-codex-spark-low")).toBe("gpt-5.3-codex-spark");

@@ -7,7 +7,7 @@ v_3.5_dist
 # Dependencies
 node_modules
 .pnpm-store
-
+.external
 tmp-clawdbot/
 # Next.js
 .next

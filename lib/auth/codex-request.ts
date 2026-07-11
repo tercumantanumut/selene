@@ -6,10 +6,27 @@ import {
   type CodexInputItem,
 } from "@/lib/auth/codex-input-utils";
 
-type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "minimal";
+type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 type ReasoningSummary = "auto" | "concise" | "detailed";
 
-const REASONING_SUFFIXES = ["none", "low", "medium", "high", "xhigh", "minimal"] as const;
+const REASONING_SUFFIXES = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
 
 function extractEffortFromModelId(modelId?: string): ReasoningEffort | undefined {
   if (!modelId) return undefined;
@@ -26,9 +43,19 @@ function getReasoningConfig(
   modelName: string | undefined,
   requestedEffort?: ReasoningEffort,
   requestedSummary?: ReasoningSummary,
-): { effort: "none" | "low" | "medium" | "high" | "xhigh"; summary: ReasoningSummary } {
+): {
+  effort: "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  summary: ReasoningSummary;
+} {
   const normalizedName = modelName?.toLowerCase() ?? "";
 
+  const isGpt56Sol =
+    normalizedName.includes("gpt-5.6-sol") || normalizedName.includes("gpt 5.6 sol");
+  const isGpt56Terra =
+    normalizedName.includes("gpt-5.6-terra") || normalizedName.includes("gpt 5.6 terra");
+  const isGpt56Luna =
+    normalizedName.includes("gpt-5.6-luna") || normalizedName.includes("gpt 5.6 luna");
+  const isGpt56 = isGpt56Sol || isGpt56Terra || isGpt56Luna;
   const isGpt55 =
     normalizedName.includes("gpt-5.5") || normalizedName.includes("gpt 5.5");
   const isGpt54 =
@@ -61,20 +88,28 @@ function getReasoningConfig(
     !isCodexMax &&
     !isCodexMini;
 
-  const supportsXhigh = isGpt54 || isGpt53General || isGpt53Codex || isGpt52General || isGpt52Codex || isCodexMax;
+  const supportsXhigh =
+    isGpt56 ||
+    isGpt54 ||
+    isGpt53General ||
+    isGpt53Codex ||
+    isGpt52General ||
+    isGpt52Codex ||
+    isCodexMax;
+  const supportsMax = isGpt56;
+  const supportsUltra = isGpt56Sol || isGpt56Terra;
   const supportsNone = isGpt52General || isGpt51General;
 
-  const defaultEffort: ReasoningEffort = isGpt54
-      ? "medium"
-    : isCodexMini
-      ? "medium"
-    : prefersMediumDefault
-      ? "medium"
-    : supportsXhigh
-      ? "high"
-      : isLightweight
-        ? "minimal"
-        : "medium";
+  let defaultEffort: ReasoningEffort = "medium";
+  if (isGpt56Sol) {
+    defaultEffort = "low";
+  } else if (isGpt56 || isGpt54 || isCodexMini || prefersMediumDefault) {
+    defaultEffort = "medium";
+  } else if (supportsXhigh) {
+    defaultEffort = "high";
+  } else if (isLightweight) {
+    defaultEffort = "minimal";
+  }
 
   let effort = requestedEffort || defaultEffort;
 
@@ -88,6 +123,14 @@ function getReasoningConfig(
     if (effort !== "high" && effort !== "medium") {
       effort = "medium";
     }
+  }
+
+  if (!supportsUltra && effort === "ultra") {
+    effort = supportsMax ? "max" : supportsXhigh ? "xhigh" : "high";
+  }
+
+  if (!supportsMax && effort === "max") {
+    effort = supportsXhigh ? "xhigh" : "high";
   }
 
   if (!supportsXhigh && effort === "xhigh") {

@@ -105,6 +105,7 @@ const requiredPaths = [
     ? 'standalone/node_modules/@vscode/ripgrep/bin/rg.exe'
     : 'standalone/node_modules/@vscode/ripgrep/bin/rg',
   'standalone/node_modules/@askalf/dario/dist/cli.js',
+  'standalone/node_modules/@anthropic-ai/claude-agent-sdk/cli.js',
 ];
 
 // RTK bundle is optional at runtime (experimental), but warn if absent in package.

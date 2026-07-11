@@ -280,7 +280,7 @@ function buildToolSummary(toolName: string, input?: unknown, output?: unknown): 
       const agentName = getString(result.agentName) || getString(result.delegateAgent) || getString(inputObj?.agentName);
       const delegationId = getString(result.delegationId);
       const completed = result.completed === true;
-      const statusTag = completed ? "completed" : status || "in-progress";
+      const statusTag = status || (completed ? "completed" : "in-progress");
 
       // Extract actual sub-agent response content.
       // Prefer `lastResponse` (the terminal assistant message) over `allResponses`

@@ -91,7 +91,7 @@ export const StandaloneMarkdown: FC<StandaloneMarkdownProps> = ({ content, class
           ),
           blockquote: ({ children, ...props }) => (
             <blockquote
-              className="border-l-4 border-terminal-text/30 pl-4 italic text-terminal-text/80 my-3"
+              className="border-l-4 border-terminal-dark/30 pl-4 italic text-terminal-dark/80 my-3"
               {...props}
             >
               {children}

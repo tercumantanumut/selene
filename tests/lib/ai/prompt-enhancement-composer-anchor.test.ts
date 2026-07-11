@@ -254,6 +254,24 @@ describe("prompt enhancer — composer anchor & stateless ordering", () => {
     expect(secondPrompt).not.toContain("enhanced output");
   });
 
+  it("renders current attachment context as a reference-only section below the composer prompt", async () => {
+    await enhancePromptWithLLM(COMPOSER_TEXT, "char-x", {
+      sessionId: "session-regression",
+      dbMessages: [],
+      includeMemories: false,
+      includeFileTree: false,
+      currentAttachmentContext: "### Current composer attachments\n- [Image: mockup.png | image/png | url: /api/media/mockup.png]",
+    });
+
+    const userPrompt = aiMocks.generateText.mock.calls[0][0].messages.at(-1).content as string;
+    const composerIdx = userPrompt.indexOf("<composer_prompt>");
+    const attachmentIdx = userPrompt.indexOf("<current_attachments");
+
+    expect(attachmentIdx).toBeGreaterThan(composerIdx);
+    expect(userPrompt).toMatch(/<current_attachments[^>]*note="[^"]*[Rr]eference only/);
+    expect(userPrompt).toContain("mockup.png");
+  });
+
   it("reference sections (session_history / memories / file_tree) are tagged as non-target", async () => {
     memoryMocks.formatMemoriesForPrompt.mockReturnValueOnce({
       markdown: "- User prefers concise output",

@@ -48,6 +48,10 @@ import { createAntigravityProvider } from "@/lib/ai/providers/antigravity-provid
 import { createCodexProvider } from "@/lib/ai/providers/codex-client";
 import { createClaudeCodeProvider } from "@/lib/ai/providers/claudecode-client";
 import {
+  createClaudeCodeSdkProvider,
+  invalidateClaudeCodeSdkProvider,
+} from "@/lib/ai/providers/claudecode-sdk/provider";
+import {
   isModelCompatibleWithProvider as isModelCompatible,
 } from "@/lib/ai/model-validation";
 import {
@@ -153,6 +157,17 @@ let _antigravityProviderToken: string | undefined = undefined;
 let _codexProvider: ReturnType<typeof createCodexProvider> | null = null;
 
 let _claudecodeProvider: ReturnType<typeof createClaudeCodeProvider> | null = null;
+let _claudecodeSdkProvider: ReturnType<typeof createClaudeCodeSdkProvider> | null = null;
+
+/**
+ * Resolve the active Claude Code backend transport from settings.
+ * "dario" (default) routes through the local Dario sidecar; "sdk" routes
+ * through the official @anthropic-ai/claude-agent-sdk. Settings are 1s-cached
+ * so this is cheap to call per request.
+ */
+export function getClaudeCodeBackend(): "dario" | "sdk" {
+  return loadSettings().claudecodeBackend === "sdk" ? "sdk" : "dario";
+}
 
 // ---- Token management --------------------------------------------------------
 
@@ -226,8 +241,10 @@ export async function ensureClaudeCodeTokenValid(): Promise<boolean> {
     return false;
   }
 
-  // Invalidate provider so the next request uses fresh SDK auth state.
+  // Invalidate both backend providers so the next request uses fresh auth state.
   _claudecodeProvider = null;
+  _claudecodeSdkProvider = null;
+  invalidateClaudeCodeSdkProvider();
 
   return true;
 }
@@ -284,6 +301,19 @@ function getAntigravityProvider(): (modelId: string) => LanguageModel {
  * Get Claude Code provider instance.
  */
 function getClaudeCodeProviderInstance(): (modelId: string) => LanguageModel {
+  // Branch on the selected backend. The SDK backend routes Anthropic Messages
+  // calls through @anthropic-ai/claude-agent-sdk; the Dario backend points the
+  // AI SDK at the local Dario sidecar. Each caches its own singleton.
+  if (getClaudeCodeBackend() === "sdk") {
+    if (!_claudecodeSdkProvider) {
+      _claudecodeSdkProvider = createClaudeCodeSdkProvider();
+    }
+    if (!_claudecodeSdkProvider) {
+      throw new Error("Claude Code (Agent SDK) provider not available - not authenticated");
+    }
+    return _claudecodeSdkProvider;
+  }
+
   if (!_claudecodeProvider) {
     _claudecodeProvider = createClaudeCodeProvider();
   }
@@ -480,6 +510,8 @@ function invalidateProviderClient(provider: LLMProvider): void {
       break;
     case "claudecode":
       _claudecodeProvider = null;
+      _claudecodeSdkProvider = null;
+      invalidateClaudeCodeSdkProvider();
       break;
     case "kimi":
       invalidateKimiClient();

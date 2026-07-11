@@ -1,41 +1,77 @@
 import { relative } from "path";
 
 const DEFAULT_IGNORED_DIRECTORY_NAMES = [
+  // Dependency trees
   "node_modules",
+  "bower_components",
+  "jspm_packages",
+  ".pnpm-store",
+  ".yarn",
+  "vendor", // PHP Composer / Go
+  ".bundle", // Ruby Bundler
+  "Pods", // iOS CocoaPods
+  ".dart_tool", // Dart/Flutter
+
+  // Source-control and editor metadata
   ".git",
-  ".next",
-  "dist",
-  "build",
-  "coverage",
-  ".local-data",
-  "dist-electron",
   ".vscode",
   ".idea",
+
+  // Build and generated output
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".astro",
+  ".docusaurus",
+  ".output",
+  ".vercel",
+  ".netlify",
+  "dist",
+  "build",
+  "out",
+  "target",
+  "coverage",
+  "storybook-static",
+  "dist-electron",
+  "DerivedData",
+  ".local-data",
+
+  // Tool and package-manager caches
+  ".cache",
+  ".parcel-cache",
+  ".turbo",
+  ".nx",
+  ".angular",
+  ".vite",
+  ".gradle",
   "tmp",
   "temp",
+
+  // Python virtual environments, dependencies, and caches
   ".venv",
   "venv",
   "env",
   ".env",
+  ".conda",
+  ".direnv",
+  "__pypackages__",
   "__pycache__",
   "site-packages",
+  ".eggs",
   ".pytest_cache",
   ".mypy_cache",
   ".ruff_cache",
   ".tox",
-  // PHP Composer / Go vendor (equivalent of node_modules)
-  "vendor",
-  // Ruby Bundler
-  ".bundle",
-  // iOS CocoaPods
-  "Pods",
-  // Dart/Flutter pub cache
-  ".dart_tool",
+  ".nox",
+  ".hypothesis",
+  ".ipynb_checkpoints",
 ];
 
 const DEFAULT_IGNORED_FILE_NAMES = [
   ".DS_Store",
   "Thumbs.db",
+  ".eslintcache",
+  ".stylelintcache",
   "package-lock.json",
   "pnpm-lock.yaml",
   "yarn.lock",
@@ -47,6 +83,7 @@ const DEFAULT_IGNORED_FILE_GLOBS = [
   "*.lock",
   "*.pyc",
   "*.pyo",
+  "*.egg-info",
 ];
 
 const RAW_DEFAULT_IGNORE_PATTERNS = [
@@ -57,7 +94,8 @@ const RAW_DEFAULT_IGNORE_PATTERNS = [
 ];
 
 export const DEFAULT_IGNORE_PATTERNS = Array.from(new Set(RAW_DEFAULT_IGNORE_PATTERNS));
-const DEFAULT_BINARY_ASSET_EXTENSIONS = new Set([
+
+const IMAGE_ASSET_EXTENSIONS = new Set([
   "avif",
   "bmp",
   "cur",
@@ -67,19 +105,55 @@ const DEFAULT_BINARY_ASSET_EXTENSIONS = new Set([
   "ico",
   "jpeg",
   "jpg",
-  "otf",
-  "pdf",
   "png",
   "psd",
   "svg",
   "tif",
   "tiff",
-  "ttf",
+  "webp",
+]);
+const FONT_ASSET_EXTENSIONS = new Set(["eot", "otf", "ttf", "woff", "woff2"]);
+const MEDIA_ASSET_EXTENSIONS = new Set([
+  "aac",
+  "avi",
+  "flac",
+  "m4a",
+  "mkv",
+  "mov",
+  "mp3",
+  "mp4",
+  "ogg",
   "wav",
   "webm",
-  "webp",
-  "woff",
-  "woff2",
+]);
+const DEFAULT_BINARY_ASSET_EXTENSIONS = new Set([
+  ...IMAGE_ASSET_EXTENSIONS,
+  ...FONT_ASSET_EXTENSIONS,
+  ...MEDIA_ASSET_EXTENSIONS,
+  "7z",
+  "gz",
+  "pdf",
+  "rar",
+  "tar",
+  "zip",
+]);
+const IMAGE_ASSET_DIRECTORY_NAMES = new Set([
+  "icons",
+  "image",
+  "images",
+  "img",
+  "imgs",
+  "photos",
+  "screenshots",
+]);
+const FONT_ASSET_DIRECTORY_NAMES = new Set(["font", "fonts", "typefaces"]);
+const ASSET_CONTAINER_DIRECTORY_NAMES = new Set([
+  "assets",
+  "docs",
+  "media",
+  "public",
+  "resources",
+  "static",
 ]);
 const DEFAULT_IGNORED_DIRECTORY_NAME_SET = new Set(DEFAULT_IGNORED_DIRECTORY_NAMES);
 const DEFAULT_IGNORED_FILE_NAME_SET = new Set(DEFAULT_IGNORED_FILE_NAMES);
@@ -102,8 +176,9 @@ function escapeRegex(value: string): string {
 
 function globToRegex(pattern: string): RegExp {
   let p = pattern;
-  if (p.startsWith("/")) p = p.slice(1);
-  if (!p.startsWith("**/") && !p.startsWith("/")) {
+  const rootAnchored = p.startsWith("/");
+  if (rootAnchored) p = p.slice(1);
+  if (!rootAnchored && !p.startsWith("**/")) {
     p = `**/${p}`;
   }
 
@@ -111,12 +186,17 @@ function globToRegex(pattern: string): RegExp {
   for (let i = 0; i < p.length; i += 1) {
     const char = p[i];
     if (char === "*") {
-      if (p[i + 1] === "*") {
+      if (p[i + 1] === "*" && p[i + 2] === "/") {
+        out += "(?:.*/)?";
+        i += 2;
+      } else if (p[i + 1] === "*") {
         out += ".*";
         i += 1;
       } else {
         out += "[^/]*";
       }
+    } else if (char === "?") {
+      out += "[^/]";
     } else {
       out += escapeRegex(char);
     }
@@ -147,32 +227,54 @@ export function createIgnoreMatcher(patterns: string[], basePath?: string) {
       const hasSlash = pattern.includes("/");
 
       if (!hasGlob && !hasSlash) {
-        const matchSegment = segmentMatcher(pattern);
-        return (path: string, rel: string) => matchSegment(path) || matchSegment(rel);
+        return segmentMatcher(pattern);
       }
 
       if (!hasGlob && hasSlash) {
-        const matchSubpath = subpathMatcher(pattern);
-        return (path: string, rel: string) => matchSubpath(path) || matchSubpath(rel);
+        return subpathMatcher(pattern);
       }
 
       const regex = globToRegex(pattern);
-      return (path: string, rel: string) => regex.test(path) || regex.test(rel);
+      return (path: string) => regex.test(path);
     });
 
   return (filePath: string): boolean => {
     const normalized = normalizePath(filePath);
-    const rel = basePath
-      ? normalizePath(relative(basePath, filePath))
-      : normalized;
+    if (!basePath) {
+      return matchers.some((matcher) => matcher(normalized));
+    }
 
-    return matchers.some((matcher) => matcher(normalized, rel));
+    const relativePath = normalizePath(relative(basePath, filePath));
+    const scopedPath = relativePath === ".." || relativePath.startsWith("../")
+      ? normalized
+      : relativePath;
+
+    return matchers.some((matcher) => matcher(scopedPath));
   };
 }
 
-function hasIgnoredDirectorySegment(path: string): boolean {
+function getScopedPathSegments(path: string, basePath?: string): string[] {
   const normalized = normalizePath(path);
-  const segments = normalized.split("/").filter(Boolean);
+  if (!basePath) {
+    return normalized.split("/").filter(Boolean);
+  }
+
+  const relativePath = normalizePath(relative(basePath, path));
+  if (!relativePath || relativePath === ".") {
+    return [];
+  }
+
+  // Watcher callbacks should stay under basePath. If a platform-specific path
+  // representation makes relative() escape the root, fall back to the received
+  // path rather than accidentally treating the selected root as ignored.
+  const scopedPath = relativePath === ".." || relativePath.startsWith("../")
+    ? normalized
+    : relativePath;
+  return scopedPath.split("/").filter(Boolean);
+}
+
+function hasIgnoredDirectorySegment(path: string, basePath?: string): boolean {
+  const segments = getScopedPathSegments(path, basePath);
   return segments.some((segment, index) => {
     if (!DEFAULT_IGNORED_DIRECTORY_NAME_SET.has(segment)) {
       return false;
@@ -193,7 +295,52 @@ function hasIgnoredFileName(path: string): boolean {
   return DEFAULT_IGNORED_FILE_NAME_SET.has(fileName);
 }
 
-function isBinaryAssetPath(path: string, includeExtensions: string[]): boolean {
+function includesAnyExtension(includeExtensions: Set<string>, candidates: Set<string>): boolean {
+  for (const extension of candidates) {
+    if (includeExtensions.has(extension)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isExcludedAssetDirectory(
+  path: string,
+  basePath: string | undefined,
+  includeExtensions: Set<string>
+): boolean {
+  // An empty extension filter means "all files", so automatic asset pruning
+  // must stay disabled in that mode.
+  if (includeExtensions.size === 0) {
+    return false;
+  }
+
+  const segments = getScopedPathSegments(path, basePath).map((segment) => segment.toLowerCase());
+  const shouldPruneImages = !includesAnyExtension(includeExtensions, IMAGE_ASSET_EXTENSIONS);
+  const shouldPruneFonts = !includesAnyExtension(includeExtensions, FONT_ASSET_EXTENSIONS);
+
+  return segments.some((segment, index) => {
+    const isExcludedAssetType =
+      (shouldPruneImages && IMAGE_ASSET_DIRECTORY_NAMES.has(segment)) ||
+      (shouldPruneFonts && FONT_ASSET_DIRECTORY_NAMES.has(segment));
+    if (!isExcludedAssetType) {
+      return false;
+    }
+
+    // Avoid treating source folders such as src/icons as binary asset trees.
+    // Prune top-level asset folders and those nested under known asset roots.
+    return index === 0 || segments
+      .slice(0, index)
+      .some((parent) => ASSET_CONTAINER_DIRECTORY_NAMES.has(parent));
+  });
+}
+
+function isBinaryAssetPath(path: string, includeExtensions: Set<string>): boolean {
+  // An empty extension filter means "all files".
+  if (includeExtensions.size === 0) {
+    return false;
+  }
+
   const normalized = normalizePath(path);
   const fileName = normalized.split("/").pop() ?? normalized;
   const dotIndex = fileName.lastIndexOf(".");
@@ -204,14 +351,13 @@ function isBinaryAssetPath(path: string, includeExtensions: string[]): boolean {
     return false;
   }
 
-  return !includeExtensions.includes(extension);
+  return !includeExtensions.has(extension);
 }
 
 /**
- * Creates a highly optimized aggressive ignore function for file watchers.
- * This function is designed to prevent Chokidar/fsevents from even scanning
- * massive directories like node_modules, which is critical for avoiding
- * EMFILE errors and high CPU usage.
+ * Creates a highly optimized ignore function for vector discovery and file
+ * watching. Directory checks happen before recursion so dependency, cache,
+ * build, virtualenv, and unrequested asset trees are never traversed.
  */
 export function createAggressiveIgnore(
   patterns: string[],
@@ -219,12 +365,16 @@ export function createAggressiveIgnore(
   includeExtensions: string[] = []
 ) {
   const shouldIgnore = createIgnoreMatcher(patterns, basePath);
-  const normalizedIncludeExtensions = includeExtensions.map((ext) =>
+  const normalizedIncludeExtensions = new Set(includeExtensions.map((ext) =>
     ext.startsWith(".") ? ext.slice(1).toLowerCase() : ext.toLowerCase()
-  );
+  ));
 
   return (path: string) => {
-    if (hasIgnoredDirectorySegment(path)) {
+    if (hasIgnoredDirectorySegment(path, basePath)) {
+      return true;
+    }
+
+    if (isExcludedAssetDirectory(path, basePath, normalizedIncludeExtensions)) {
       return true;
     }
 

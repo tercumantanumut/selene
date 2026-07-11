@@ -267,6 +267,15 @@ export interface InlineDiffPayload {
 }
 
 /**
+ * Why a background process stopped running.
+ * - "exit": the process exited on its own (check exitCode/signal)
+ * - "timeout": the background timeout fired and the process was terminated
+ * - "killed": an explicit kill was requested (user stop or API kill)
+ * - "spawn-error": the process failed to start or crashed during spawn
+ */
+export type BackgroundProcessSettleReason = "exit" | "timeout" | "killed" | "spawn-error";
+
+/**
  * Info about a background process being tracked
  */
 export interface BackgroundProcessInfo {
@@ -292,6 +301,8 @@ export interface BackgroundProcessInfo {
   exitCode: number | null;
   /** Signal that killed the process */
   signal: string | null;
+  /** Why the process stopped running (undefined while running) */
+  settleReason?: BackgroundProcessSettleReason;
   /** The child process reference */
   process: import("child_process").ChildProcess;
   /** Timeout timer reference */

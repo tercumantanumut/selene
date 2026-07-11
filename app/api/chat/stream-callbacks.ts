@@ -88,6 +88,7 @@ export async function handleUndrainedQueueMessages(
       initiatorSessionId: sessionId,
       characterId: "",
       completedAt: Date.now(),
+      status: entry.metadata?.status,
       resultContent: entry.content,
     });
   }

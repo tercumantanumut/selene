@@ -8,7 +8,8 @@ import {
   type UIMessageChunk,
   type UserModelMessage,
 } from "ai";
-import { ensureAntigravityTokenValid, ensureClaudeCodeTokenValid, ensureCodexTokenValid, ensureKimiTokenValid, providerSupportsFeature } from "@/lib/ai/providers";
+import { ensureAntigravityTokenValid, ensureClaudeCodeTokenValid, ensureCodexTokenValid, ensureKimiTokenValid, providerSupportsFeature, getClaudeCodeBackend } from "@/lib/ai/providers";
+import { createSdkToolResultBridge } from "./sdk-tool-result-bridge";
 import { registerAllTools } from "@/lib/ai/tool-registry";
 import { AI_CONFIG } from "@/lib/ai/config";
 import { getPrimarySyncFolder } from "@/lib/vectordb/sync-folder-crud";
@@ -461,6 +462,11 @@ export async function POST(req: Request) {
     });
     const currentModelId = resolvedSessionModels.effectiveConfig.chatModel;
     const currentProvider = resolvedSessionModels.effectiveConfig.provider;
+    // Active Claude Code transport. Only "sdk" enables the Agent-SDK glue
+    // (passthrough tools, single-step gate, tool-result bridge, ExitPlanMode
+    // synthetic args). For every other provider/backend this stays "dario".
+    const claudecodeBackend: "dario" | "sdk" =
+      currentProvider === "claudecode" ? getClaudeCodeBackend() : "dario";
     const contextCheck = await ContextWindowManager.preFlightCheck(
       sessionId,
       currentModelId,
@@ -767,6 +773,7 @@ export async function POST(req: Request) {
       allowedPluginNames,
       workflowPromptContextInput,
       provider: currentProvider,
+      backend: claudecodeBackend,
       designPreviewTheme,
     });
 
@@ -822,11 +829,18 @@ export async function POST(req: Request) {
       current: null,
     };
 
+    // Per-request bridge between SDK-emitted tool results and the AI SDK
+    // passthrough executors. Only created for the Agent SDK backend; left null
+    // for Dario (which executes tools directly).
+    const sdkToolResultBridge =
+      claudecodeBackend === "sdk" ? createSdkToolResultBridge() : null;
+
     const mcpCtx: SeleneMcpContext = {
       userId: dbUser.id,
       sessionId,
       runId,
       characterId: characterId ?? null,
+      sdkToolResultBridge: sdkToolResultBridge ?? undefined,
       enabledTools: enabledTools ?? undefined,
       cwd: agentCwd,
       pluginPaths: pluginPaths.length > 0 ? pluginPaths : undefined,
@@ -1250,6 +1264,7 @@ export async function POST(req: Request) {
             stepCount: steps.length,
             maxSteps: AI_CONFIG.maxSteps,
             provider,
+            backend: claudecodeBackend,
           }),
           temperature: await getSessionProviderTemperatureForSession(
             sessionMetadata,
@@ -1296,7 +1311,7 @@ export async function POST(req: Request) {
                 const completionEntries = storeCompletions.map((c) => ({
                   id: c.deliveryId || `deleg-store-${c.delegationId}`,
                   content: c.resultContent || [
-                    `<delegation-result delegationId="${c.delegationId}" delegate="${c.delegateName}" status="${c.error ? "failed" : "completed"}" resultVersion="${c.resultVersion ?? 1}">`,
+                    `<delegation-result delegationId="${c.delegationId}" delegate="${c.delegateName}" status="${c.status ?? (c.error ? "failed" : "completed")}" resultVersion="${c.resultVersion ?? 1}">`,
                     c.error || "Result content not available — use observe to read full response.",
                     `</delegation-result>`,
                   ].join("\n"),
@@ -1573,6 +1588,17 @@ export async function POST(req: Request) {
           },
           onError: async ({ error }) => {
             const errorMessage = normalizeStreamError(error).message;
+            // Agent SDK backend: the SDK agent self-corrects after tool
+            // validation failures — the stream stays open and onFinish finalizes
+            // the run properly. Skip finalization here so we don't tear down a
+            // run the SDK is still driving. Dario and all other providers fall
+            // through to normal error handling.
+            if (claudecodeBackend === "sdk" && isNonFatalToolError(error)) {
+              console.warn(
+                `[CHAT API] Non-fatal tool error in Claude Code (Agent SDK) run (skipping finalization): ${errorMessage}`,
+              );
+              return;
+            }
             // Always log the full error so it's visible in debug.log — prevents
             // silent swallowing that previously made failures impossible to diagnose.
             console.error(`[CHAT API] Stream onError: ${errorMessage}`, {
@@ -1641,7 +1667,13 @@ export async function POST(req: Request) {
                 // Detect argsText conflict: streaming deltas already accumulated
                 // but a complete tool-call event arrived (e.g. from repairToolCall).
                 const existingPart = streamingState.toolCallParts.get(chunk.toolCallId);
-                if (existingPart?.argsText && existingPart.argsText.length > 0) {
+                // Agent SDK backend: ExitPlanMode carries synthetic plan-approval
+                // data in argsText (injected during streaming). The SDK's raw
+                // input ({}) would clobber it — skip the conflict warning and
+                // preserve the streamed argsText as the effective input below.
+                const isSdkExitPlanMode =
+                  claudecodeBackend === "sdk" && chunk.toolName === "ExitPlanMode";
+                if (!isSdkExitPlanMode && existingPart?.argsText && existingPart.argsText.length > 0) {
                   const newArgsText = JSON.stringify(chunk.input ?? {});
                   if (!newArgsText.startsWith(existingPart.argsText)) {
                     console.warn(
@@ -1658,7 +1690,15 @@ export async function POST(req: Request) {
                     provenanceVersion: 1,
                   };
                 }
-                changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, chunk.input) || changed;
+                let effectiveInput: unknown = chunk.input;
+                if (isSdkExitPlanMode && existingPart?.argsText && existingPart.argsText.length > 10) {
+                  try {
+                    effectiveInput = JSON.parse(existingPart.argsText);
+                  } catch {
+                    // Fall back to the SDK's raw input.
+                  }
+                }
+                changed = recordStructuredToolCall(streamingState, chunk.toolCallId, chunk.toolName, effectiveInput) || changed;
               } else if (chunk.type === "tool-result") {
                 toolInputStallWatchdog.disarm(chunk.toolCallId);
                 changed = recordToolResultChunk(streamingState, chunk.toolCallId, chunk.toolName, chunk.output, chunk.preliminary) || changed;

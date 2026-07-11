@@ -244,12 +244,52 @@ describe("edit-file-tool", () => {
       expect(result.diff).toContain("3 | - line3");
       expect(result.diff).toContain("3 | + LINE3");
     });
+
+    it("serializes concurrent edits to the same file so neither update is lost", async () => {
+      recordFileRead(SESSION_ID, FILE);
+
+      let currentContent = "const a = 1;\nconst b = 2;\n";
+      let currentMtime = 0;
+      const tempWrites = new Map<string, string>();
+
+      fsMocks.stat.mockImplementation(async () => ({ mtimeMs: currentMtime, mode: 0o644 }));
+      fsMocks.readFile.mockImplementation(async () => currentContent);
+      fsMocks.writeFile.mockImplementation(async (target: string, content: string) => {
+        tempWrites.set(target, content);
+        await Promise.resolve();
+      });
+      fsMocks.rename.mockImplementation(async (from: string, to: string) => {
+        expect(to).toBe(FILE);
+        const content = tempWrites.get(from);
+        expect(content).toBeDefined();
+        currentContent = content!;
+        currentMtime = Date.now();
+      });
+
+      const tool = createTool();
+      const [first, second] = await Promise.all([
+        tool.execute(
+          { filePath: FILE, oldString: "const a = 1;", newString: "const a = 10;" },
+          { toolCallId: "tc-1", messages: [], abortSignal: new AbortController().signal }
+        ),
+        tool.execute(
+          { filePath: FILE, oldString: "const b = 2;", newString: "const b = 20;" },
+          { toolCallId: "tc-2", messages: [], abortSignal: new AbortController().signal }
+        ),
+      ]);
+
+      expect(first.status).toBe("success");
+      expect(second.status).toBe("success");
+      expect(currentContent).toBe("const a = 10;\nconst b = 20;\n");
+    });
   });
 
   describe("create mode", () => {
     it("creates a new file when oldString is empty", async () => {
       fsMocks.access.mockRejectedValue(new Error("ENOENT")); // File doesn't exist
+      fsMocks.stat.mockRejectedValue(new Error("ENOENT"));
       fsMocks.writeFile.mockResolvedValue(undefined);
+      fsMocks.rename.mockResolvedValue(undefined);
       fsMocks.mkdir.mockResolvedValue(undefined);
 
       const tool = createTool();

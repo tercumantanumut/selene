@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import {
   getClaudeCodeAuthStatus,
   verifyClaudeCodeAuthenticatedAfterDarioLogin,
+  verifyClaudeCodeAuthenticatedAfterSdkLogin,
 } from "@/lib/auth/claudecode-auth";
 import {
   isSuccessfulClaudeLoginOutput,
   startClaudeLogin,
 } from "@/lib/ai/providers/dario/login";
+import { getClaudeCodeBackend } from "@/lib/ai/providers";
+import { startClaudeLoginProcess } from "@/lib/ai/providers/claudecode-sdk/login-process";
 
 /**
  * GET /api/auth/claudecode/authorize
@@ -23,10 +26,46 @@ export async function GET() {
       return NextResponse.json({
         success: true,
         authenticated: true,
-        message: "Claude Code is already authenticated through Dario",
+        message: "Claude Code is already authenticated",
       });
     }
 
+    // ── Agent SDK backend ───────────────────────────────────────────────────
+    // Drives `node cli.js login`; credentials land in ~/.claude.
+    if (getClaudeCodeBackend() === "sdk") {
+      const { url, output } = await startClaudeLoginProcess();
+      if (!url) {
+        // The SDK login can finish without printing a URL when credentials are
+        // already present — verify the SDK auth state directly.
+        const verified = await verifyClaudeCodeAuthenticatedAfterSdkLogin(output);
+        if (verified.authenticated) {
+          return NextResponse.json({
+            success: true,
+            authenticated: true,
+            output,
+            message: "Claude Code credentials are available through the Agent SDK",
+          });
+        }
+        return NextResponse.json(
+          {
+            success: false,
+            authenticated: false,
+            output,
+            error: verified.error ?? "The Claude Agent SDK did not return an authentication URL.",
+          },
+          { status: 502 },
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        authenticated: false,
+        url,
+        output,
+        message: "Open the provided URL to authenticate, then paste the code shown by the browser.",
+      });
+    }
+
+    // ── Dario backend (default) ─────────────────────────────────────────────
     const { url, output } = await startClaudeLogin();
 
     // `dario login --manual --no-proxy` can complete without printing an OAuth

@@ -163,6 +163,68 @@ describe("delegation waiting", () => {
   });
 
 
+  // ── Agent SDK backend single-step gate ──────────────────────────────────────
+  // The SDK executes tools internally and streams tool_use blocks the AI SDK
+  // can't match; without the gate a second step re-queries (duplicate response).
+
+  it("SDK backend: force-stops after step 0 when there is no async work", () => {
+    delegationMocks.getActiveDelegationsForCharacter.mockReturnValue([]);
+
+    expect(
+      shouldStopTurn({
+        characterId: "agent-init",
+        initiatorSessionId: "sess-1",
+        stepCount: 1,
+        maxSteps: 10,
+        backend: "sdk",
+      })
+    ).toBe(true);
+  });
+
+  it("SDK backend: stays alive after step 0 while a delegation is still running", () => {
+    delegationMocks.getActiveDelegationsForCharacter.mockReturnValue([
+      { delegationId: "del-1", running: true, completed: false },
+    ]);
+
+    expect(
+      shouldStopTurn({
+        characterId: "agent-init",
+        initiatorSessionId: "sess-1",
+        stepCount: 1,
+        maxSteps: 10,
+        backend: "sdk",
+      })
+    ).toBe(false);
+  });
+
+  it("SDK backend: never stops before the first step has run", () => {
+    delegationMocks.getActiveDelegationsForCharacter.mockReturnValue([]);
+
+    expect(
+      shouldStopTurn({
+        characterId: "agent-init",
+        initiatorSessionId: "sess-1",
+        stepCount: 0,
+        maxSteps: 10,
+        backend: "sdk",
+      })
+    ).toBe(false);
+  });
+
+  it("Dario backend: never force-stops mid-loop (no async work)", () => {
+    delegationMocks.getActiveDelegationsForCharacter.mockReturnValue([]);
+
+    expect(
+      shouldStopTurn({
+        characterId: "agent-init",
+        initiatorSessionId: "sess-1",
+        stepCount: 1,
+        maxSteps: 10,
+        backend: "dario",
+      })
+    ).toBe(false);
+  });
+
   it("hasDelegationsForSession returns false for null characterId", () => {
     expect(hasDelegationsForSession(null, "sess-1")).toBe(false);
   });

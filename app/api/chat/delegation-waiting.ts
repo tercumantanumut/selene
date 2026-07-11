@@ -186,17 +186,25 @@ export function shouldStopTurn(input: {
   stepCount: number;
   maxSteps: number;
   provider?: string;
+  backend?: "dario" | "sdk";
 }): boolean {
   if (input.stepCount >= input.maxSteps) {
     return true;
   }
 
-  // No provider-specific stop gate. The Claude Code provider used to be the
-  // Agent SDK, which streamed back tool_use blocks for internally-executed
-  // tools (Read, Edit, Bash, …) the AI SDK couldn't match — we force-stopped
-  // after step 1 to avoid a duplicate query. With the CLIProxyAPI bridge the
-  // Claude Code provider is a plain Anthropic Messages API consumer; it
-  // emits the same tool_use shape every other provider does and the AI SDK
-  // loop ends naturally when the model returns a text-only response.
+  // Agent SDK backend: the SDK executes its tools internally and streams back
+  // tool_use blocks for them (Read, Edit, Bash, …). The AI SDK can't match
+  // those to Selene executors and would advance to a second step, triggering a
+  // duplicate SDK query (the duplicate-response bug). Force-stop after step 1
+  // UNLESS there's active async work (delegations or background tasks) that
+  // needs the turn kept alive for follow-up injection.
+  //
+  // The Dario backend is a plain Anthropic Messages API consumer — it emits
+  // the same tool_use shape every other provider does and the AI SDK loop ends
+  // naturally when the model returns a text-only response, so it never gates.
+  if (input.backend === "sdk" && input.stepCount > 0) {
+    return !hasActiveAsyncWork(input.characterId, input.initiatorSessionId);
+  }
+
   return false;
 }

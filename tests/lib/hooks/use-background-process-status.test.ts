@@ -62,10 +62,67 @@ describe("toBackgroundProcessInfo", () => {
       processId: "bg-123",
       command: "npm run electron:dev",
       toolName: "bash",
+      status: "cancelled",
       running: false,
       elapsed: 7000,
       settledAt: "2026-04-29T10:00:07.000Z",
       signal: "SIGTERM",
+    });
+  });
+
+  it("passes through failure status, error text and settle reason", () => {
+    const info = toBackgroundProcessInfo(
+      makeTask({
+        status: "failed",
+        error: "Process exited with code 1",
+        completedAt: "2026-04-29T10:00:07.000Z",
+        durationMs: 7000,
+        metadata: {
+          isBackgroundProcess: true,
+          toolName: "bash",
+          command: "npm run build",
+          cwd: "/workspace",
+          exitCode: 1,
+          signal: null,
+          settleReason: "exit",
+        },
+      }),
+      Date.parse("2026-04-29T10:00:10.000Z"),
+    );
+
+    expect(info).toMatchObject({
+      status: "failed",
+      running: false,
+      exitCode: 1,
+      settleReason: "exit",
+      error: "Process exited with code 1",
+    });
+  });
+
+  it("treats a user-killed process as cancelled, not failed", () => {
+    const info = toBackgroundProcessInfo(
+      makeTask({
+        status: "cancelled",
+        completedAt: "2026-04-29T10:00:07.000Z",
+        durationMs: 7000,
+        metadata: {
+          isBackgroundProcess: true,
+          toolName: "bash",
+          command: "npm run dev",
+          cwd: "/workspace",
+          exitCode: null,
+          signal: null,
+          settleReason: "killed",
+        },
+      }),
+      Date.parse("2026-04-29T10:00:10.000Z"),
+    );
+
+    expect(info).toMatchObject({
+      status: "cancelled",
+      running: false,
+      exitCode: null,
+      settleReason: "killed",
     });
   });
 });

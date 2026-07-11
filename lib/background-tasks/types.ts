@@ -121,6 +121,23 @@ export function isBackgroundLifecycleTask(task: { type: string; metadata?: unkno
   return task.type === "scheduled" || isDelegationTask(task);
 }
 
+/**
+ * Background shell processes (bash/executeCommand with run_in_background) are
+ * tracked as chat-type tasks but must NOT be treated as chat sessions by the
+ * frontend: they have their own indicator UI, must not clobber the session's
+ * active-run marker, and must not trigger "chat session" toasts.
+ */
+export function isBackgroundProcessTask(task: { type: string; metadata?: unknown }): boolean {
+  if (task.type !== "chat") {
+    return false;
+  }
+  const metadata = task.metadata;
+  if (!metadata || typeof metadata !== "object") {
+    return false;
+  }
+  return (metadata as { isBackgroundProcess?: unknown }).isBackgroundProcess === true;
+}
+
 export function isTaskSuppressedFromUI(task: UnifiedTask): boolean {
   if (task.type !== "chat") {
     return false;

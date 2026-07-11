@@ -254,7 +254,9 @@ describe("delegate-to-subagent-tool session isolation", () => {
         delegationId: delIdA,
       });
       expect(stopA.success).toBe(true);
-      expect(activeDelegations.has(delIdA)).toBe(false);
+      expect(stopA.status).toBe("stopped");
+      expect(activeDelegations.has(delIdA)).toBe(true);
+      expect(activeDelegations.get(delIdA)?.terminalStatus).toBe("stopped");
     });
   });
 

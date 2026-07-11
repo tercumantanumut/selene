@@ -82,6 +82,7 @@ import { buildSimpleComposerSubmission } from "./composer-submit";
 import {
   useVoiceRecording,
   usePromptEnhancement,
+  type PromptEnhancementAttachmentContext,
 } from "./composer-hooks";
 import { buildTranscriptInsertion } from "./voice-transcript-utils";
 import { VoiceWaveform } from "@/components/voice/voice-waveform";
@@ -110,6 +111,137 @@ import {
 // Maximum message length — matches server-side MAX_TEXT_CONTENT_LENGTH.
 // Messages exceeding this are blocked on the client before send.
 const MAX_MESSAGE_LENGTH = 75_000;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function promptString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function promptNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function promptBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizePromptAttachment(value: unknown): PromptEnhancementAttachmentContext | null {
+  if (!isPlainRecord(value)) return null;
+
+  const metadata = isPlainRecord(value.metadata) ? value.metadata : {};
+  const firstContent = Array.isArray(value.content) && isPlainRecord(value.content[0])
+    ? value.content[0]
+    : {};
+  const status = isPlainRecord(value.status)
+    ? [promptString(value.status.type), promptString(value.status.reason)].filter(Boolean).join(":")
+    : promptString(value.status);
+
+  const attachment: PromptEnhancementAttachmentContext = {
+    id: promptString(value.id) ?? promptString(metadata.id),
+    name: promptString(value.name)
+      ?? promptString(metadata.name)
+      ?? promptString(value.filename)
+      ?? promptString(firstContent.filename)
+      ?? promptString(firstContent.displayName),
+    contentType: promptString(value.contentType)
+      ?? promptString(metadata.contentType)
+      ?? promptString(firstContent.mediaType)
+      ?? promptString(firstContent.mimeType)
+      ?? promptString(firstContent.contentType),
+    url: promptString(metadata.url)
+      ?? promptString(firstContent.image)
+      ?? promptString(firstContent.url)
+      ?? promptString(firstContent.data)
+      ?? promptString(value.url),
+    localPath: promptString(metadata.localPath) ?? promptString(firstContent.localPath),
+    filePath: promptString(metadata.filePath) ?? promptString(firstContent.filePath),
+    size: promptNumber(metadata.size) ?? promptNumber(value.size) ?? promptNumber(firstContent.size),
+    kind: promptString(metadata.kind) ?? promptString(value.kind) ?? promptString(value.type) ?? promptString(firstContent.type),
+    inline: promptBoolean(metadata.inline) ?? promptBoolean(value.inline) ?? promptBoolean(firstContent.inline),
+    order: promptNumber(metadata.order) ?? promptNumber(value.order) ?? promptNumber(firstContent.order),
+    status: status || undefined,
+  };
+
+  return Object.values(attachment).some((entry) => entry !== undefined) ? attachment : null;
+}
+
+function metadataAttachmentsForEnhancement(metadata: unknown): PromptEnhancementAttachmentContext[] {
+  if (!isPlainRecord(metadata)) return [];
+  const custom = isPlainRecord(metadata.custom) ? metadata.custom : null;
+  if (!custom) return [];
+
+  return [custom.inlineAttachments, custom.attachments]
+    .flatMap((attachments) => Array.isArray(attachments) ? attachments : [])
+    .map(normalizePromptAttachment)
+    .filter((attachment): attachment is PromptEnhancementAttachmentContext => attachment !== null);
+}
+
+function attachmentReferenceKey(attachment: PromptEnhancementAttachmentContext): string | null {
+  return attachment.url
+    ?? attachment.filePath
+    ?? attachment.localPath
+    ?? attachment.id
+    ?? attachment.name
+    ?? null;
+}
+
+function formatPromptAttachmentReference(attachment: PromptEnhancementAttachmentContext): string {
+  const isImage = attachment.contentType?.toLowerCase().startsWith("image/") === true
+    || attachment.kind?.toLowerCase().includes("image") === true;
+  const label = isImage ? "Image" : "Attachment";
+  const displayName = attachment.name ?? (isImage ? "uploaded image" : "uploaded file");
+  const details = [displayName];
+  if (attachment.contentType) details.push(attachment.contentType);
+  if (attachment.kind && attachment.kind !== attachment.contentType) details.push(`kind: ${attachment.kind}`);
+  if (attachment.status) details.push(`status: ${attachment.status}`);
+  if (typeof attachment.size === "number") details.push(`size: ${attachment.size} bytes`);
+  if (attachment.url) details.push(`url: ${attachment.url.startsWith("data:") ? "data:[inline data omitted]" : attachment.url}`);
+  if (attachment.filePath) details.push(`filePath: ${attachment.filePath}`);
+  if (attachment.localPath) details.push(`localPath: ${attachment.localPath}`);
+  return `[${label}: ${details.join(" | ")}]`;
+}
+
+function formatThreadMessageForEnhancement(message: { content?: unknown; metadata?: unknown }): string {
+  const lines: string[] = [];
+  const seenAttachments = new Set<string>();
+  const pushAttachment = (attachment: PromptEnhancementAttachmentContext) => {
+    const key = attachmentReferenceKey(attachment);
+    if (key) {
+      if (seenAttachments.has(key)) return;
+      seenAttachments.add(key);
+    }
+    lines.push(formatPromptAttachmentReference(attachment));
+  };
+
+  if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      if (!isPlainRecord(part)) continue;
+      if (part.type === "text") {
+        const text = promptString(part.text);
+        if (text) lines.push(text);
+        continue;
+      }
+      if (part.type === "image" || part.type === "file") {
+        const attachment = normalizePromptAttachment(part);
+        if (attachment) pushAttachment(attachment);
+      }
+    }
+  } else {
+    const text = promptString(message.content);
+    if (text) lines.push(text);
+  }
+
+  for (const attachment of metadataAttachmentsForEnhancement(message.metadata)) {
+    pushAttachment(attachment);
+  }
+
+  return lines.join("\n").trim();
+}
 
 // Interface for queued messages
 interface QueuedMessage {
@@ -476,17 +608,19 @@ export const Composer: FC<{
   const threadMessages = useThread((th) => th.messages);
   const recentMessages = useMemo(
     () =>
-      threadMessages.slice(-3).map((msg) => {
-        const textContent =
-          msg.content
-            ?.filter(
-              (part): part is { type: "text"; text: string } => part.type === "text"
-            )
-            .map((part) => part.text)
-            .join("\n") || "";
-        return { role: msg.role, content: textContent };
-      }),
+      threadMessages.slice(-3).map((msg) => ({
+        role: msg.role,
+        content: formatThreadMessageForEnhancement(msg),
+      })),
     [threadMessages]
+  );
+
+  const getCurrentAttachmentsForEnhancement = useCallback(
+    () =>
+      (threadRuntime.composer.getState().attachments ?? [])
+        .map(normalizePromptAttachment)
+        .filter((attachment): attachment is PromptEnhancementAttachmentContext => attachment !== null),
+    [threadRuntime]
   );
 
   // Prompt enhancement
@@ -502,6 +636,7 @@ export const Composer: FC<{
     characterId: character?.id,
     sessionId,
     recentMessages,
+    getCurrentAttachments: getCurrentAttachmentsForEnhancement,
   });
   const [rewardSuggestion, setRewardSuggestion] = useState<RewardSuggestion | null>(null);
   const [showRewardSuggestion, setShowRewardSuggestion] = useState(false);

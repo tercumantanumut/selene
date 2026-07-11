@@ -15,6 +15,8 @@ vi.mock("next-intl", () => ({
         return `Delegating to ${agent}`;
       case "failed":
         return `${agent} failed`;
+      case "stopped":
+        return `${agent} stopped`;
       case "done":
         return `${agent} done`;
       case "waitingBadge":
@@ -92,5 +94,20 @@ describe("DelegationToolUI", () => {
 
     expect(container.textContent).toContain("Reviewer failed");
     expect(container.textContent).not.toContain("Waiting for delegated result");
+  });
+
+  it("shows explicitly stopped delegations as stopped instead of done", () => {
+    flushSync(() => {
+      root.render(
+        createElement(DelegationToolUI, {
+          toolName: "delegateToSubagent",
+          args: { action: "stop", agentName: "Reviewer", delegationId: "del-123" },
+          result: { status: "stopped", completed: false, running: false, message: "Delegation stopped." },
+        })
+      );
+    });
+
+    expect(container.textContent).toContain("Reviewer stopped");
+    expect(container.textContent).not.toContain("Reviewer done");
   });
 });

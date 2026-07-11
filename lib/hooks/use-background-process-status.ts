@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useUnifiedTasksStore } from "@/lib/stores/unified-tasks-store";
-import type { UnifiedTask } from "@/lib/background-tasks/types";
+import type { TaskStatus, UnifiedTask } from "@/lib/background-tasks/types";
 import { resilientFetch } from "@/lib/utils/resilient-fetch";
 
 export interface BackgroundProcessInfo {
@@ -8,12 +8,18 @@ export interface BackgroundProcessInfo {
   command: string;
   cwd?: string;
   toolName?: string;
+  /** Final task status: running | succeeded | failed | cancelled | stale | queued */
+  status: TaskStatus;
   running: boolean;
   elapsed: number;
   startedAt: string;
   settledAt?: string | null;
   exitCode?: number | null;
   signal?: string | null;
+  /** Why the process stopped: exit | timeout | killed | spawn-error */
+  settleReason?: string;
+  /** Human-readable failure reason, when status is failed */
+  error?: string;
 }
 
 interface BackgroundProcessStatus {
@@ -34,17 +40,21 @@ function asNullableNumber(value: unknown): number | null | undefined {
 
 export function toBackgroundProcessInfo(task: UnifiedTask, now = Date.now()): BackgroundProcessInfo {
   const meta = task.metadata as Record<string, unknown> | undefined;
+  const running = task.status === "running" || task.status === "queued";
   return {
     processId: task.runId,
     command: asString(meta?.command) ?? task.runId,
     cwd: asString(meta?.cwd),
     toolName: asString(meta?.toolName),
-    running: task.status === "running",
+    status: task.status,
+    running,
     elapsed: task.durationMs ?? Math.max(0, now - new Date(task.startedAt).getTime()),
     startedAt: task.startedAt,
     settledAt: task.completedAt ?? asString(meta?.settledAt) ?? null,
     exitCode: asNullableNumber(meta?.exitCode),
     signal: asString(meta?.signal) ?? null,
+    settleReason: asString(meta?.settleReason),
+    error: task.error,
   };
 }
 
@@ -58,21 +68,35 @@ export function useBackgroundProcessStatus(
   const updateTask = useUnifiedTasksStore((s) => s.updateTask);
   const [stoppingProcessIds, setStoppingProcessIds] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  const processes = useMemo(() => {
+  const relevantTasks = useMemo(() => {
     if (!characterId || !sessionId) return [];
-    const relevantTasks = [...tasks, ...recentlyCompleted];
-    return relevantTasks
-      .filter((task) => {
-        const meta = task.metadata as Record<string, unknown> | undefined;
-        return (
-          meta?.isBackgroundProcess === true &&
-          task.characterId === characterId &&
-          task.sessionId === sessionId
-        );
-      })
-      .map((task) => toBackgroundProcessInfo(task));
+    return [...tasks, ...recentlyCompleted].filter((task) => {
+      const meta = task.metadata as Record<string, unknown> | undefined;
+      return (
+        meta?.isBackgroundProcess === true &&
+        task.characterId === characterId &&
+        task.sessionId === sessionId
+      );
+    });
   }, [characterId, recentlyCompleted, sessionId, tasks]);
+
+  const hasRunning = relevantTasks.some(
+    (task) => task.status === "running" || task.status === "queued",
+  );
+
+  // Tick every second while any process is running so elapsed timers stay live.
+  useEffect(() => {
+    if (!hasRunning) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [hasRunning]);
+
+  const processes = useMemo(
+    () => relevantTasks.map((task) => toBackgroundProcessInfo(task, now)),
+    [relevantTasks, now],
+  );
 
   const stopProcess = useCallback(async (processId: string) => {
     setError(null);

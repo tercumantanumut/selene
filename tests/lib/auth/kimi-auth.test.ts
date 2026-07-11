@@ -93,4 +93,15 @@ describe("kimi auth refresh", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(getKimiOAuthToken()?.access_token).toBe("deduped-access-token");
   });
+
+  it("uses current Kimi Code CLI identity headers", async () => {
+    const { getKimiDeviceHeaders } = await loadKimiAuth();
+
+    expect(getKimiDeviceHeaders()).toMatchObject({
+      "User-Agent": "kimi-code-cli/0.19.2",
+      "X-Msh-Platform": "kimi_code_cli",
+      "X-Msh-Version": "0.19.2",
+      "X-Msh-Device-Id": "device-1",
+    });
+  });
 });

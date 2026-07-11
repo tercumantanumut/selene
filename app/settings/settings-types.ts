@@ -10,6 +10,7 @@ export type LlmProvider = "anthropic" | "openrouter" | "antigravity" | "codex" |
 interface AppSettingsPublic {
   appLanguage?: "en" | "tr";
   llmProvider: LlmProvider;
+  claudecodeBackend?: "dario" | "sdk";
   anthropicApiKey?: string;
   openrouterApiKey?: string;
   kimiApiKey?: string;
@@ -111,6 +112,7 @@ export type SettingsSection = "api-keys" | "models" | "vector-search" | "comfyui
 export interface FormState {
   appLanguage: "en" | "tr";
   llmProvider: LlmProvider;
+  claudecodeBackend: "dario" | "sdk";
   anthropicApiKey: string;
   openrouterApiKey: string;
   kimiApiKey: string;
@@ -253,6 +255,7 @@ export interface FormState {
 export const DEFAULT_FORM_STATE: FormState = {
   appLanguage: "en",
   llmProvider: "anthropic",
+  claudecodeBackend: "dario",
   anthropicApiKey: "",
   openrouterApiKey: "",
   kimiApiKey: "",
@@ -387,6 +390,7 @@ export function buildFormStateFromData(data: Record<string, any>): FormState {
   return {
     appLanguage: data.appLanguage === "tr" ? "tr" : "en",
     llmProvider: data.llmProvider || "anthropic",
+    claudecodeBackend: data.claudecodeBackend === "sdk" ? "sdk" : "dario",
     anthropicApiKey: data.anthropicApiKey || "",
     openrouterApiKey: data.openrouterApiKey || "",
     kimiApiKey: data.kimiApiKey || "",

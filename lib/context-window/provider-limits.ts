@@ -210,6 +210,19 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     supportsStreaming: true,
   },
 
+  // Codex GPT-5.6 family (372K context)
+  "gpt-5.6-sol": {
+    maxTokens: 372000,
+    supportsStreaming: true,
+  },
+  "gpt-5.6-terra": {
+    maxTokens: 372000,
+    supportsStreaming: true,
+  },
+  "gpt-5.6-luna": {
+    maxTokens: 372000,
+    supportsStreaming: true,
+  },
   // Codex (GPT-5.5 — 1M total, but provider currently accepts ~276K input + 128K output)
   "gpt-5.5": {
     ...CODEX_GPT_55_CONTEXT_CONFIG,

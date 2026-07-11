@@ -1,4 +1,27 @@
 export const CODEX_MODEL_IDS = [
+  // GPT-5.6 Sol (372K context, six reasoning levels)
+  "gpt-5.6-sol",
+  "gpt-5.6-sol-low",
+  "gpt-5.6-sol-medium",
+  "gpt-5.6-sol-high",
+  "gpt-5.6-sol-xhigh",
+  "gpt-5.6-sol-max",
+  "gpt-5.6-sol-ultra",
+  // GPT-5.6 Terra (372K context, six reasoning levels)
+  "gpt-5.6-terra",
+  "gpt-5.6-terra-low",
+  "gpt-5.6-terra-medium",
+  "gpt-5.6-terra-high",
+  "gpt-5.6-terra-xhigh",
+  "gpt-5.6-terra-max",
+  "gpt-5.6-terra-ultra",
+  // GPT-5.6 Luna (372K context, no Ultra level)
+  "gpt-5.6-luna",
+  "gpt-5.6-luna-low",
+  "gpt-5.6-luna-medium",
+  "gpt-5.6-luna-high",
+  "gpt-5.6-luna-xhigh",
+  "gpt-5.6-luna-max",
   // GPT-5.5 (released 2026-04-23 — 1M context, successor to 5.4)
   "gpt-5.5",
   "gpt-5.5-low",
@@ -84,6 +107,29 @@ export const CODEX_MODEL_IDS = [
 type CodexModelId = (typeof CODEX_MODEL_IDS)[number];
 
 const MODEL_MAP: Record<string, string> = {
+  // GPT-5.6 Sol
+  "gpt-5.6-sol": "gpt-5.6-sol",
+  "gpt-5.6-sol-low": "gpt-5.6-sol",
+  "gpt-5.6-sol-medium": "gpt-5.6-sol",
+  "gpt-5.6-sol-high": "gpt-5.6-sol",
+  "gpt-5.6-sol-xhigh": "gpt-5.6-sol",
+  "gpt-5.6-sol-max": "gpt-5.6-sol",
+  "gpt-5.6-sol-ultra": "gpt-5.6-sol",
+  // GPT-5.6 Terra
+  "gpt-5.6-terra": "gpt-5.6-terra",
+  "gpt-5.6-terra-low": "gpt-5.6-terra",
+  "gpt-5.6-terra-medium": "gpt-5.6-terra",
+  "gpt-5.6-terra-high": "gpt-5.6-terra",
+  "gpt-5.6-terra-xhigh": "gpt-5.6-terra",
+  "gpt-5.6-terra-max": "gpt-5.6-terra",
+  "gpt-5.6-terra-ultra": "gpt-5.6-terra",
+  // GPT-5.6 Luna
+  "gpt-5.6-luna": "gpt-5.6-luna",
+  "gpt-5.6-luna-low": "gpt-5.6-luna",
+  "gpt-5.6-luna-medium": "gpt-5.6-luna",
+  "gpt-5.6-luna-high": "gpt-5.6-luna",
+  "gpt-5.6-luna-xhigh": "gpt-5.6-luna",
+  "gpt-5.6-luna-max": "gpt-5.6-luna",
   // GPT-5.5
   "gpt-5.5": "gpt-5.5",
   "gpt-5.5-low": "gpt-5.5",
@@ -167,6 +213,9 @@ const MODEL_MAP: Record<string, string> = {
 };
 
 const BASE_MODEL_LABELS: Record<string, string> = {
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-5.5": "GPT-5.5",
   "gpt-5.4": "GPT-5.4",
   "gpt-5.4-mini": "GPT-5.4 Mini",
@@ -198,7 +247,11 @@ function formatReasoningSuffix(suffix: string): string {
     case "high":
       return "High";
     case "xhigh":
-      return "XHigh";
+      return "Extra High";
+    case "max":
+      return "Max";
+    case "ultra":
+      return "Ultra";
     default:
       return suffix;
   }
@@ -215,6 +268,15 @@ export function normalizeCodexModel(model: string | undefined): string {
 
   const normalized = modelId.toLowerCase();
 
+  if (normalized.includes("gpt-5.6-sol") || normalized.includes("gpt 5.6 sol")) {
+    return "gpt-5.6-sol";
+  }
+  if (normalized.includes("gpt-5.6-terra") || normalized.includes("gpt 5.6 terra")) {
+    return "gpt-5.6-terra";
+  }
+  if (normalized.includes("gpt-5.6-luna") || normalized.includes("gpt 5.6 luna")) {
+    return "gpt-5.6-luna";
+  }
   if (normalized.includes("gpt-5.5") || normalized.includes("gpt 5.5")) {
     return "gpt-5.5";
   }
@@ -265,7 +327,7 @@ export function normalizeCodexModel(model: string | undefined): string {
 }
 
 function getCodexModelDisplayName(modelId: string): string {
-  const match = modelId.match(/-(none|low|medium|high|xhigh)$/);
+  const match = modelId.match(/-(none|low|medium|high|xhigh|max|ultra)$/);
   const suffix = match?.[1];
   const baseId = suffix ? modelId.slice(0, -match[0].length) : modelId;
   const baseLabel = BASE_MODEL_LABELS[baseId] || baseId;

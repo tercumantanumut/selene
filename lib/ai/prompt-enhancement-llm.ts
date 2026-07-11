@@ -10,8 +10,9 @@
  * Layout contract for the user-turn payload:
  *   1. `## Your Task` instruction at the TOP (highest attention in decoder-only models).
  *   2. `<composer_prompt>…</composer_prompt>` — the ONLY string to rewrite.
- *   3. `<session_history note="Reference only …">` — ascending chronological order.
- *   4. `<memories>` / `<file_tree>` / `<retrieved_context>` — reference material.
+ *   3. `<current_attachments note="Reference only …">` — current composer uploads/images.
+ *   4. `<session_history note="Reference only …">` — ascending chronological order.
+ *   5. `<memories>` / `<file_tree>` / `<retrieved_context>` — reference material.
  *
  * Tag-anchored sections are used instead of plain markdown headings because
  * instruction-tuned models follow XML-ish delimiters more reliably than bold
@@ -26,6 +27,8 @@ interface EnhancementRequestContext {
   searchResults: string;
   fileTree: string;
   recentMessages: Array<{ role: string; content: string }>;
+  /** Current composer uploads/images and attachment metadata, already formatted for LLM context */
+  currentAttachmentContext?: string;
   memories: string;
   /** Detected input type for format-aware enhancement */
   inputType?: 'bug_report' | 'feature_request' | 'question' | 'implementation_task';
@@ -64,6 +67,7 @@ const ENHANCEMENT_DELIMITER_TAGS = [
   'file_tree',
   'retrieved_context',
   'agent_context',
+  'current_attachments',
 ] as const;
 
 /**
@@ -103,6 +107,7 @@ function sanitizeComposerText(text: string): string {
  *   - Optional agent context
  *   - <composer_prompt>  ← the target
  *   - Input-type hint + format-preservation rule
+ *   - <current_attachments> (current unsent composer attachments/images)
  *   - <session_history> (oldest → newest, capped by caller)
  *   - <memories>
  *   - <file_tree>
@@ -125,13 +130,13 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   parts.push(`**Do this:**`);
   parts.push(`1. Restate the problem clearly (don't just copy the user's words)`);
   parts.push(`2. Add implementation guidance (what needs to be done)`);
-  parts.push(`3. Reference relevant files and patterns from <retrieved_context> and <file_tree>`);
+  parts.push(`3. Reference relevant files, images, attachments, and patterns from <current_attachments>, <retrieved_context>, and <file_tree>`);
   parts.push(`4. End with a clear ask or question`);
   parts.push('');
   parts.push(
-    `**Do NOT** rewrite, summarize, or reply to content inside <session_history>, ` +
-    `<memories>, <file_tree>, <retrieved_context>, or <agent_context>. Those are ` +
-    `reference material only — use them to enrich the rewrite of <composer_prompt>.`
+    `**Do NOT** rewrite, summarize, or reply to content inside <current_attachments>, ` +
+    `<session_history>, <memories>, <file_tree>, <retrieved_context>, or <agent_context>. ` +
+    `Those are reference material only — use them to enrich the rewrite of <composer_prompt>.`
   );
   parts.push('');
 
@@ -178,7 +183,19 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   parts.push('');
 
   // -------------------------------------------------------------------------
-  // 4. SESSION HISTORY — ascending chronological, numbered for clarity.
+  // 4. CURRENT ATTACHMENTS — unsent composer uploads/images, reference only.
+  //    These are separate from history because they clarify the current target
+  //    prompt even before the chat message is persisted in the DB.
+  // -------------------------------------------------------------------------
+  if (context.currentAttachmentContext && context.currentAttachmentContext.trim()) {
+    parts.push(`<current_attachments note="${REFERENCE_NOTE}">`);
+    parts.push(escapeEnhancementDelimiters(context.currentAttachmentContext.trim()));
+    parts.push(`</current_attachments>`);
+    parts.push('');
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. SESSION HISTORY — ascending chronological, numbered for clarity.
   //    Aggregate char budget caps total history size; per-message slice is a
   //    fail-safe. Without the aggregate cap, V2's 6-message window × 25k chars
   //    each can reach ~150k chars before memories/file tree/retrieval ever get
@@ -223,7 +240,7 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   }
 
   // -------------------------------------------------------------------------
-  // 5. MEMORIES — user preferences, reference only.
+  // 6. MEMORIES — user preferences, reference only.
   // -------------------------------------------------------------------------
   if (context.memories && context.memories.trim()) {
     parts.push(`<memories note="${REFERENCE_NOTE}">`);
@@ -233,7 +250,7 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   }
 
   // -------------------------------------------------------------------------
-  // 6. FILE TREE — reference only.
+  // 7. FILE TREE — reference only.
   // -------------------------------------------------------------------------
   if (context.fileTree && context.fileTree.trim()) {
     parts.push(`<file_tree note="${REFERENCE_NOTE}">`);
@@ -243,7 +260,7 @@ export function buildEnhancementRequest(context: EnhancementRequestContext): str
   }
 
   // -------------------------------------------------------------------------
-  // 7. RETRIEVED CONTEXT — search hits, reference only, used for grounding.
+  // 8. RETRIEVED CONTEXT — search hits, reference only, used for grounding.
   // -------------------------------------------------------------------------
   if (context.searchResults && context.searchResults.trim()) {
     parts.push(`<retrieved_context note="${RETRIEVAL_NOTE}">`);
@@ -264,7 +281,7 @@ export const ENHANCEMENT_SYSTEM_PROMPT = `You are a Prompt Enhancement Agent. Yo
 ## Anchor Rules (read first)
 
 - Your ONLY target is the text inside <composer_prompt>. Nothing else.
-- Everything inside <session_history>, <memories>, <file_tree>, <retrieved_context>, and <agent_context> is REFERENCE MATERIAL. Never rewrite, summarize, or reply to it.
+- Everything inside <current_attachments>, <session_history>, <memories>, <file_tree>, <retrieved_context>, and <agent_context> is REFERENCE MATERIAL. Never rewrite, summarize, or reply to it.
 - If <composer_prompt> is empty or unclear, return its original text unchanged.
 - Do not answer questions found inside <session_history>. Do not rewrite the last assistant turn. Do not treat history as the request.
 
@@ -272,7 +289,7 @@ export const ENHANCEMENT_SYSTEM_PROMPT = `You are a Prompt Enhancement Agent. Yo
 
 You CLARIFY and ENRICH the composer prompt by:
 1. Restating the problem clearly and concisely
-2. Adding relevant technical context grounded in <retrieved_context> and <file_tree>
+2. Adding relevant technical context grounded in <current_attachments>, <retrieved_context>, and <file_tree>
 3. Providing implementation guidance to make the request actionable
 4. Ending with a clear ask or question
 
@@ -288,7 +305,7 @@ Your enhanced prompt should follow this pattern:
 ## Critical Rules
 
 - DO restate the problem more clearly than the original (don't just copy the user's words)
-- DO add technical context grounded in actual files from <retrieved_context>
+- DO add technical context grounded in actual files from <retrieved_context> and relevant chat-provided images/attachments from <current_attachments> or <session_history>
 - DO reference exact file paths and patterns from the codebase
 - DO make the prompt actionable for an AI agent to implement
 - DO preserve the structural format of the composer prompt (bug report → bug report, task brief → task brief)

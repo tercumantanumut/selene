@@ -10,6 +10,7 @@ export interface LivePromptEntry {
     kind?: "generic" | "delegation_completion";
     delegationId?: string;
     delegateName?: string;
+    status?: "completed" | "failed" | "stopped";
     resultVersion?: number;
     deliveryId?: string;
     resultHash?: string;

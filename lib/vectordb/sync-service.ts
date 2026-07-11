@@ -11,7 +11,7 @@ import { db } from "@/lib/db/sqlite-client";
 import { agentSyncFolders, agentSyncFiles, characters, type AgentSyncFolder } from "@/lib/db/sqlite-character-schema";
 import { eq, and, sql, or, isNotNull } from "drizzle-orm";
 import { removeFileFromVectorDB, removeFolderFromVectorDB } from "./indexing";
-import { DEFAULT_IGNORE_PATTERNS, createIgnoreMatcher } from "./ignore-patterns";
+import { DEFAULT_IGNORE_PATTERNS, createAggressiveIgnore } from "./ignore-patterns";
 import { deleteAgentTable, listAgentTables } from "./collections";
 import { startWatching, isWatching, stopWatching } from "./file-watcher";
 import { getEmbeddingModelId } from "@/lib/ai/providers";
@@ -30,6 +30,7 @@ import {
 } from "./sync-mode-resolver";
 import { onFolderChange, notifyFolderChange, type FolderChangeEvent } from "./folder-events";
 import { resolveRegistryPath, getSubscriberCount } from "./shared-folder-registry";
+import { getResourceErrorCode, isFileDescriptorLimitError } from "./resource-errors";
 
 // Re-export types so existing imports from this path continue to work
 export type { ParallelConfig, SyncFolderConfig, SyncFolderUpdateConfig, SyncResult } from "./sync-types";
@@ -274,7 +275,7 @@ export async function syncFolder(
     const allowedExtensions = fileTypeFilters.length > 0 ? fileTypeFilters : includeExtensions;
     const excludePatterns = parseJsonArray(folder.excludePatterns);
     const mergedExcludePatterns = Array.from(new Set([...DEFAULT_IGNORE_PATTERNS, ...excludePatterns]));
-    const shouldIgnore = createIgnoreMatcher(mergedExcludePatterns, folderPath);
+    const shouldIgnore = createAggressiveIgnore(mergedExcludePatterns, folderPath, allowedExtensions);
     const chunkingOverrides = resolveChunkingOverrides(behavior);
     const skipReasons: Record<string, number> = {};
 
@@ -470,8 +471,26 @@ export async function syncFolder(
       }
     }
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : "Sync failed";
+    const hitFileDescriptorLimit = isFileDescriptorLimitError(error);
+    const resourceCode = getResourceErrorCode(error) ?? "file descriptor limit";
+    const rawErrorMessage = error instanceof Error ? error.message : "Sync failed";
+    const errorMsg = hitFileDescriptorLimit
+      ? `Paused: ${resourceCode} while scanning ${folderPath}. ` +
+        `Dependency, cache, virtualenv, build, and unrequested asset trees are excluded automatically; ` +
+        `reduce the remaining sync scope before resuming if the limit persists.`
+      : rawErrorMessage;
     result.errors.push(errorMsg);
+
+    if (hitFileDescriptorLimit) {
+      console.warn(`[SyncService] ${errorMsg}`);
+      if (isWatching(folderId)) {
+        try {
+          await stopWatching(folderId);
+        } catch (stopError) {
+          console.warn(`[SyncService] Failed to stop watcher after ${resourceCode}:`, stopError);
+        }
+      }
+    }
 
     // Re-read DB status: if user paused during sync, preserve paused state
     const [currentState] = await db
@@ -484,7 +503,17 @@ export async function syncFolder(
     } else {
       await db
         .update(agentSyncFolders)
-        .set({ status: "error", lastError: errorMsg, updatedAt: new Date().toISOString() })
+        .set(hitFileDescriptorLimit
+          ? {
+              status: "paused",
+              lastError: errorMsg,
+              // Discovery aborted before reconciliation. Preserve the previous
+              // counts so a resource error never looks like a successful empty scan.
+              fileCount: folder.fileCount,
+              chunkCount: folder.chunkCount,
+              updatedAt: new Date().toISOString(),
+            }
+          : { status: "error", lastError: errorMsg, updatedAt: new Date().toISOString() })
         .where(eq(agentSyncFolders.id, folderId));
     }
   } finally {

@@ -5,6 +5,7 @@ export interface DelegationCompletion {
   initiatorSessionId: string;
   characterId: string;
   completedAt: number;
+  status?: "completed" | "failed" | "stopped";
   error?: string;
   /**
    * The full delegation result content (e.g. `<delegation-result>` XML).

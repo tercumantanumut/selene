@@ -171,6 +171,9 @@ const nextConfig: NextConfig = {
     // MCP SDK - uses Node.js child_process and should never run in browser
     "@modelcontextprotocol/sdk",
     "cross-spawn",
+    // Claude Agent SDK - bundles a ~13MB cli.js spawned as a subprocess for the
+    // optional "sdk" Claude Code backend; must never be Turbopack-bundled.
+    "@anthropic-ai/claude-agent-sdk",
     // Design workspace Tailwind preview compiler - keep CSS toolchain unbundled
     // so runtime asset paths resolve from real node_modules instead of Turbopack's
     // synthetic /ROOT paths inside server bundles.

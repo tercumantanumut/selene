@@ -204,7 +204,7 @@ export function storeUserAnswer(
  * Pop (retrieve and delete) the user's stored answer for a tool call.
  * Returns undefined if no user answer was stored.
  */
-function popUserAnswer(
+export function popUserAnswer(
   sessionId: string,
   toolUseId: string,
 ): Record<string, string> | undefined {

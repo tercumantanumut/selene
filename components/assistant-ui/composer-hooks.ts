@@ -632,6 +632,20 @@ function useSkillPickerState({
 // usePromptEnhancement
 // ---------------------------------------------------------------------------
 
+export interface PromptEnhancementAttachmentContext {
+  id?: string;
+  name?: string;
+  contentType?: string;
+  url?: string;
+  localPath?: string;
+  filePath?: string;
+  size?: number;
+  kind?: string;
+  inline?: boolean;
+  order?: number;
+  status?: string;
+}
+
 interface UsePromptEnhancementOptions {
   inputValue: string;
   setInputValue: (value: string | ((previous: string) => string)) => void;
@@ -639,6 +653,8 @@ interface UsePromptEnhancementOptions {
   sessionId?: string;
   /** Recent thread messages for conversation context */
   recentMessages: Array<{ role: string; content: string }>;
+  /** Returns current unsent composer attachments/images for enhancement context */
+  getCurrentAttachments?: () => PromptEnhancementAttachmentContext[];
   /** Expands composer placeholders (e.g. pasted text blocks) before sending to enhancement API */
   expandInput?: (input: string) => string;
 }
@@ -657,6 +673,7 @@ export function usePromptEnhancement({
   characterId,
   sessionId,
   recentMessages,
+  getCurrentAttachments,
   expandInput,
 }: UsePromptEnhancementOptions): UsePromptEnhancementReturn {
   const t = useTranslations("assistantUi");
@@ -711,6 +728,8 @@ export function usePromptEnhancement({
       return;
     }
 
+    const currentAttachments = getCurrentAttachments?.() ?? [];
+
     setIsEnhancing(true);
     setEnhancementInfo(null);
 
@@ -731,6 +750,7 @@ export function usePromptEnhancement({
           sessionId,
           useLLM: true,
           conversationContext: recentMessages,
+          ...(currentAttachments.length > 0 ? { currentAttachments } : {}),
         },
         { timeout: 150_000, retries: 0 }
       );
@@ -778,7 +798,7 @@ export function usePromptEnhancement({
     } finally {
       setIsEnhancing(false);
     }
-  }, [inputValue, characterId, sessionId, recentMessages, expandInput, setInputValue, t]);
+  }, [inputValue, characterId, sessionId, recentMessages, getCurrentAttachments, expandInput, setInputValue, t]);
 
   return { isEnhancing, enhancedContext, enhancementInfo, clearEnhancement, handleEnhance };
 }
