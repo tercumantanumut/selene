@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/tercumantanumut-selene-badge.png)](https://mseep.ai/app/tercumantanumut-selene)
+
 # Selene
 
 <div align="center">
