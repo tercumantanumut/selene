@@ -2921,6 +2921,7 @@
         "label": "Language",
         "en": "English",
         "tr": "Türkçe",
+        "zh-CN": "简体中文",
         "updateError": "Failed to update language. Please try again."
       },
       "claudecodeBackend": {
