@@ -106,12 +106,13 @@ export function useContextStatus({
   const [isCompacting, setIsCompacting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  const fetchStatus = useCallback(async () => {
+  const fetchStatus = useCallback(async (force = false) => {
     if (!sessionId) return;
 
-    // Return cached data if it's still fresh (prevents Strict Mode double-mount re-fetches)
+    // Reuse fresh data only for passive mount hydration. Explicit refreshes and
+    // active-run polls must hit the API so live delegated-session progress is visible.
     const cached = statusCache.get(sessionId);
-    if (cached && Date.now() - cached.timestamp < STALE_TIME_MS) {
+    if (!force && cached && Date.now() - cached.timestamp < STALE_TIME_MS) {
       setStatus(cached.data);
       return;
     }
@@ -148,6 +149,8 @@ export function useContextStatus({
 
     setIsLoading(false);
   }, [sessionId]);
+
+  const refresh = useCallback(() => fetchStatus(true), [fetchStatus]);
 
   const compact = useCallback(async (): Promise<{
     success: boolean;
@@ -216,7 +219,7 @@ export function useContextStatus({
       const detail = (event as CustomEvent).detail as { sessionId?: unknown } | undefined;
       if (detail?.sessionId !== sessionId) return;
       statusCache.delete(sessionId);
-      void fetchStatus();
+      void fetchStatus(true);
     };
 
     const handleStatusChanged = (event: Event) => {
@@ -241,7 +244,7 @@ export function useContextStatus({
 
     const onVisibilityChange = () => {
       if (!document.hidden) {
-        void fetchStatus();
+        void fetchStatus(true);
       }
     };
 
@@ -257,7 +260,7 @@ export function useContextStatus({
       if (pauseWhenHidden && typeof document !== "undefined" && document.hidden) {
         return;
       }
-      void fetchStatus();
+      void fetchStatus(true);
     }, pollIntervalMs);
 
     return () => clearInterval(interval);
@@ -276,7 +279,7 @@ export function useContextStatus({
     status,
     isLoading,
     error,
-    refresh: fetchStatus,
+    refresh,
     compact,
     isCompacting,
   };

@@ -226,9 +226,12 @@ export class ContextWindowManager {
     const thresholds = getTokenThresholds(modelId, provider);
     const delegatedAnnotationsPresent = hasDelegatedAnnotations(messages);
 
+    const sessionMetadata = (session.metadata ?? null) as Record<string, unknown> | null;
+    const targetScope: ContextScope = sessionMetadata?.isDelegation === true ? "delegated" : "main";
     const scopedOptions = {
       provider,
-      sessionMetadata: (session.metadata ?? null) as Record<string, unknown> | null,
+      sessionMetadata,
+      targetScope,
       fallbackEnabled: isScopedFallbackEnabled(),
       fallbackMinConfidence: getScopedFallbackMinConfidence(),
       hasDelegatedAnnotations: delegatedAnnotationsPresent,

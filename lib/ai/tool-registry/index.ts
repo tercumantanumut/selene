@@ -12,6 +12,14 @@
 
 // Core registry
 export { ToolRegistry } from "./registry";
-export { createToolSearchTool, type ToolSearchContext } from "./search-tool";
+export { authorizeRuntimeLoadedTools, createToolSearchTool, type ToolSearchContext } from "./search-tool";
 export { registerAllTools } from "./tool-definitions";
+export * from "./loading-policy";
+export type {
+  ToolDefaultLoadingPolicy,
+  ToolLoadingPreference,
+  EffectiveToolLoadingPolicy,
+  ResolvedToolLoadingPolicy,
+  ToolLoadPlan,
+} from "./types";
 

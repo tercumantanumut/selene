@@ -104,14 +104,16 @@ describe("isModelCompatibleWithProvider", () => {
   });
 
   describe("kimi", () => {
-    it("accepts kimi models", () => {
+    it("accepts Kimi models, including the bare K3 coding API ID", () => {
+      expect(isModelCompatibleWithProvider("k3", "kimi")).toBe(true);
       expect(isModelCompatibleWithProvider("kimi-k2.5", "kimi")).toBe(true);
       expect(isModelCompatibleWithProvider("kimi-k2-turbo-preview", "kimi")).toBe(true);
       expect(isModelCompatibleWithProvider("moonshot-v1-8k", "kimi")).toBe(true);
     });
 
-    it("rejects non-kimi models", () => {
+    it("rejects non-Kimi models and K3-like IDs", () => {
       expect(isModelCompatibleWithProvider("claude-sonnet-4-5-20250929", "kimi")).toBe(false);
+      expect(isModelCompatibleWithProvider("k3-preview", "kimi")).toBe(false);
     });
   });
 
@@ -213,6 +215,18 @@ describe("validateSessionModelConfig", () => {
       },
       "anthropic", // global provider is different
     );
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts K3 when selected as a Kimi session model", () => {
+    const result = validateSessionModelConfig(
+      {
+        sessionProvider: "kimi",
+        sessionChatModel: "k3",
+      },
+      "anthropic",
+    );
+
     expect(result.valid).toBe(true);
   });
 

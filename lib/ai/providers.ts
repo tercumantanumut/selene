@@ -122,7 +122,7 @@ export const DEFAULT_MODELS: Record<LLMProvider, string> = {
   antigravity: "claude-sonnet-4-6", // Free via Antigravity
   codex: "gpt-5.4",
   claudecode: "claude-sonnet-4-6", // Via Claude Pro/MAX OAuth
-  kimi: "kimi-k2.6", // Moonshot Kimi K2.6 with 256K context, vision, and thinking
+  kimi: "k3", // Moonshot K3 with 1,048,576-token context, always-on thinking, vision, and tool use
   minimax: "MiniMax-M2.1", // MiniMax flagship with 80K context
   blackboxai: "claude-sonnet-4.5",
   deepseek: "deepseek-v4-pro", // DeepSeek V4 Pro: 1M context, thinking mode
@@ -760,7 +760,7 @@ export function getLanguageModelForProvider(
           throw new Error("Kimi authentication required. Please login via Settings or configure KIMI_API_KEY.");
         }
       }
-      return getKimiClient()(model);
+      return getKimiClient(model)(model);
     }
 
     case "minimax": {
@@ -839,7 +839,7 @@ export function getModelByName(modelId: string): LanguageModel {
   if (isKimiModel(modelId)) {
     if (isKimiOAuthAuthenticated() || getKimiApiKey()) {
       console.log(`[PROVIDERS] Using Kimi for model: ${modelId}`);
-      return getKimiClient()(modelId);
+      return getKimiClient(modelId)(modelId);
     }
     // Fall through to OpenRouter if no Kimi auth
   }

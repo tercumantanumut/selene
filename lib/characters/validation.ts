@@ -76,9 +76,15 @@ const pluginAgentSeedSchema = z.object({
   tags: z.array(z.string().max(120)).optional(),
 });
 
+const toolLoadingPreferenceSchema = z.enum(["always", "deferred"]);
+
 export const agentMetadataSchema = z.object({
   /** List of enabled tool names for this agent */
   enabledTools: z.array(z.string()).optional(),
+  /** Per-enabled-tool initial loading preference. Authorization still comes from enabledTools. */
+  toolLoadingPreferences: z.record(z.string(), toolLoadingPreferenceSchema).optional(),
+  /** Internal migration guard for per-tool initial loading preferences */
+  toolLoadingPolicyMigrationApplied: z.boolean().optional(),
   /** Optional cache/fallback list of enabled plugin IDs for this agent */
   enabledPlugins: z.array(z.string()).optional(),
   /** Agent's purpose/responsibilities description */

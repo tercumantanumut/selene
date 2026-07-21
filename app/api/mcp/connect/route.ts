@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { MCPClientManager, resolveMCPConfig } from "@/lib/mcp/client-manager";
 import { clearMCPAuthCache, clearMCPAuthCacheForServer } from "@/lib/mcp/auth-cache";
+import { buildDefaultMCPOAuthRedirectUrl, clearAllMCPOAuth, clearMCPOAuthForServer } from "@/lib/mcp/oauth-provider";
 import { getActivePluginMCPServers } from "@/lib/plugins/registry";
 import { connectPluginMCPServers } from "@/lib/plugins/mcp-integration";
 import type { PluginMCPServerEntry } from "@/lib/plugins/types";
@@ -71,12 +72,14 @@ export async function POST(request: NextRequest) {
                         const url = (config as { url?: string }).url;
                         if (url) {
                             await clearMCPAuthCacheForServer(url);
+                            clearMCPOAuthForServer(serverName, url);
                         }
                     }
                 }
             } else {
                 // Clear all MCP auth cache
                 await clearMCPAuthCache();
+                clearAllMCPOAuth();
             }
         }
 
@@ -84,7 +87,19 @@ export async function POST(request: NextRequest) {
         const pluginServerNames = serverNames?.filter(n => n.startsWith("plugin:")) || [];
         const userServerNames = serversToConnect.filter(n => !n.startsWith("plugin:"));
 
-        const results: Record<string, { success: boolean; error?: string; toolCount?: number }> = {};
+        const results: Record<string, {
+            success: boolean;
+            error?: string;
+            toolCount?: number;
+            authRequired?: boolean;
+            authorizationUrl?: string;
+            connectionState?: string;
+            recovery?: string;
+            details?: string;
+            serverUrl?: string;
+            transportType?: string;
+            errorStatus?: number | string;
+        }> = {};
 
         // Connect user-configured servers
         for (const serverName of userServerNames) {
@@ -111,11 +126,20 @@ export async function POST(request: NextRequest) {
                 }
 
                 const resolved = await resolveMCPConfig(serverName, config, env, characterId);
+                resolved.oauthRedirectUrl = buildDefaultMCPOAuthRedirectUrl(request.url);
                 const status = await manager.connect(serverName, resolved, characterId);
                 results[serverName] = {
                     success: status.connected,
                     error: status.lastError,
                     toolCount: status.toolCount,
+                    authRequired: status.authRequired,
+                    authorizationUrl: status.authorizationUrl,
+                    connectionState: status.connectionState,
+                    recovery: status.recovery,
+                    details: status.details,
+                    serverUrl: status.serverUrl,
+                    transportType: status.transportType,
+                    errorStatus: status.errorStatus,
                 };
             } catch (error) {
                 results[serverName] = {
@@ -180,11 +204,21 @@ export async function POST(request: NextRequest) {
                             results[namespacedName] = {
                                 success: true,
                                 toolCount: status?.toolCount ?? 0,
+                                connectionState: status?.connectionState,
                             };
                         } else {
+                            const status = manager.getAllStatus().find(s => s.serverName === namespacedName);
                             results[namespacedName] = {
                                 success: false,
-                                error: `Failed to connect plugin server: ${failed.join(", ")}`,
+                                error: status?.lastError ?? `Failed to connect plugin server: ${failed.join(", ")}`,
+                                authRequired: status?.authRequired,
+                                authorizationUrl: status?.authorizationUrl,
+                                connectionState: status?.connectionState,
+                                recovery: status?.recovery,
+                                details: status?.details,
+                                serverUrl: status?.serverUrl,
+                                transportType: status?.transportType,
+                                errorStatus: status?.errorStatus,
                             };
                         }
                     } catch (error) {

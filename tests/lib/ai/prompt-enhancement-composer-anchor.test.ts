@@ -200,6 +200,41 @@ describe("prompt enhancer — composer anchor & stateless ordering", () => {
     expect(stamps.has("ORDERED_MSG_00")).toBe(false);
   });
 
+  it("renders client conversationContext fallback when DB history is empty", async () => {
+    const fallbackHistory = build12MessageSession().map(({ role, content }) => ({ role, content }));
+
+    await enhancePromptWithLLM(COMPOSER_TEXT, "char-x", {
+      sessionId: "session-fallback",
+      dbMessages: [],
+      conversationContext: fallbackHistory,
+      includeMemories: false,
+      includeFileTree: false,
+    });
+
+    const userPrompt = aiMocks.generateText.mock.calls[0][0].messages.at(-1).content as string;
+    const historyMatch = userPrompt.match(/<session_history[^>]*>([\s\S]*?)<\/session_history>/);
+    expect(historyMatch).not.toBeNull();
+    const historyBlock = historyMatch![1];
+
+    expect(historyBlock).toContain("ORDERED_MSG_06");
+    expect(historyBlock).toContain("ORDERED_MSG_11");
+    expect(historyBlock).not.toContain("ORDERED_MSG_00");
+  });
+
+  it("omits session_history gracefully when no chat history exists", async () => {
+    await enhancePromptWithLLM(COMPOSER_TEXT, "char-x", {
+      sessionId: "session-empty-history",
+      dbMessages: [],
+      conversationContext: [],
+      includeMemories: false,
+      includeFileTree: false,
+    });
+
+    const userPrompt = aiMocks.generateText.mock.calls[0][0].messages.at(-1).content as string;
+    expect(userPrompt).not.toMatch(/<session_history[^>]*>[\s\S]*?<\/session_history>/);
+    expect(userPrompt).toContain("<composer_prompt>");
+  });
+
   it("does not emit a bare **User:** line for history ABOVE <composer_prompt>", async () => {
     const history = build12MessageSession();
 

@@ -13,6 +13,8 @@ export interface ContextProvenance {
 export interface ScopedCountOptions {
   provider?: LLMProvider;
   sessionMetadata?: Record<string, unknown> | null;
+  /** Scope that belongs to the session being measured. Root sessions use main; worker sessions use delegated. */
+  targetScope?: ContextScope;
   scopedMode?: "legacy" | "scoped";
   fallbackEnabled?: boolean;
   fallbackMinConfidence?: number;

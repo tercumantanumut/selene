@@ -192,6 +192,10 @@ const MODEL_METADATA: Record<
   },
 
   // Kimi
+  "k3": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
   "kimi-k2.6": {
     tier: "flagship",
     capabilities: { vision: true, thinking: true, contextWindow: "256K", speed: "standard" },
@@ -410,7 +414,7 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
   antigravity: "claude-sonnet-4-6",
   codex: "gpt-5.4",
   claudecode: "claude-sonnet-4-6",
-  kimi: "kimi-k2.6",
+  kimi: "k3",
   minimax: "MiniMax-M2.1",
   blackboxai: "anthropic/claude-sonnet-4.5",
   deepseek: "deepseek-v4-pro",

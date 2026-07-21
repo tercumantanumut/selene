@@ -16,26 +16,54 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
     Loader2, Check, X, RefreshCw, Plus, Trash2, Plug,
-    Terminal, Globe, AlertCircle, Info, Edit2, Key
+    Terminal, Globe, AlertCircle, Info, Edit2, Key, Shield, ExternalLink, Clock
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { resilientFetch, resilientPut, resilientPost, resilientPatch } from "@/lib/utils/resilient-fetch";
 import type { MCPServerConfig } from "@/lib/mcp/types";
 import { toast } from "sonner";
 import { Switch } from "@/components/ui/switch";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { MCPServerForm } from "@/components/settings/mcp-server-form";
 import { MCPTemplateEnvDialog } from "@/components/settings/mcp-template-env-dialog";
 import { PREBUILT_TEMPLATES, type MCPTemplate } from "@/components/settings/mcp-settings-constants";
+import { openExternalUrl } from "@/lib/electron/types";
+
+type MCPConnectionState =
+    | "unauthenticated"
+    | "authorization_required"
+    | "authorizing"
+    | "connected"
+    | "expired"
+    | "failed"
+    | "not_connected";
 
 interface MCPServerStatus {
     serverName: string;
     connected: boolean;
     lastError?: string;
+    connectionState?: MCPConnectionState;
+    authRequired?: boolean;
+    authorizationUrl?: string;
+    serverUrl?: string;
+    transportType?: "http" | "sse" | "stdio";
+    errorStatus?: number | string;
+    details?: string;
+    recovery?: string;
     toolCount: number;
     tools: string[];
+}
+
+interface MCPConnectionResult {
+    success?: boolean;
+    error?: string;
+    toolCount?: number;
+    authRequired?: boolean;
+    authorizationUrl?: string;
+    connectionState?: MCPConnectionState;
+    recovery?: string;
+    details?: string;
 }
 
 interface PluginServerInfo {
@@ -48,6 +76,11 @@ interface PluginServerInfo {
     toolCount: number;
     tools: string[];
     lastError?: string;
+    connectionState?: MCPConnectionState;
+    authRequired?: boolean;
+    authorizationUrl?: string;
+    details?: string;
+    recovery?: string;
     config: Record<string, unknown>;
     incomplete?: boolean;
     incompleteReason?: string;
@@ -132,6 +165,50 @@ export function MCPSettings() {
         setIsLoading(false);
     };
 
+    const validateRawMcpJson = (value: unknown): string[] => {
+        const errors: string[] = [];
+        if (!value || typeof value !== "object" || Array.isArray(value) || !("mcpServers" in value)) {
+            return [t("invalidJsonMissingRoot")];
+        }
+
+        const servers = (value as { mcpServers?: unknown }).mcpServers;
+        if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+            return [t("invalidJsonMcpServersObject")];
+        }
+
+        for (const [name, config] of Object.entries(servers)) {
+            if (!config || typeof config !== "object" || Array.isArray(config)) {
+                errors.push(t("invalidJsonServerObject", { name }));
+                continue;
+            }
+
+            const server = config as MCPServerConfig;
+            if (server.type && !["http", "sse", "stdio"].includes(server.type)) {
+                errors.push(t("invalidJsonTransport", { name }));
+            }
+            if (!server.command && server.enabled !== false) {
+                if (!server.url) {
+                    errors.push(t("validationUrlRequired"));
+                } else {
+                    try {
+                        const parsed = new URL(server.url.replace(/\$\{[^}]+\}/g, "placeholder"));
+                        if (!["http:", "https:"].includes(parsed.protocol)) errors.push(t("validationInvalidUrl"));
+                    } catch {
+                        errors.push(t("validationInvalidUrl"));
+                    }
+                }
+            }
+            if (server.headers && (typeof server.headers !== "object" || Array.isArray(server.headers))) {
+                errors.push(t("invalidJsonHeaders", { name }));
+            }
+            if (server.auth?.type && !["none", "headers", "oauth"].includes(server.auth.type)) {
+                errors.push(t("invalidJsonAuth", { name }));
+            }
+        }
+
+        return errors;
+    };
+
     const saveAll = async (updatedServers = mcpServers, updatedEnv = environment): Promise<boolean> => {
         setIsSaving(true);
         const { error } = await resilientPut("/api/mcp", {
@@ -153,31 +230,74 @@ export function MCPSettings() {
         }
     };
 
+    const openAuthorizationUrl = async (serverName: string, authorizationUrl: string) => {
+        try {
+            await openExternalUrl(authorizationUrl);
+            toast.info(t("authorizationStarted", { server: serverName }));
+        } catch (error) {
+            console.error(`Failed to open authorization URL for ${serverName}:`, error);
+            toast.error(t("authorizationOpenFailed", {
+                error: error instanceof Error ? error.message : String(error),
+            }));
+        }
+    };
+
     const connectServer = async (serverName: string) => {
         setConnectingState(prev => ({ ...prev, [serverName]: true }));
         // Get characterId from the first synced folder if available
         const characterId = syncedFolders[0]?.characterId;
 
-        const { data, error } = await resilientPost<{
-            results: Record<string, { success?: boolean; error?: string }>;
-        }>("/api/mcp/connect", {
-            serverNames: [serverName],
-            characterId,
-        });
+        try {
+            const { data, error } = await resilientPost<{
+                results: Record<string, MCPConnectionResult>;
+            }>("/api/mcp/connect", {
+                serverNames: [serverName],
+                characterId,
+            });
 
-        if (data) {
-            const result = data.results[serverName];
-            if (result?.success) {
-                toast.success(t("connected", { server: serverName }));
+            if (data) {
+                const result = data.results[serverName];
+                if (result?.success) {
+                    toast.success(t("connected", { server: serverName }));
+                } else if (result?.authRequired && result.authorizationUrl) {
+                    toast.info(t("authorizationRequired", { server: serverName }));
+                    await openAuthorizationUrl(serverName, result.authorizationUrl);
+                } else if (result?.authRequired) {
+                    toast.error(t("authorizationRequiredNoUrl", { server: serverName }));
+                } else {
+                    toast.error(t("connectFailed", { server: serverName, error: result?.error ?? "" }));
+                }
+                await loadConfig();
             } else {
-                toast.error(t("connectFailed", { server: serverName, error: result?.error ?? "" }));
+                console.error(`Failed to connect to ${serverName}:`, error);
+                toast.error(error ? t("connectionFailed", { error }) : t("connectionFailedUnknown"));
+            }
+        } finally {
+            setConnectingState(prev => ({ ...prev, [serverName]: false }));
+        }
+    };
+
+    const startOAuthAuthorization = async (serverName: string) => {
+        setConnectingState(prev => ({ ...prev, [serverName]: true }));
+        const characterId = syncedFolders[0]?.characterId;
+
+        try {
+            const { data, error } = await resilientPost<MCPConnectionResult & { connected?: boolean }>(
+                "/api/mcp/oauth/start",
+                { serverName, characterId },
+            );
+
+            if (data?.success && data.connected) {
+                toast.success(t("connected", { server: serverName }));
+            } else if (data?.authorizationUrl) {
+                await openAuthorizationUrl(serverName, data.authorizationUrl);
+            } else {
+                toast.error(t("connectFailed", { server: serverName, error: data?.error ?? error ?? "" }));
             }
             await loadConfig();
-        } else {
-            console.error(`Failed to connect to ${serverName}:`, error);
-            toast.error(error ? t("connectionFailed", { error }) : t("connectionFailedUnknown"));
+        } finally {
+            setConnectingState(prev => ({ ...prev, [serverName]: false }));
         }
-        setConnectingState(prev => ({ ...prev, [serverName]: false }));
     };
 
     // Save URL for an incomplete plugin server, then auto-reconnect
@@ -220,10 +340,12 @@ export function MCPSettings() {
     // Handle form save (for both add and edit)
     const handleFormSave = async (name: string, config: MCPServerConfig) => {
         const updatedServers = { ...mcpServers, [name]: config };
-        await saveAll(updatedServers);
-        setIsAddingServer(false);
-        setEditingServer(null);
-        toast.success(editingServer ? t("serverUpdated", { name }) : t("serverAdded", { name }));
+        if (await saveAll(updatedServers)) {
+            setIsAddingServer(false);
+            setEditingServer(null);
+            toast.success(editingServer ? t("serverUpdated", { name }) : t("serverAdded", { name }));
+            await connectServer(name);
+        }
     };
 
     const handleFormCancel = () => {
@@ -314,7 +436,19 @@ export function MCPSettings() {
         const s = status.find(st => st.serverName === serverName);
         if (!s) return { badge: "bg-terminal-border text-terminal-muted", icon: AlertCircle, text: t("statusNotConnected") };
         if (s.connected) return { badge: "bg-terminal-green/20 text-terminal-green", icon: Check, text: t("statusConnected") };
-        return { badge: "bg-red-100 text-red-600", icon: X, text: t("statusError") };
+
+        switch (s.connectionState) {
+            case "authorization_required":
+                return { badge: "bg-yellow-100 text-yellow-700", icon: Shield, text: t("statusAuthorizationRequired") };
+            case "authorizing":
+                return { badge: "bg-blue-100 text-blue-700", icon: Clock, text: t("statusAuthorizing") };
+            case "expired":
+                return { badge: "bg-orange-100 text-orange-700", icon: Clock, text: t("statusExpired") };
+            case "failed":
+                return { badge: "bg-red-100 text-red-600", icon: X, text: t("statusError") };
+            default:
+                return { badge: "bg-terminal-border text-terminal-muted", icon: AlertCircle, text: t("statusNotConnected") };
+        }
     };
 
     if (isLoading) {
@@ -602,6 +736,10 @@ export function MCPSettings() {
                             const isConnecting = connectingState[name];
                             const currentStatus = status.find(st => st.serverName === name);
                             const isEditing = editingServer === name;
+                            const isOAuthServer = !config.command && (
+                                config.auth?.type === "oauth" ||
+                                (config.type === "http" && config.auth?.type !== "none" && config.auth?.type !== "headers")
+                            );
 
                             if (isEditing) {
                                 return (
@@ -653,14 +791,45 @@ export function MCPSettings() {
                                                         {t("headerCount", { count: Object.keys(config.headers).length })}
                                                     </Badge>
                                                 )}
+                                                {isOAuthServer && (
+                                                    <Badge variant="outline" className="text-[10px] h-5 px-1.5 font-normal bg-yellow-50 text-yellow-700 border-yellow-200">
+                                                        <Shield className="h-3 w-3 mr-1" />
+                                                        {t("browserAuthBadge")}
+                                                    </Badge>
+                                                )}
                                             </div>
 
-                                            {currentStatus?.lastError ? (
+                                            {currentStatus?.authRequired ? (
+                                                <Alert className="mt-2 border-yellow-300 bg-yellow-50/80 text-yellow-900">
+                                                    <Shield className="h-4 w-4" />
+                                                    <AlertTitle>{s.text}</AlertTitle>
+                                                    <AlertDescription className="space-y-2 text-xs">
+                                                        <div className="space-y-1 font-mono whitespace-pre-wrap">
+                                                            {currentStatus.details && <p>{currentStatus.details}</p>}
+                                                            {currentStatus.recovery && <p>{currentStatus.recovery}</p>}
+                                                            {currentStatus.lastError && <p>{currentStatus.lastError}</p>}
+                                                        </div>
+                                                        <Button
+                                                            size="sm"
+                                                            variant="outline"
+                                                            className="h-7 text-[11px]"
+                                                            onClick={() => currentStatus.authorizationUrl
+                                                                ? openAuthorizationUrl(name, currentStatus.authorizationUrl)
+                                                                : startOAuthAuthorization(name)}
+                                                            disabled={isConnecting || config.enabled === false}
+                                                        >
+                                                            <ExternalLink className="mr-2 h-3 w-3" />
+                                                            {currentStatus.authorizationUrl ? t("openAuthorization") : t("connectWithBrowser")}
+                                                        </Button>
+                                                    </AlertDescription>
+                                                </Alert>
+                                            ) : currentStatus?.lastError ? (
                                                 <Alert variant="destructive" className="mt-2">
                                                     <AlertCircle className="h-4 w-4" />
                                                     <AlertTitle>{t("connectionFailedTitle")}</AlertTitle>
-                                                    <AlertDescription className="text-xs whitespace-pre-wrap font-mono">
-                                                        {currentStatus.lastError}
+                                                    <AlertDescription className="space-y-1 text-xs whitespace-pre-wrap font-mono">
+                                                        <p>{currentStatus.lastError}</p>
+                                                        {currentStatus.recovery && <p>{currentStatus.recovery}</p>}
                                                     </AlertDescription>
                                                 </Alert>
                                             ) : (
@@ -687,6 +856,19 @@ export function MCPSettings() {
                                             disabled={isSaving}
                                         />
 
+                                        {isOAuthServer && (
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="h-8 px-2 text-[11px]"
+                                                onClick={() => startOAuthAuthorization(name)}
+                                                disabled={isConnecting || config.enabled === false}
+                                                aria-label={t("connectWithBrowser")}
+                                                title={t("connectWithBrowser")}
+                                            >
+                                                {isConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                                            </Button>
+                                        )}
                                         <Button
                                             size="sm"
                                             variant="ghost"
@@ -820,12 +1002,14 @@ export function MCPSettings() {
                             <Button size="sm" onClick={() => {
                                 try {
                                     const parsed = JSON.parse(rawJson);
-                                    if (parsed.mcpServers) {
-                                        setMcpServers(parsed.mcpServers);
-                                        saveAll(parsed.mcpServers, environment);
-                                    } else {
-                                        toast.error(t("invalidJsonMissingRoot"));
+                                    const validationErrors = validateRawMcpJson(parsed);
+                                    if (validationErrors.length > 0) {
+                                        toast.error(t("invalidJsonValidationError", { error: validationErrors[0] }));
+                                        return;
                                     }
+                                    const parsedServers = (parsed as { mcpServers: Record<string, MCPServerConfig> }).mcpServers;
+                                    setMcpServers(parsedServers);
+                                    saveAll(parsedServers, environment);
                                 } catch (e) {
                                     toast.error(t("invalidJsonSyntax"));
                                 }

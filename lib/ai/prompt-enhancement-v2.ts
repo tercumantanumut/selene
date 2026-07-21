@@ -26,6 +26,7 @@ import {
   getSessionProviderTemperatureForSession,
   resolveSessionUtilityModelForSession,
 } from "./session-model-resolver";
+import { buildPromptEnhancementHistory } from "@/lib/ai/prompt-enhancement-history";
 import { extname, basename } from "path";
 
 // =============================================================================
@@ -406,7 +407,9 @@ export async function enhancePromptWithLLM(
     const historySource = (options.dbMessages && options.dbMessages.length > 0)
       ? options.dbMessages
       : (options.conversationContext ?? []);
-    const recentMessages = historySource.slice(-MAX_HISTORY_MESSAGES);
+    const recentMessages = buildPromptEnhancementHistory(historySource, {
+      maxMessages: MAX_HISTORY_MESSAGES,
+    });
 
     // Stateless memory injection: every call evaluates memories fresh, with no
     // cross-call signature cache. This is slightly less token-optimal than the

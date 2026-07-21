@@ -92,10 +92,15 @@ export interface SeleneMcpContext {
 
   /**
    * MCP tool IDs (in getMCPToolId format, e.g. "mcp_server_tool") that are
-   * alwaysLoad (active immediately without searchTools). Populated from
-   * mcpToolPreferences in character metadata.
+   * active immediately without searchTools. Populated from resolved policy.
    */
   alwaysLoadMcpToolIds?: string[];
+
+  /** Resolved initial-active tool IDs from the normal chat runtime. */
+  initialActiveToolIds?: string[];
+
+  /** Resolved disabled/unauthorized tool IDs from the normal chat runtime. */
+  disabledToolIds?: string[];
 
   /**
    * Callback fired when an MCP tool produces rich output (image URL, video URL, etc.).

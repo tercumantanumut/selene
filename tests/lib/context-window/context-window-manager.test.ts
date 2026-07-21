@@ -220,6 +220,16 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
   });
 });
 
+describe("K3 context window limit", () => {
+  it("uses K3's documented 1,048,576-token context and supports streaming", () => {
+    const config = getContextWindowConfig("k3", "kimi");
+
+    expect(config.maxTokens).toBe(1_048_576);
+    expect(config.maxOutputTokens).toBeUndefined();
+    expect(config.supportsStreaming).toBe(true);
+  });
+});
+
 describe("Codex model context window limits", () => {
   it("returns 372K for normalized GPT-5.6 variants", () => {
     const codex56Models = [
@@ -409,6 +419,43 @@ describe("ContextWindowManager scoped counting integration", () => {
     expect(usageSpy.mock.calls[1]?.[4]).toMatchObject({ scopedMode: "legacy" });
     expect(status.currentTokens).toBe(1_000);
     expect(status.status).toBe("safe");
+  });
+
+  it("counts delegated-scope history inside a delegated subagent session", async () => {
+    dbMocks.getSession.mockResolvedValue({
+      id: sessionId,
+      summary: null,
+      metadata: { provider: "claudecode", isDelegation: true },
+    });
+    dbMocks.getNonCompactedMessages.mockResolvedValue([
+      {
+        id: "delegated-user",
+        sessionId,
+        role: "user",
+        content: [{ type: "text", text: "Inspect the delegated task", contextScope: "delegated" }],
+        tokenCount: 20,
+        isCompacted: false,
+        metadata: { contextScope: "delegated" },
+      },
+      {
+        id: "delegated-assistant",
+        sessionId,
+        role: "assistant",
+        content: [{ type: "text", text: "Working through the delegated task", contextScope: "delegated" }],
+        tokenCount: 30,
+        isCompacted: false,
+        metadata: { contextScope: "delegated" },
+      },
+    ] as any);
+
+    const status = await ContextWindowManager.checkContextWindow(
+      sessionId,
+      modelId,
+      0,
+      "claudecode"
+    );
+
+    expect(status.currentTokens).toBeGreaterThan(4);
   });
 
   it("wouldExceedLimit projection uses scoped baselene", async () => {

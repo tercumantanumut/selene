@@ -207,6 +207,7 @@ export async function resolveMCPConfig(
             command: config.command ? await resolveValue(config.command) : undefined,
             args: resolvedArgs,
             env: resolvedEnv,
+            auth: config.auth,
             timeout: config.timeout || 30000,
         };
     }
@@ -224,6 +225,7 @@ export async function resolveMCPConfig(
         type: transportType,
         url: config.url ? await resolveValue(config.url) : undefined,
         headers: resolvedHeaders,
+        auth: config.auth,
         timeout: config.timeout || 30000,
     };
 }

@@ -9,7 +9,7 @@
  * Supports HTTP/SSE URL-based transport OR stdio subprocess transport
  */
 export interface MCPServerConfig {
-    /** Transport type - "http", "sse", or "stdio" (inferred if command is present) */
+    /** Transport type - "http" is Streamable HTTP, "sse" is legacy SSE, "stdio" is inferred if command is present */
     type?: "http" | "sse" | "stdio";
 
     /** Server URL (for http/sse transport, can include ${VARIABLE} placeholders) */
@@ -26,6 +26,11 @@ export interface MCPServerConfig {
 
     /** Optional headers (for http/sse, can include ${VARIABLE} placeholders) */
     headers?: Record<string, string>;
+
+    /** Authentication mode for URL-based transports. OAuth uses browser sign-in and local callback handling. */
+    auth?: {
+        type?: "none" | "headers" | "oauth";
+    };
 
     /** Optional timeout in milliseconds */
     timeout?: number;
@@ -55,6 +60,8 @@ export interface ResolvedMCPServer {
     // For HTTP/SSE transport
     url?: string;
     headers?: Record<string, string>;
+    auth?: MCPServerConfig["auth"];
+    oauthRedirectUrl?: string;
 
     // For stdio transport
     command?: string;
@@ -89,6 +96,15 @@ export interface MCPServerStatus {
     connected: boolean;
     lastConnected?: Date;
     lastError?: string;
+    /** UI-facing state that distinguishes auth-required failures from transport failures. */
+    connectionState?: "unauthenticated" | "authorization_required" | "authorizing" | "connected" | "expired" | "failed" | "not_connected";
+    authRequired?: boolean;
+    authorizationUrl?: string;
+    serverUrl?: string;
+    transportType?: "http" | "sse" | "stdio";
+    errorStatus?: number | string;
+    details?: string;
+    recovery?: string;
     toolCount: number;
     tools: string[];
 }
