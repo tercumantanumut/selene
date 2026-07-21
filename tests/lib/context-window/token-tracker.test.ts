@@ -104,6 +104,36 @@ describe("TokenTracker scoped counting", () => {
     expect(usage.toolCallTokens).toBe(0);
   });
 
+  it("counts delegated-scope parts when the measured session is a subagent worker", async () => {
+    const usage = await TokenTracker.calculateUsage(
+      "session-delegated-worker",
+      [
+        {
+          id: "assistant-delegated-worker",
+          sessionId: "session-delegated-worker",
+          role: "assistant",
+          content: [
+            { type: "text", text: "worker answer", contextScope: "delegated" },
+            { type: "text", text: "root-only trace", contextScope: "main" },
+          ],
+          tokenCount: 400,
+          isCompacted: false,
+          metadata: { contextScope: "delegated" },
+        },
+      ] as any,
+      0,
+      null,
+      {
+        provider: "openai",
+        targetScope: "delegated",
+        hasDelegatedAnnotations: true,
+      }
+    );
+
+    const expectedTextTokens = Math.ceil("worker answer".length / 4);
+    expect(usage.assistantMessageTokens).toBe(expectedTextTokens + 4);
+  });
+
   it("falls back to legacy behavior for non-claudecode providers", async () => {
     const messages = [
       {

@@ -168,24 +168,27 @@ function resolveMessageScopeInclusion(
     return true;
   }
 
+  const targetScope = options.targetScope ?? "main";
   const metadata = msg.metadata && typeof msg.metadata === "object" && !Array.isArray(msg.metadata)
     ? (msg.metadata as Record<string, unknown>)
     : null;
 
-  const metadataScope = metadata?.contextScope;
-  if (metadataScope === "main") return true;
-  if (metadataScope === "delegated") return false;
+  const metadataScope = getPartScope(metadata);
+  if (metadataScope) return metadataScope === targetScope;
 
   const fallbackEnabled = options.fallbackEnabled ?? isScopedFallbackEnabled();
   const minConfidence = options.fallbackMinConfidence ?? getScopedFallbackMinConfidence();
 
   if (Array.isArray(msg.content) && hasPartScopes(msg.content)) {
     const scopedParts = msg.content as unknown[];
-    const mainParts = scopedParts.filter((part) => getPartScope(part) === "main");
-    const delegatedParts = scopedParts.filter((part) => getPartScope(part) === "delegated");
+    const targetParts = scopedParts.filter((part) => getPartScope(part) === targetScope);
+    const otherScopedParts = scopedParts.filter((part) => {
+      const scope = getPartScope(part);
+      return scope !== undefined && scope !== targetScope;
+    });
 
-    if (mainParts.length > 0 && delegatedParts.length === 0) return true;
-    if (delegatedParts.length > 0 && mainParts.length === 0) return false;
+    if (targetParts.length > 0 && otherScopedParts.length === 0) return true;
+    if (otherScopedParts.length > 0 && targetParts.length === 0) return false;
 
     // Mixed rows remain counted conservatively unless fallback heuristics are enabled and confident.
     if (!fallbackEnabled) return true;
@@ -200,10 +203,10 @@ function resolveMessageScopeInclusion(
     return true;
   }
 
-  return inferred.scope === "main";
+  return inferred.scope === targetScope;
 }
 
-function countToolCallOverheadForMainScope(
+function countToolCallOverheadForScope(
   content: unknown,
   includePart: (part: unknown) => boolean
 ): number {
@@ -414,8 +417,7 @@ export class TokenTracker {
       const includePart = (part: unknown): boolean => {
         if (!isScopedModeActive(resolvedOptions)) return true;
         const scope = getPartScope(part);
-        if (scope === "main") return true;
-        if (scope === "delegated") return false;
+        if (scope) return scope === (resolvedOptions.targetScope ?? "main");
         return includeMessage;
       };
 
@@ -435,7 +437,7 @@ export class TokenTracker {
 
         case "assistant":
           usage.assistantMessageTokens += messageTokens;
-          usage.toolCallTokens += countToolCallOverheadForMainScope(msg.content, includePart);
+          usage.toolCallTokens += countToolCallOverheadForScope(msg.content, includePart);
           break;
 
         case "tool":
