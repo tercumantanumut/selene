@@ -16,6 +16,11 @@ import {
 } from "@/lib/voice/browser-stt";
 import type { ComposerSkillLite, SkillPickerMode } from "./composer-skill-picker";
 import { MAX_SLASH_SKILL_RESULTS } from "./composer-skill-picker";
+import type {
+  PromptEnhancementAttachmentContext,
+  PromptEnhancementConversationMessage,
+} from "@/lib/ai/prompt-enhancement-history";
+export type { PromptEnhancementAttachmentContext } from "@/lib/ai/prompt-enhancement-history";
 
 // ---------------------------------------------------------------------------
 // useVoiceRecording
@@ -632,27 +637,13 @@ function useSkillPickerState({
 // usePromptEnhancement
 // ---------------------------------------------------------------------------
 
-export interface PromptEnhancementAttachmentContext {
-  id?: string;
-  name?: string;
-  contentType?: string;
-  url?: string;
-  localPath?: string;
-  filePath?: string;
-  size?: number;
-  kind?: string;
-  inline?: boolean;
-  order?: number;
-  status?: string;
-}
-
 interface UsePromptEnhancementOptions {
   inputValue: string;
   setInputValue: (value: string | ((previous: string) => string)) => void;
   characterId: string | undefined;
   sessionId?: string;
   /** Recent thread messages for conversation context */
-  recentMessages: Array<{ role: string; content: string }>;
+  recentMessages: PromptEnhancementConversationMessage[];
   /** Returns current unsent composer attachments/images for enhancement context */
   getCurrentAttachments?: () => PromptEnhancementAttachmentContext[];
   /** Expands composer placeholders (e.g. pasted text blocks) before sending to enhancement API */
