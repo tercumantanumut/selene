@@ -786,6 +786,7 @@ export async function POST(req: Request) {
       enabledMcpServers,
       enabledMcpTools,
       alwaysLoadMcpToolIds,
+      disabledToolIds,
     } = toolsResult;
 
     const useDeferredLoading = toolLoadingMode !== "always";
@@ -855,6 +856,8 @@ export async function POST(req: Request) {
       enabledMcpServers,
       enabledMcpTools,
       alwaysLoadMcpToolIds,
+      initialActiveToolIds: initialActiveToolNames,
+      disabledToolIds,
       // Rich output callback: fires when an SDK MCP tool produces an image/video/etc.
       // Wires the result into Selene's streaming state so the UI renders media chips.
       // Capture non-null references in locals so the closure has definite types.
@@ -1283,7 +1286,13 @@ export async function POST(req: Request) {
               activeToolSet = new Set<string>(Object.keys(allToolsWithMCP));
             }
 
-            if (sessionHasTruncatedContent(sessionId) && !activeToolSet.has("retrieveFullContent")) {
+            for (const toolName of [...activeToolSet]) {
+              if (disabledToolIds.includes(toolName) || !allToolsWithMCP[toolName]) {
+                activeToolSet.delete(toolName);
+              }
+            }
+
+            if (sessionHasTruncatedContent(sessionId) && allToolsWithMCP.retrieveFullContent && !activeToolSet.has("retrieveFullContent")) {
               activeToolSet.add("retrieveFullContent");
             }
 

@@ -69,7 +69,11 @@ export function registerAllTools(): void {
       ],
       shortDescription:
         "Search for available tools and discover capabilities like image generation or code search",
-      loading: { alwaysLoad: true }, // CRITICAL: Must always be available to discover other tools
+      loading: {
+        alwaysLoad: true,
+        defaultPolicy: "required",
+        mandatory: true,
+      }, // CRITICAL: Must always be available to discover other tools
       requiresSession: false,
     } satisfies ToolMetadata,
     () => createToolSearchTool()
@@ -99,7 +103,11 @@ export function registerAllTools(): void {
       ],
       shortDescription:
         "⚠️ NOT for file reading! Only retrieves truncated content with trunc_XXXXXXXX IDs. Use readFile for actual files.",
-      loading: { alwaysLoad: true }, // Truncation stubs reference it directly — must never be filtered or deferred
+      loading: {
+        alwaysLoad: true,
+        defaultPolicy: "required",
+        mandatory: true,
+      }, // Truncation stubs reference it directly — must never be filtered or deferred
       requiresSession: true, // Requires session to retrieve stored content
     } satisfies ToolMetadata,
     // Placeholder factory - real instance with sessionId is created in chat route

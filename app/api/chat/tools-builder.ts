@@ -37,9 +37,12 @@ import { createWorkspaceTool } from "@/lib/ai/tools/workspace-tool";
 import { createDesignWorkspaceTool } from "@/lib/ai/tools/design-workspace-tool";
 import {
   ToolRegistry,
+  applyCompanionToolActivation,
+  authorizeRuntimeLoadedTools,
   createToolSearchTool,
 } from "@/lib/ai/tool-registry";
 import { getCharacterFull } from "@/lib/characters/queries";
+import type { AgentMetadata } from "@/lib/characters/validation";
 import { getRegisteredHooks } from "@/lib/plugins/hooks-engine";
 import {
   runPreToolUseHooks,
@@ -123,8 +126,10 @@ interface ToolsBuildResult {
   enabledMcpServers?: string[];
   /** Specific MCP tool IDs enabled for the current agent (forwarded to SeleneMcpContext) */
   enabledMcpTools?: string[];
-  /** MCP tool IDs that are alwaysLoad (forwarded to SeleneMcpContext for deferred gating) */
+  /** MCP tool IDs that are always/required active (forwarded to SeleneMcpContext for deferred gating) */
   alwaysLoadMcpToolIds: string[];
+  /** Tool IDs that are unauthorized/unavailable for this request. */
+  disabledToolIds: string[];
 }
 
 // ─── Main builder ────────────────────────────────────────────────────────────
@@ -153,8 +158,14 @@ export async function buildToolsForRequest(
 
   const useDeferredLoading = toolLoadingMode !== "always";
 
+  const character = characterId
+    ? await getCharacterFull(characterId)
+    : undefined;
+  const agentMetadata = character?.metadata as AgentMetadata | undefined;
+  const toolLoadingPreferences = agentMetadata?.toolLoadingPreferences;
+
   // Create tools via the centralized Tool Registry.
-  // CRITICAL: Create agentEnabledTools Set for strict filtering.
+  // CRITICAL: Create agentEnabledTools Set for strict authorization filtering.
   // Migration aliases: remap old tool names to their merged successors so
   // agents created before the merge still resolve correctly.
   const TOOL_ALIASES: Record<string, string> = {
@@ -169,48 +180,35 @@ export async function buildToolsForRequest(
 
   const registry = ToolRegistry.getInstance();
 
-  // First, get non-deferred tools to build the initial active set.
-  // When devWorkspace is enabled, force-include workspace in the initial active set
-  // so the model sees it without needing searchTools discovery.
+  // When devWorkspace is enabled, force-include workspace in the initial active
+  // set so the model sees it without needing searchTools discovery.
   const eagerIncludeTools = devWorkspaceEnabled ? ["workspace"] : undefined;
 
-  const nonDeferredTools = registry.getTools({
+  const registryPlan = registry.getToolLoadPlan({
     sessionId,
     userId,
     characterId: characterId || undefined,
     characterAvatarUrl: characterAvatarUrl || undefined,
     characterAppearanceDescription: characterAppearanceDescription || undefined,
-    includeDeferredTools: false,
     includeTools: eagerIncludeTools,
     agentEnabledTools,
-    provider: ctx.provider,
-  });
-  const initialActiveTools = new Set(Object.keys(nonDeferredTools));
-
-  // Load ALL authorized tools for the implementation map.
-  const allTools = registry.getTools({
-    sessionId,
-    userId,
-    characterId: characterId || undefined,
-    characterAvatarUrl: characterAvatarUrl || undefined,
-    characterAppearanceDescription: characterAppearanceDescription || undefined,
-    agentEnabledTools,
-    includeDeferredTools: true,
+    toolLoadingPreferences,
+    toolLoadingMode,
     provider: ctx.provider,
   });
 
-  // Companion-tool enforcement: bash and executeCommand are coupled by the
-  // stub-retrieval protocol.  bash produces logId-bearing stubs that need
-  // executeCommand's readLog sub-command to retrieve; pre-loading one without
-  // the other is a protocol violation that causes model looping.
-  if (
-    initialActiveTools.has("bash") &&
-    !initialActiveTools.has("executeCommand") &&
-    allTools.executeCommand
-  ) {
-    initialActiveTools.add("executeCommand");
+  const allTools = registryPlan.allAuthorizedTools;
+  const initialActiveTools = new Set(registryPlan.initialActiveToolIds);
+  const disabledToolIds = new Set(registryPlan.disabledToolIds);
+
+  const promotedCompanions = applyCompanionToolActivation(
+    initialActiveTools,
+    Object.keys(allTools),
+    (toolId) => registry.get(toolId)?.metadata
+  );
+  if (promotedCompanions.length > 0) {
     console.log(
-      "[CHAT API] Companion-tool enforcement: promoted executeCommand to always-loaded because bash is loaded"
+      `[CHAT API] Companion-tool enforcement promoted: ${promotedCompanions.join(", ")}`
     );
   }
 
@@ -227,7 +225,9 @@ export async function buildToolsForRequest(
   const toolSearchContext = {
     initialActiveTools,
     discoveredTools,
-    enabledTools: enabledTools ? new Set(enabledTools) : undefined,
+    enabledTools: agentEnabledTools ? new Set(agentEnabledTools) : undefined,
+    disabledTools: disabledToolIds,
+    resolvedPolicies: registryPlan.resolutions,
     subagentDirectory: workflowPromptContextInput?.subagentDirectory,
     enableAnthropicToolReferences:
       useDeferredLoading && ctx.provider === "anthropic",
@@ -359,10 +359,10 @@ export async function buildToolsForRequest(
     const { loadMCPToolsForCharacter } = await import(
       "@/lib/mcp/chat-integration"
     );
-    const character = characterId
-      ? await getCharacterFull(characterId)
-      : undefined;
-    mcpToolResult = await loadMCPToolsForCharacter(character || undefined);
+    mcpToolResult = await loadMCPToolsForCharacter(character || undefined, {
+      toolLoadingMode,
+      toolLoadingPreferences,
+    });
 
     if (Object.keys(mcpToolResult.allTools).length > 0) {
       console.log(
@@ -375,12 +375,11 @@ export async function buildToolsForRequest(
         `[CHAT API] MCP deferred: ${mcpToolResult.deferredToolIds.join(", ") || "none"}`
       );
 
+      const loadedMcpToolIds = Object.keys(mcpToolResult.allTools);
+      authorizeRuntimeLoadedTools(toolSearchContext, loadedMcpToolIds);
       if (toolSearchContext.enabledTools) {
-        Object.keys(mcpToolResult.allTools).forEach((name) =>
-          toolSearchContext.enabledTools!.add(name)
-        );
         console.log(
-          `[CHAT API] Added ${Object.keys(mcpToolResult.allTools).length} MCP tools to enabledTools set for discovery`
+          `[CHAT API] Added ${loadedMcpToolIds.length} MCP tools to enabledTools set for discovery`
         );
       }
     }
@@ -456,12 +455,11 @@ export async function buildToolsForRequest(
         `[CHAT API] Loaded ${Object.keys(customComfyUIToolResult.allTools).length} Custom ComfyUI tools.`
       );
 
+      const loadedCustomComfyUIToolIds = Object.keys(customComfyUIToolResult.allTools);
+      authorizeRuntimeLoadedTools(toolSearchContext, loadedCustomComfyUIToolIds);
       if (toolSearchContext.enabledTools) {
-        Object.keys(customComfyUIToolResult.allTools).forEach((name) =>
-          toolSearchContext.enabledTools!.add(name)
-        );
         console.log(
-          `[CHAT API] Added ${Object.keys(customComfyUIToolResult.allTools).length} Custom ComfyUI tools to enabledTools set for discovery`
+          `[CHAT API] Added ${loadedCustomComfyUIToolIds.length} Custom ComfyUI tools to enabledTools set for discovery`
         );
       }
     }
@@ -836,16 +834,24 @@ export async function buildToolsForRequest(
     ? Object.keys(allToolsWithMCP).filter((name) => sdkPassthroughNames.has(name))
     : [];
 
+  for (const toolName of [
+    ...mcpToolResult.alwaysLoadToolIds,
+    ...customComfyUIToolResult.alwaysLoadToolIds,
+    ...sdkPassthroughToolNames,
+  ]) {
+    if (allToolsWithMCP[toolName]) {
+      initialActiveTools.add(toolName);
+    }
+  }
+
+  const availableToolNames = new Set(Object.keys(allToolsWithMCP));
   const initialActiveToolNames = useDeferredLoading
     ? [
         ...new Set([
           ...initialActiveTools,
           ...previouslyDiscoveredTools,
-          ...mcpToolResult.alwaysLoadToolIds,
-          ...customComfyUIToolResult.alwaysLoadToolIds,
-          ...sdkPassthroughToolNames,
         ]),
-      ]
+      ].filter((name) => availableToolNames.has(name) && !disabledToolIds.has(name))
     : Object.keys(allToolsWithMCP);
 
   console.log(
@@ -872,5 +878,6 @@ export async function buildToolsForRequest(
     enabledMcpServers: mcpToolResult.enabledMcpServers,
     enabledMcpTools: mcpToolResult.enabledMcpTools,
     alwaysLoadMcpToolIds: mcpToolResult.alwaysLoadToolIds,
+    disabledToolIds: [...disabledToolIds],
   };
 }

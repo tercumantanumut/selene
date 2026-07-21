@@ -23,6 +23,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { ToolRegistry } from "@/lib/ai/tool-registry/registry";
+import {
+  expandEnabledToolsWithCompanions,
+  isRequiredTool,
+} from "@/lib/ai/tool-registry/loading-policy";
 // Lazy imports to break the cycle:
 // providers → claudecode-sdk/provider → claudecode-sdk/mcp-server → mcp-tool-adapter → client-manager → ... → providers
 // providers → claudecode-sdk/provider → claudecode-sdk/mcp-server → search-tool → providers
@@ -200,16 +204,11 @@ export async function createSeleneSdkMcpServer(
   const { createToolSearchTool } = await loadSearchTool();
   const registry = ToolRegistry.getInstance();
 
-  const enabledSet = ctx.enabledTools ? new Set(ctx.enabledTools) : null;
-
-  // Companion-tool enforcement: bash and executeCommand are coupled by the
-  // stub-retrieval protocol. Promote executeCommand whenever bash is enabled.
-  if (enabledSet && enabledSet.has("bash") && !enabledSet.has("executeCommand")) {
-    enabledSet.add("executeCommand");
-    console.log(
-      "[SeleneMcpServer] Companion-tool enforcement: promoted executeCommand into enabledSet because bash is enabled"
-    );
-  }
+  const enabledSet = expandEnabledToolsWithCompanions(
+    ctx.enabledTools ? new Set(ctx.enabledTools) : undefined,
+    (toolId) => registry.get(toolId)?.metadata
+  ) ?? null;
+  const disabledSet = new Set(ctx.disabledToolIds ?? []);
 
   const factoryOpts = {
     sessionId: ctx.sessionId,
@@ -223,8 +222,12 @@ export async function createSeleneSdkMcpServer(
   // ── Session-scoped activation state for deferred loading ──────────────────
   const alwaysLoadMcpSet = new Set(ctx.alwaysLoadMcpToolIds ?? []);
   const activatedTools = new Set<string>([
+    ...(ctx.initialActiveToolIds ?? []),
     ...(ctx.previouslyDiscoveredTools ?? []),
   ]);
+  for (const disabledToolId of disabledSet) {
+    activatedTools.delete(disabledToolId);
+  }
 
   const sdkTools: SdkMcpToolDefinition<any>[] = [];
 
@@ -236,6 +239,7 @@ export async function createSeleneSdkMcpServer(
     initialActiveTools: activatedTools,
     discoveredTools: activatedTools,
     enabledTools: enabledSet ?? undefined,
+    disabledTools: disabledSet,
     enableAnthropicToolReferences: false,
   };
 
@@ -252,15 +256,14 @@ export async function createSeleneSdkMcpServer(
     // Skip MCP tools — handled separately below with proper agent scoping
     if (registeredTool.metadata.category === "mcp") continue;
 
-    // Skip tools disabled by environment variable
-    if (!registry.isToolEnabled(name)) continue;
+    // Skip tools disabled by environment variable or resolved policy.
+    if (!registry.isToolEnabled(name) || disabledSet.has(name)) continue;
 
-    // Per-agent filtering: alwaysLoad tools always pass through
-    const isAlwaysLoad = registeredTool.metadata.loading.alwaysLoad === true;
-    if (enabledSet && !isAlwaysLoad && !enabledSet.has(name)) continue;
+    // Per-agent filtering: only required/bootstrap tools bypass enabledTools.
+    const isRequired = isRequiredTool(name, registeredTool.metadata);
+    if (enabledSet && !isRequired && !enabledSet.has(name)) continue;
 
-    // Pre-seed alwaysLoad tools into the activated set
-    if (isAlwaysLoad) {
+    if (ctx.toolLoadingMode === "always" || isRequired || ctx.initialActiveToolIds?.includes(name)) {
       activatedTools.add(name);
     }
 
@@ -350,14 +353,15 @@ export async function createSeleneSdkMcpServer(
 
   for (const mcpTool of mcpTools) {
     const toolId = getMCPToolId(mcpTool.serverName, mcpTool.name);
+    if (disabledSet.has(toolId)) continue;
     const inputSchema = jsonSchemaToZodShape(
       (mcpTool.inputSchema as Record<string, unknown>) ?? {}
     );
     const description =
       mcpTool.description ?? `MCP tool from ${mcpTool.serverName}`;
 
-    const isMcpAlwaysLoad = alwaysLoadMcpSet.has(toolId);
-    if (isMcpAlwaysLoad) {
+    const isMcpAlwaysLoad = alwaysLoadMcpSet.has(toolId) || ctx.initialActiveToolIds?.includes(toolId);
+    if (ctx.toolLoadingMode === "always" || isMcpAlwaysLoad) {
       activatedTools.add(toolId);
     }
 

@@ -10,7 +10,8 @@
 import { tool, jsonSchema } from "ai";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { ToolRegistry } from "./registry";
-import type { ToolSearchResult, ToolCategory } from "./types";
+import type { ResolvedToolLoadingPolicy, ToolSearchResult, ToolCategory } from "./types";
+import { isPolicyDeferred, isRequiredTool } from "./loading-policy";
 import {
   parseSubagentDirectory,
   searchSubagents,
@@ -42,11 +43,33 @@ export interface ToolSearchContext {
   /** Optional per-agent tool allowlist. */
   enabledTools?: Set<string>;
 
+  /** Tools resolved as unauthorized/unavailable for this request. */
+  disabledTools?: Set<string>;
+
+  /** Request-scoped resolved loading policies. */
+  resolvedPolicies?: Map<string, ResolvedToolLoadingPolicy>;
+
   /** @deprecated Use initialActiveTools instead. */
   loadedTools?: Set<string>;
 
   /** Workflow subagent directory for subagent discovery. */
   subagentDirectory?: string[];
+}
+
+export function authorizeRuntimeLoadedTools(
+  context: Pick<ToolSearchContext, "enabledTools" | "disabledTools" | "resolvedPolicies">,
+  toolIds: Iterable<string>
+): void {
+  for (const toolId of toolIds) {
+    // Dynamic tool namespaces (MCP/custom ComfyUI) are resolved after the base
+    // registry plan. If a stale registry entry was seen before that point, it
+    // may have been marked disabled/not-enabled under the built-in
+    // agent.enabledTools authorization model. Loading the tool for this request
+    // is the authoritative authorization signal for these dynamic namespaces.
+    context.enabledTools?.add(toolId);
+    context.disabledTools?.delete(toolId);
+    context.resolvedPolicies?.delete(toolId);
+  }
 }
 
 type ToolSearchInput = {
@@ -133,6 +156,59 @@ function asJsonToolOutput(value: unknown): ToolResultOutput {
 
 function normalizeToolName(name: string): string {
   return name.replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
+}
+
+function addSelectAlias(
+  aliases: Map<string, string>,
+  ambiguousAliases: Set<string>,
+  alias: string | undefined,
+  toolName: string
+): void {
+  if (!alias) return;
+  const normalized = normalizeToolName(alias);
+  if (!normalized || ambiguousAliases.has(normalized)) return;
+
+  const existing = aliases.get(normalized);
+  if (existing && existing !== toolName) {
+    aliases.delete(normalized);
+    ambiguousAliases.add(normalized);
+    return;
+  }
+
+  aliases.set(normalized, toolName);
+}
+
+function buildSelectAliasMap(registry: ToolRegistry): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const ambiguousAliases = new Set<string>();
+
+  for (const name of registry.getToolNames()) {
+    const registered = registry.get(name);
+    if (!registered) continue;
+
+    const { metadata } = registered;
+    addSelectAlias(aliases, ambiguousAliases, name, name);
+    addSelectAlias(aliases, ambiguousAliases, metadata.displayName, name);
+
+    if (metadata.category === "mcp") {
+      // MCP tools are displayed to users by native server/tool names like
+      // `supabase:execute_sql` and `execute_sql`, while the callable tool ID is
+      // namespaced/sanitized (`mcp_supabase_execute_sql`).  Preserve exact
+      // select: lookup for both forms so connected MCP tools are discoverable
+      // without users needing to guess Selene's internal ID format.
+      const nativeToolName = metadata.keywords[0];
+      const serverName = metadata.keywords[1];
+
+      addSelectAlias(aliases, ambiguousAliases, nativeToolName, name);
+      if (serverName && nativeToolName) {
+        addSelectAlias(aliases, ambiguousAliases, `${serverName}:${nativeToolName}`, name);
+        addSelectAlias(aliases, ambiguousAliases, `${serverName}.${nativeToolName}`, name);
+        addSelectAlias(aliases, ambiguousAliases, `${serverName}/${nativeToolName}`, name);
+      }
+    }
+  }
+
+  return aliases;
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -235,10 +311,7 @@ function resolveSelectedToolNames(
   requestedNames: string[],
   registry: ToolRegistry
 ): ToolSearchResult[] {
-  const normalizedMap = new Map<string, string>();
-  for (const name of registry.getToolNames()) {
-    normalizedMap.set(normalizeToolName(name), name);
-  }
+  const normalizedMap = buildSelectAliasMap(registry);
 
   const results: ToolSearchResult[] = [];
   for (const requestedName of requestedNames) {
@@ -306,16 +379,16 @@ function applySoftCategoryFilter(
 function filterEnabledResults(
   results: ToolSearchResult[],
   enabledTools: Set<string> | undefined,
+  disabledTools: Set<string> | undefined,
   registry: ToolRegistry
 ): ToolSearchResult[] {
-  if (!enabledTools) {
-    return results;
-  }
-
   return results.filter((result) => {
+    if (disabledTools?.has(result.name)) return false;
+    if (!enabledTools) return true;
+
     const registered = registry.get(result.name);
     if (!registered) return false;
-    if (registered.metadata.loading.alwaysLoad) return true;
+    if (isRequiredTool(result.name, registered.metadata)) return true;
     return enabledTools.has(result.name);
   });
 }
@@ -337,15 +410,16 @@ function filterRequiredTerms(
 function buildNoResultsMessage(
   query: string,
   registry: ToolRegistry,
-  enabledTools?: Set<string>
+  enabledTools?: Set<string>,
+  disabledTools?: Set<string>
 ): SearchToolResult {
   let availableTools = registry.getAvailableToolsList();
-  if (enabledTools) {
-    availableTools = availableTools.filter((toolSummary) => {
-      const registered = registry.get(toolSummary.name);
-      return registered?.metadata.loading.alwaysLoad || enabledTools.has(toolSummary.name);
-    });
-  }
+  availableTools = availableTools.filter((toolSummary) => {
+    if (disabledTools?.has(toolSummary.name)) return false;
+    if (!enabledTools) return true;
+    const registered = registry.get(toolSummary.name);
+    return Boolean(registered && (isRequiredTool(toolSummary.name, registered.metadata) || enabledTools.has(toolSummary.name)));
+  });
 
   const categoryList = [...new Set(availableTools.map((toolSummary) => toolSummary.category))];
   return {
@@ -359,7 +433,8 @@ function buildNoResultsMessage(
 function markDiscoveredTools(
   results: ToolSearchResult[],
   discoveredTools: Set<string> | undefined,
-  registry: ToolRegistry
+  registry: ToolRegistry,
+  resolvedPolicies?: Map<string, ResolvedToolLoadingPolicy>
 ): void {
   if (!discoveredTools) {
     return;
@@ -367,7 +442,7 @@ function markDiscoveredTools(
 
   for (const result of results) {
     const registered = registry.get(result.name);
-    if (registered?.metadata.loading.deferLoading) {
+    if (registered && isPolicyDeferred(result.name, registered.metadata, resolvedPolicies)) {
       discoveredTools.add(result.name);
       logSearchTools(`[searchTools] Discovered deferred tool: ${result.name}`);
     }
@@ -379,6 +454,8 @@ export function createToolSearchTool(context?: ToolSearchContext) {
   const initialActiveTools = context?.initialActiveTools ?? context?.loadedTools;
   const discoveredTools = context?.discoveredTools;
   const enabledTools = context?.enabledTools;
+  const disabledTools = context?.disabledTools;
+  const resolvedPolicies = context?.resolvedPolicies;
   const subagentDirectory = context?.subagentDirectory;
   const enableAnthropicToolReferences =
     context?.enableAnthropicToolReferences === true;
@@ -419,7 +496,7 @@ export function createToolSearchTool(context?: ToolSearchContext) {
 
       toolResults = filterRequiredTerms(toolResults, parsedQuery, registry);
       toolResults = applySoftCategoryFilter(toolResults, category);
-      toolResults = filterEnabledResults(toolResults, enabledTools, registry);
+      toolResults = filterEnabledResults(toolResults, enabledTools, disabledTools, registry);
       toolResults = dedupeResultsByName(toolResults).slice(0, effectiveLimit);
 
       const subagentResults: SubagentSearchResult[] = subagentDirectory
@@ -427,13 +504,16 @@ export function createToolSearchTool(context?: ToolSearchContext) {
         : [];
 
       if (toolResults.length === 0 && subagentResults.length === 0) {
-        return buildNoResultsMessage(query, registry, enabledTools);
+        return buildNoResultsMessage(query, registry, enabledTools, disabledTools);
       }
 
-      markDiscoveredTools(toolResults, discoveredTools, registry);
+      markDiscoveredTools(toolResults, discoveredTools, registry, resolvedPolicies);
 
       const toolResultsWithAvailability: UnifiedResultWithAvailability[] = toolResults.map((result) => {
-        const isDeferred = registry.get(result.name)?.metadata.loading.deferLoading ?? false;
+        const registered = registry.get(result.name);
+        const isDeferred = registered
+          ? isPolicyDeferred(result.name, registered.metadata, resolvedPolicies)
+          : false;
         const isInitiallyActive = initialActiveTools?.has(result.name) ?? !isDeferred;
         const wasDiscovered = discoveredTools?.has(result.name) ?? false;
 
@@ -506,10 +586,12 @@ export function createToolSearchTool(context?: ToolSearchContext) {
                       entry.resultType === "tool"
                   )
                   .map((entry) => entry.name)
-                  .filter(
-                    (toolName) =>
-                      registry.get(toolName)?.metadata.loading.deferLoading === true
-                  )
+                  .filter((toolName) => {
+                    const registered = registry.get(toolName);
+                    return registered
+                      ? isPolicyDeferred(toolName, registered.metadata, resolvedPolicies)
+                      : false;
+                  })
               )
             );
 

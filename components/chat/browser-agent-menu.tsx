@@ -258,6 +258,7 @@ export function BrowserAgentMenu({ character }: BrowserAgentMenuProps) {
         editingCharacter={toolEditor.editingCharacter}
         availableTools={toolEditor.availableTools}
         selectedTools={toolEditor.selectedTools}
+        toolLoadingPreferences={toolEditor.toolLoadingPreferences}
         isSaving={toolEditor.isSaving}
         toolSearchQuery={toolEditor.toolSearchQuery}
         setToolSearchQuery={toolEditor.setToolSearchQuery}
@@ -270,6 +271,7 @@ export function BrowserAgentMenu({ character }: BrowserAgentMenuProps) {
         toggleAllInCategory={toolEditor.toggleAllInCategory}
         getSelectedCountInCategory={toolEditor.getSelectedCountInCategory}
         toggleTool={toolEditor.toggleTool}
+        setToolLoadingPreference={toolEditor.setToolLoadingPreference}
         onSave={toolEditor.saveTools}
       />
 

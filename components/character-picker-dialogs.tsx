@@ -193,6 +193,7 @@ export function ToolEditorDialog({
   onOpenChange,
   editingCharacter,
   selectedTools,
+  toolLoadingPreferences,
   isSaving,
   toolSearchQuery,
   setToolSearchQuery,
@@ -206,12 +207,14 @@ export function ToolEditorDialog({
   toggleAllInCategory,
   getSelectedCountInCategory,
   toggleTool,
+  setToolLoadingPreference,
   onSave,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   editingCharacter: CharacterSummary | null;
   selectedTools: string[];
+  toolLoadingPreferences: Record<string, "always" | "deferred">;
   isSaving: boolean;
   toolSearchQuery: string;
   setToolSearchQuery: (v: string) => void;
@@ -225,10 +228,18 @@ export function ToolEditorDialog({
   toggleAllInCategory: (category: string, select: boolean) => void;
   getSelectedCountInCategory: (category: string) => number;
   toggleTool: (toolId: string) => void;
+  setToolLoadingPreference: (toolId: string, preference: "always" | "deferred") => void;
   onSave: () => void;
 }) {
   const t = useTranslations("picker");
   const tc = useTranslations("common");
+  const selectedSet = new Set(selectedTools);
+  const requiredCount = availableTools.filter((tool) => selectedSet.has(tool.id) && tool.isRequired).length;
+  const alwaysCount = availableTools.filter((tool) => {
+    if (!selectedSet.has(tool.id) || tool.isRequired) return false;
+    return (toolLoadingPreferences[tool.id] ?? tool.defaultLoadingPolicy ?? "deferred") === "always";
+  }).length;
+  const deferredCount = Math.max(selectedTools.length - requiredCount - alwaysCount, 0);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -239,6 +250,12 @@ export function ToolEditorDialog({
           </DialogTitle>
           <DialogDescription className="font-mono text-terminal-muted">
             {t("toolEditor.subtitle", { name: editingCharacter?.displayName || editingCharacter?.name || "", count: selectedTools.length })}
+            <span className="mt-1 block text-[11px] text-terminal-muted/80">
+              {selectedTools.length} enabled · {alwaysCount} always loaded · {deferredCount} deferred · {requiredCount} required
+            </span>
+            <span className="mt-1 block text-[11px] text-terminal-muted/80">
+              Always-loaded tools use initial context. Deferred tools remain available through Search Tools.
+            </span>
           </DialogDescription>
         </DialogHeader>
 
@@ -311,10 +328,11 @@ export function ToolEditorDialog({
                 {!isCollapsed && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 p-2">
                     {tools.map((tl) => {
-                      const isSelected = selectedTools.includes(tl.id);
+                      const isSelected = selectedTools.includes(tl.id) || tl.isRequired === true;
                       const dependenciesMet = areDependenciesMet(tl);
                       const warning = dependenciesMet ? null : getDependencyWarning(tl);
-                      const canToggle = dependenciesMet || isSelected;
+                      const canToggle = !tl.isRequired && (dependenciesMet || isSelected);
+                      const effectiveLoadingPreference = toolLoadingPreferences[tl.id] ?? tl.defaultLoadingPolicy ?? "deferred";
 
                       return (
                         <div
@@ -348,6 +366,27 @@ export function ToolEditorDialog({
                             {warning && (
                               <div className="mt-1">
                                 <ToolDependencyBadge warning={warning} />
+                              </div>
+                            )}
+                            {isSelected && (
+                              <div className="mt-2" onClick={(event) => event.stopPropagation()}>
+                                {tl.isRequired ? (
+                                  <span className="inline-flex rounded border border-terminal-amber/40 bg-terminal-amber/10 px-2 py-0.5 font-mono text-[10px] text-terminal-amber">
+                                    Required · locked active
+                                  </span>
+                                ) : tl.supportsLoadingPreference !== false ? (
+                                  <label className="block font-mono text-[10px] text-terminal-muted">
+                                    Initial loading
+                                    <select
+                                      value={effectiveLoadingPreference === "always" ? "always" : "deferred"}
+                                      onChange={(event) => setToolLoadingPreference(tl.id, event.target.value as "always" | "deferred")}
+                                      className="mt-1 w-full rounded border border-terminal-border bg-terminal-cream px-2 py-1 font-mono text-[11px] text-terminal-dark"
+                                    >
+                                      <option value="always">Always loaded</option>
+                                      <option value="deferred">Deferred</option>
+                                    </select>
+                                  </label>
+                                ) : null}
                               </div>
                             )}
                           </div>

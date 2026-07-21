@@ -16,6 +16,9 @@ export type CharacterToolCatalogItem = {
   dependencies?: ToolDependency[];
   displayName?: string;
   description?: string;
+  defaultLoadingPolicy?: "required" | "always" | "deferred";
+  isRequired?: boolean;
+  supportsLoadingPreference?: boolean;
 };
 
 type RegistryToolCatalogItem = {
@@ -23,6 +26,9 @@ type RegistryToolCatalogItem = {
   category: string;
   displayName: string;
   description: string;
+  defaultLoadingPolicy?: "required" | "always" | "deferred";
+  isRequired?: boolean;
+  supportsLoadingPreference?: boolean;
 };
 
 /**
@@ -160,6 +166,9 @@ export function mergeCharacterToolCatalog(
         category: tool.category,
         displayName: tool.displayName,
         description: tool.description,
+        defaultLoadingPolicy: tool.defaultLoadingPolicy,
+        isRequired: tool.isRequired,
+        supportsLoadingPreference: tool.supportsLoadingPreference,
       });
       continue;
     }
@@ -175,6 +184,9 @@ export function mergeCharacterToolCatalog(
         existing.description && existing.description.length > 0
           ? existing.description
           : tool.description,
+      defaultLoadingPolicy: tool.defaultLoadingPolicy ?? existing.defaultLoadingPolicy,
+      isRequired: tool.isRequired ?? existing.isRequired,
+      supportsLoadingPreference: tool.supportsLoadingPreference ?? existing.supportsLoadingPreference,
     });
   }
 

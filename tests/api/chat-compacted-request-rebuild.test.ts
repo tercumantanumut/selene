@@ -86,6 +86,7 @@ vi.mock("@/app/api/chat/tools-builder", () => ({
     enabledMcpServers: [],
     enabledMcpTools: [],
     alwaysLoadMcpToolIds: [],
+    disabledToolIds: [],
   })),
 }));
 vi.mock("@/lib/ai/providers", () => ({

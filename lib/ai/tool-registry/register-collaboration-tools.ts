@@ -60,7 +60,7 @@ Run shell commands with a single shell string.
 - Commands default to synced folders/worktrees
 - \`SELENE_UNSAFE_AGENT_PERMISSIONS=true\` allows broader local filesystem access
 - Prefer dedicated file/search tools when they are a better fit`,
-      loading: { deferLoading: true },
+      loading: { deferLoading: true, defaultPolicy: "deferred", companions: ["executeCommand"] },
       requiresSession: true,
     } satisfies ToolMetadata,
     ({ sessionId, userId, characterId, onExecuteCommandProgress }) =>
