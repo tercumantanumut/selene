@@ -8,11 +8,14 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StdioClientTransport } from "@/lib/mcp/stdio-transport";
 import type { ResolvedMCPServer, MCPDiscoveredTool, MCPServerStatus } from "./types";
 import { onFolderChange } from "@/lib/vectordb/folder-events";
 import { taskRegistry } from "@/lib/background-tasks/registry";
 import { hasFilesystemPathArg, resolveMCPConfig } from "./mcp-config-resolver";
+import { createMCPOAuthProvider, getMCPOAuthStatus } from "./oauth-provider";
 
 // Re-export resolveMCPConfig so existing callers importing from client-manager still work
 export { resolveMCPConfig } from "./mcp-config-resolver";
@@ -60,7 +63,7 @@ class MCPClientManager {
     private clients: Map<string, Client> = new Map();
     private tools: Map<string, MCPDiscoveredTool[]> = new Map();
     private status: Map<string, MCPServerStatus> = new Map();
-    private transports: Map<string, StdioClientTransport | SSEClientTransport> = new Map();
+    private transports: Map<string, StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport> = new Map();
     private characterMcpServers: Map<string, string[]> = new Map(); // Track which servers belong to which character
     private serverCharacterContext: Map<string, string | undefined> = new Map(); // Track characterId used for each server connection
     /**
@@ -169,6 +172,118 @@ class MCPClientManager {
         }
     }
 
+    private shouldUseOAuthProvider(config: ResolvedMCPServer): boolean {
+        if (!config.url || (config.type !== "http" && config.type !== "sse")) return false;
+        if (config.auth?.type === "none" || config.auth?.type === "headers") return false;
+        if (config.auth?.type === "oauth") return true;
+        // Streamable HTTP servers frequently advertise OAuth via WWW-Authenticate.
+        // Enable OAuth discovery by default for HTTP, while keeping legacy SSE static-header behavior unchanged.
+        return config.type === "http";
+    }
+
+    private isUnauthorizedError(error: unknown): boolean {
+        return error instanceof UnauthorizedError ||
+            (error instanceof Error && error.name === "UnauthorizedError");
+    }
+
+    private shouldLogMCPAuthDiagnostics(serverName: string, serverUrl?: string): boolean {
+        const target = `${serverName} ${serverUrl ?? ""}`.toLowerCase();
+        return process.env.MCP_OAUTH_DEBUG === "1" || target.includes("mobbin");
+    }
+
+    private safeRequestUrl(input: Parameters<typeof fetch>[0]): string {
+        try {
+            const rawUrl = typeof input === "string"
+                ? input
+                : input instanceof URL
+                    ? input.toString()
+                    : input.url;
+            const parsed = new URL(rawUrl);
+            return `${parsed.origin}${parsed.pathname}`;
+        } catch {
+            return "unknown";
+        }
+    }
+
+    private createDiagnosticFetch(serverName: string, serverUrl: string): typeof fetch | undefined {
+        if (!this.shouldLogMCPAuthDiagnostics(serverName, serverUrl)) return undefined;
+
+        return async (input, init) => {
+            const headers = new Headers(init?.headers);
+            const method = init?.method ?? "GET";
+            console.info(`[MCP OAuth] Transport request`, {
+                serverName,
+                serverUrl,
+                requestUrl: this.safeRequestUrl(input),
+                method,
+                authorizationHeaderPresent: headers.has("authorization"),
+                mcpSessionHeaderPresent: headers.has("mcp-session-id"),
+                accept: headers.get("accept"),
+                contentType: headers.get("content-type"),
+            });
+
+            const response = await fetch(input, init);
+            console.info(`[MCP OAuth] Transport response`, {
+                serverName,
+                serverUrl,
+                requestUrl: this.safeRequestUrl(input),
+                method,
+                status: response.status,
+                wwwAuthenticatePresent: response.headers.has("www-authenticate"),
+            });
+            return response;
+        };
+    }
+
+    private statusForOAuthRequired(serverName: string, config: ResolvedMCPServer): MCPServerStatus {
+        const oauthStatus = config.url ? getMCPOAuthStatus(serverName, config.url) : undefined;
+        return {
+            serverName,
+            connected: false,
+            lastError: "Authorization required. Open the browser sign-in flow, then reconnect this MCP server.",
+            connectionState: oauthStatus?.authState === "authorizing" ? "authorizing" : "authorization_required",
+            authRequired: true,
+            authorizationUrl: oauthStatus?.authorizationUrl,
+            serverUrl: config.url,
+            transportType: config.type,
+            details: "The server returned an OAuth challenge for the Streamable HTTP MCP connection.",
+            recovery: "Complete browser sign-in. Selene will reuse and refresh the saved OAuth tokens on later connections.",
+            toolCount: 0,
+            tools: [],
+        };
+    }
+
+    private statusForConnectionFailure(
+        serverName: string,
+        config: ResolvedMCPServer,
+        error: unknown,
+    ): MCPServerStatus {
+        const message = error instanceof Error ? error.message : String(error);
+        const streamableStatus = error instanceof StreamableHTTPError ? error.code : undefined;
+        const oauthStatus = config.url ? getMCPOAuthStatus(serverName, config.url) : undefined;
+        const looksAuthExpired = streamableStatus === 401 || /\b401\b|unauthori[sz]ed|invalid_grant|expired/i.test(message);
+
+        return {
+            serverName,
+            connected: false,
+            lastError: message,
+            connectionState: looksAuthExpired && oauthStatus?.hasTokens ? "expired" : "failed",
+            authRequired: looksAuthExpired,
+            authorizationUrl: oauthStatus?.authorizationUrl,
+            serverUrl: config.url,
+            transportType: config.type,
+            errorStatus: streamableStatus,
+            details: looksAuthExpired
+                ? "The MCP server rejected the current OAuth credentials."
+                : "The MCP transport failed before tool discovery completed.",
+            recovery: looksAuthExpired
+                ? "Re-authorize this MCP server from Settings → MCP, then reconnect."
+                : "Check the URL, transport type, headers, and server logs, then reconnect.",
+            toolCount: 0,
+            tools: [],
+        };
+    }
+
     /**
      * Connect to an MCP server and discover its tools
      */
@@ -222,6 +337,9 @@ class MCPClientManager {
                 return this.status.get(serverName) || {
                     serverName,
                     connected: true,
+                    connectionState: "connected",
+                    serverUrl: config.url,
+                    transportType: config.type,
                     toolCount: this.tools.get(serverName)?.length || 0,
                     tools: this.tools.get(serverName)?.map(t => t.name) || [],
                 };
@@ -236,7 +354,7 @@ class MCPClientManager {
         await new Promise(resolve => setTimeout(resolve, 500));
 
         try {
-            let transport: StdioClientTransport | SSEClientTransport;
+            let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport;
 
             if (config.type === "stdio") {
                 // Stdio transport - run command as subprocess
@@ -257,7 +375,7 @@ class MCPClientManager {
                     serverName,
                 });
             } else {
-                // HTTP/SSE transport
+                // URL-based transport
                 if (!config.url) {
                     throw new Error(
                         `MCP server "${serverName}" uses ${config.type || "sse"} transport but has no URL configured. ` +
@@ -265,14 +383,46 @@ class MCPClientManager {
                     );
                 }
 
-                console.log(`[MCP] Connecting to SSE endpoint: ${config.url}`);
+                const authProvider = this.shouldUseOAuthProvider(config)
+                    ? createMCPOAuthProvider({
+                        serverName,
+                        serverUrl: config.url,
+                        redirectUrl: config.oauthRedirectUrl,
+                    })
+                    : undefined;
+                const diagnosticFetch = this.createDiagnosticFetch(serverName, config.url);
 
-                transport = new SSEClientTransport(new URL(config.url), {
-                    requestInit: {
-                        headers: config.headers,
-                        signal: AbortSignal.timeout(config.timeout),
-                    },
-                });
+                if (authProvider && this.shouldLogMCPAuthDiagnostics(serverName, config.url)) {
+                    const oauthStatus = getMCPOAuthStatus(serverName, config.url);
+                    console.info(`[MCP OAuth] Provider attached`, {
+                        serverName,
+                        serverUrl: config.url,
+                        transportType: config.type,
+                        authState: oauthStatus.authState,
+                        hasTokens: oauthStatus.hasTokens,
+                        authorizationUrlPresent: Boolean(oauthStatus.authorizationUrl),
+                    });
+                }
+
+                if (config.type === "http") {
+                    console.log(`[MCP] Connecting to Streamable HTTP endpoint: ${config.url}`);
+                    transport = new StreamableHTTPClientTransport(new URL(config.url), {
+                        authProvider,
+                        fetch: diagnosticFetch,
+                        requestInit: {
+                            headers: config.headers,
+                        },
+                    });
+                } else {
+                    console.log(`[MCP] Connecting to SSE endpoint: ${config.url}`);
+                    transport = new SSEClientTransport(new URL(config.url), {
+                        authProvider,
+                        requestInit: {
+                            headers: config.headers,
+                            signal: AbortSignal.timeout(config.timeout),
+                        },
+                    });
+                }
             }
 
             // Validate filesystem args if applicable
@@ -328,6 +478,9 @@ class MCPClientManager {
                         connected: false,
                         lastConnected: previousStatus?.lastConnected,
                         lastError: previousStatus?.lastError,
+                        connectionState: "not_connected",
+                        serverUrl: previousStatus?.serverUrl,
+                        transportType: previousStatus?.transportType,
                         toolCount: 0,
                         tools: [],
                     });
@@ -362,6 +515,19 @@ class MCPClientManager {
                         : config.url,
                 });
             } catch (error: any) {
+                if (this.isUnauthorizedError(error)) {
+                    const status = this.statusForOAuthRequired(serverName, config);
+                    this.status.set(serverName, status);
+                    transport.onclose = undefined;
+                    transport.onerror = undefined;
+                    try {
+                        await transport.close();
+                    } catch {
+                        // Non-fatal; authorization is the actionable state.
+                    }
+                    return status;
+                }
+
                 // Emit "crashed" — spawn or initialize failed.
                 this.emitLifecycle({
                     type: "crashed",
@@ -430,6 +596,9 @@ class MCPClientManager {
                 serverName,
                 connected: true,
                 lastConnected: new Date(),
+                connectionState: "connected",
+                serverUrl: config.url,
+                transportType: config.type,
                 toolCount: discoveredTools.length,
                 tools: discoveredTools.map(t => t.name),
             };
@@ -440,13 +609,7 @@ class MCPClientManager {
             return status;
 
         } catch (error) {
-            const status: MCPServerStatus = {
-                serverName,
-                connected: false,
-                lastError: error instanceof Error ? error.message : String(error),
-                toolCount: 0,
-                tools: [],
-            };
+            const status = this.statusForConnectionFailure(serverName, config, error);
             this.status.set(serverName, status);
             console.error(`[MCP] Failed to connect to ${serverName}:`, error);
             return status;
