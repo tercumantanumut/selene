@@ -220,6 +220,16 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
   });
 });
 
+describe("K3 context window limit", () => {
+  it("uses K3's documented 1,048,576-token context and supports streaming", () => {
+    const config = getContextWindowConfig("k3", "kimi");
+
+    expect(config.maxTokens).toBe(1_048_576);
+    expect(config.maxOutputTokens).toBeUndefined();
+    expect(config.supportsStreaming).toBe(true);
+  });
+});
+
 describe("Codex model context window limits", () => {
   it("returns 372K for normalized GPT-5.6 variants", () => {
     const codex56Models = [

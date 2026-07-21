@@ -269,6 +269,12 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
   },
 
   // Kimi models
+  // K3's 1,048,576-token context is documented in MoonshotAI/kimi-code's
+  // `kimi-code/k3` configuration. Upstream declares no max output cap.
+  "k3": {
+    maxTokens: 1_048_576,
+    supportsStreaming: true,
+  },
   "kimi-k2.6": {
     maxTokens: 256000,
     supportsStreaming: true,
