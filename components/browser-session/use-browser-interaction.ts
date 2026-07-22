@@ -8,7 +8,8 @@
  * interact API endpoint. This lets users directly control the browser the agent is using.
  *
  * Coordinate mapping: the screencast is rendered with object-contain at arbitrary
- * display size, but the Playwright session always runs at a fixed 1280x720 viewport.
+ * display size. We map against the active browser viewport reported by the
+ * screencast metadata so responsive/mobile/tablet viewport changes remain accurate.
  */
 
 import { useCallback, useEffect, useState, type RefObject } from "react";
@@ -27,9 +28,16 @@ interface InteractPayload {
   url?: string;
 }
 
+export interface BrowserViewportSize {
+  width: number;
+  height: number;
+}
+
 interface UseBrowserInteractionOptions {
   sessionId: string;
   imgRef: RefObject<HTMLImageElement | null>;
+  /** Active browser viewport in CSS pixels, sourced from screencast metadata. */
+  viewportSize?: BrowserViewportSize | null;
   /** Whether interactive mode is currently active */
   enabled: boolean;
   /** Container element ref for attaching non-passive wheel listener */
@@ -45,32 +53,50 @@ interface UseBrowserInteractionReturn {
   navigate: (url: string) => Promise<void>;
 }
 
-const VIEWPORT_W = 1280;
-const VIEWPORT_H = 720;
+function getViewportSize(
+  img: HTMLImageElement,
+  viewportSize?: BrowserViewportSize | null
+): BrowserViewportSize | null {
+  if (viewportSize?.width && viewportSize.height) return viewportSize;
+  if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+    return { width: img.naturalWidth, height: img.naturalHeight };
+  }
+  return null;
+}
 
-function getRenderedFrameMetrics(img: HTMLImageElement) {
+function getRenderedFrameMetrics(
+  img: HTMLImageElement,
+  viewportSize?: BrowserViewportSize | null
+) {
+  const viewport = getViewportSize(img, viewportSize);
+  if (!viewport) return null;
+
   const rect = img.getBoundingClientRect();
-  const scale = Math.min(rect.width / VIEWPORT_W, rect.height / VIEWPORT_H);
-  const renderedW = VIEWPORT_W * scale;
-  const renderedH = VIEWPORT_H * scale;
+  const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
+  const renderedW = viewport.width * scale;
+  const renderedH = viewport.height * scale;
   const offsetX = (rect.width - renderedW) / 2;
   const offsetY = (rect.height - renderedH) / 2;
 
-  return { rect, renderedW, renderedH, offsetX, offsetY };
+  return { rect, viewport, renderedW, renderedH, offsetX, offsetY };
 }
 
 /**
  * Map a pointer position on the rendered <img> element to browser viewport coordinates.
  *
- * The screencast can be emitted at HiDPI pixel sizes, so we map against the known
- * Playwright viewport instead of img.naturalWidth/img.naturalHeight.
+ * The screencast can be emitted at arbitrary responsive sizes, so we map against
+ * active viewport metadata when available and fall back to the image's natural size.
  */
 function mapPointToViewport(
   clientX: number,
   clientY: number,
-  img: HTMLImageElement
+  img: HTMLImageElement,
+  viewportSize?: BrowserViewportSize | null
 ): { x: number; y: number } | null {
-  const { rect, renderedW, renderedH, offsetX, offsetY } = getRenderedFrameMetrics(img);
+  const metrics = getRenderedFrameMetrics(img, viewportSize);
+  if (!metrics) return null;
+
+  const { rect, viewport, renderedW, renderedH, offsetX, offsetY } = metrics;
   const mouseX = clientX - rect.left;
   const mouseY = clientY - rect.top;
 
@@ -83,8 +109,8 @@ function mapPointToViewport(
     return null;
   }
 
-  const viewportX = ((mouseX - offsetX) / renderedW) * VIEWPORT_W;
-  const viewportY = ((mouseY - offsetY) / renderedH) * VIEWPORT_H;
+  const viewportX = ((mouseX - offsetX) / renderedW) * viewport.width;
+  const viewportY = ((mouseY - offsetY) / renderedH) * viewport.height;
 
   return { x: Math.round(viewportX), y: Math.round(viewportY) };
 }
@@ -92,6 +118,7 @@ function mapPointToViewport(
 export function useBrowserInteraction({
   sessionId,
   imgRef,
+  viewportSize,
   enabled,
   containerRef,
 }: UseBrowserInteractionOptions): UseBrowserInteractionReturn {
@@ -118,7 +145,7 @@ export function useBrowserInteraction({
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (!enabled || !imgRef.current) return;
 
-    const pos = mapPointToViewport(e.clientX, e.clientY, imgRef.current);
+    const pos = mapPointToViewport(e.clientX, e.clientY, imgRef.current, viewportSize);
     if (!pos) return;
 
     e.preventDefault();
@@ -131,7 +158,7 @@ export function useBrowserInteraction({
       button,
       clickCount: e.detail || 1,
     });
-  }, [enabled, imgRef, sendInteraction]);
+  }, [enabled, imgRef, sendInteraction, viewportSize]);
 
 
   // Non-passive wheel listener attached via useEffect so preventDefault() works.
@@ -143,7 +170,7 @@ export function useBrowserInteraction({
       const img = imgRef.current;
       if (!img) return;
 
-      const pos = mapPointToViewport(e.clientX, e.clientY, img);
+      const pos = mapPointToViewport(e.clientX, e.clientY, img, viewportSize);
       if (!pos) return;
 
       e.preventDefault();
@@ -158,7 +185,7 @@ export function useBrowserInteraction({
 
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [enabled, containerRef, imgRef, sendInteraction]);
+  }, [enabled, containerRef, imgRef, sendInteraction, viewportSize]);
 
   const navigate = useCallback(async (url: string) => {
     if (!url) return;

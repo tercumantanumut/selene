@@ -5,7 +5,7 @@
  *  1. Audit trail — see exactly what the agent did
  *  2. Deterministic replay — re-run a recorded session and verify outputs
  *
- * Each action record captures: action, input, output, domSnapshot,
+ * Each action record captures: action, input, output, viewport, domSnapshot,
  * timestamp, sessionId, and agentId. History is in-memory during the
  * session, returned as a structured object on close (stored alongside
  * tool call logs in message content parts).
@@ -13,6 +13,8 @@
  * Replay re-executes the action sequence with same inputs and optionally
  * verifies that outputs match the original recording.
  */
+
+import type { BrowserViewport } from "@/lib/browser/viewport";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,9 @@ export interface ActionRecord {
 
   /** The structured output returned by the action */
   output: unknown;
+
+  /** Resolved browser viewport active when the action completed */
+  viewport?: BrowserViewport;
 
   /** Whether the action succeeded */
   success: boolean;
@@ -188,6 +193,7 @@ export function recordAction(
     success: boolean;
     durationMs: number;
     output?: unknown;
+    viewport?: BrowserViewport;
     pageUrl?: string;
     pageTitle?: string;
     domSnapshot?: string;
@@ -205,6 +211,7 @@ export function recordAction(
     action,
     input,
     output: result.output ?? null,
+    viewport: result.viewport,
     success: result.success,
     durationMs: result.durationMs,
     pageUrl: result.pageUrl,
