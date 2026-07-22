@@ -14,12 +14,21 @@
  * Singleton: stored on globalThis to survive Next.js hot reloads.
  */
 
-import type { Browser, BrowserContext, Page } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from "playwright-core";
 import { join } from "path";
 import { homedir, platform, tmpdir } from "os";
 import { cpSync, mkdirSync, rmSync, existsSync } from "fs";
 import { startScreencast, stopScreencast } from "./screencast";
 import { cleanupInputSession, cleanupAllInputSessions } from "./input-dispatcher";
+import {
+  applyBrowserViewportToPage,
+  browserViewportToContextOptions,
+  DEFAULT_BROWSER_VIEWPORT,
+  hasBrowserViewportInput,
+  resolveBrowserViewport,
+  type BrowserViewport,
+  type BrowserViewportInput,
+} from "./viewport";
 
 // ─── Timeout helpers ──────────────────────────────────────────────────────────
 
@@ -60,6 +69,7 @@ export interface BrowserSession {
   sessionId: string;
   context: BrowserContext;
   page: Page;
+  viewport: BrowserViewport;
   createdAt: number;
   lastAccessedAt: number;
 }
@@ -143,6 +153,28 @@ function getBrowserSettings(): { mode: "standalone" | "user-chrome"; profilePath
   } catch {
     return { mode: "standalone", profilePath: "" };
   }
+}
+
+function createStandaloneContextOptions(
+  viewport: BrowserViewport = DEFAULT_BROWSER_VIEWPORT
+): BrowserContextOptions {
+  return {
+    ...browserViewportToContextOptions(viewport),
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Selene/1.0",
+    javaScriptEnabled: true,
+    ignoreHTTPSErrors: true,
+  };
+}
+
+async function applyViewportToSession(
+  session: BrowserSession,
+  input: BrowserViewportInput
+): Promise<BrowserViewport> {
+  const viewport = resolveBrowserViewport(input, session.viewport);
+  await applyBrowserViewportToPage(session.page, viewport);
+  session.viewport = viewport;
+  return viewport;
 }
 
 // ─── Browser lifecycle ────────────────────────────────────────────────────────
@@ -412,7 +444,7 @@ async function launchUserChrome(
       args: [
         "--disable-blink-features=AutomationControlled",
       ],
-      viewport: { width: 1280, height: 720 },
+      ...browserViewportToContextOptions(DEFAULT_BROWSER_VIEWPORT),
       // No custom UA — use Chrome's real one for anti-detection
       ignoreHTTPSErrors: true,
     });
@@ -490,9 +522,15 @@ function cleanupTempProfile(state: ChromiumManagerState): void {
  * In user-chrome mode: sessions share the persistent context (same cookies,
  * extensions, fingerprint) but each gets a separate page/tab.
  */
-export async function getOrCreateSession(sessionId: string): Promise<BrowserSession> {
+export async function getOrCreateSession(
+  sessionId: string,
+  viewportInput?: BrowserViewportInput
+): Promise<BrowserSession> {
   const state = getState();
   const existing = state.sessions.get(sessionId);
+  const requestedViewport = hasBrowserViewportInput(viewportInput)
+    ? resolveBrowserViewport(viewportInput, DEFAULT_BROWSER_VIEWPORT)
+    : DEFAULT_BROWSER_VIEWPORT;
 
   if (existing) {
     // Verify the page is still alive — pages can crash silently during heavy
@@ -521,6 +559,9 @@ export async function getOrCreateSession(sessionId: string): Promise<BrowserSess
       }
     } else {
       existing.lastAccessedAt = Date.now();
+      if (hasBrowserViewportInput(viewportInput)) {
+        await applyViewportToSession(existing, viewportInput!);
+      }
       return existing;
     }
   }
@@ -529,25 +570,21 @@ export async function getOrCreateSession(sessionId: string): Promise<BrowserSess
 
   let context: BrowserContext;
   let page: Page;
+  let viewport = requestedViewport;
 
   try {
     if (state.browserMode === "user-chrome" && state.persistentContext) {
       // User-chrome mode: reuse the persistent context, create a new page/tab
       context = state.persistentContext;
       page = await context.newPage();
+      await applyBrowserViewportToPage(page, viewport);
     } else {
       // Standalone mode: create an isolated context per session
       if (!state.browser) {
         throw new Error("[ChromiumManager] Browser not available after ensureBrowser() — this should not happen");
       }
       const browser = state.browser;
-      context = await browser.newContext({
-        viewport: { width: 1280, height: 720 },
-        userAgent:
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Selene/1.0",
-        javaScriptEnabled: true,
-        ignoreHTTPSErrors: true,
-      });
+      context = await browser.newContext(createStandaloneContextOptions(viewport));
       page = await context.newPage();
     }
   } catch (err) {
@@ -556,18 +593,14 @@ export async function getOrCreateSession(sessionId: string): Promise<BrowserSess
     console.warn(`[ChromiumManager] Failed to create session context — restarting browser:`, err);
     await shutdownBrowser();
     await ensureBrowser();
+    viewport = requestedViewport;
 
     if (state.browserMode === "user-chrome" && state.persistentContext) {
       context = state.persistentContext;
       page = await context.newPage();
+      await applyBrowserViewportToPage(page, viewport);
     } else if (state.browser) {
-      context = await state.browser.newContext({
-        viewport: { width: 1280, height: 720 },
-        userAgent:
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Selene/1.0",
-        javaScriptEnabled: true,
-        ignoreHTTPSErrors: true,
-      });
+      context = await state.browser.newContext(createStandaloneContextOptions(viewport));
       page = await context.newPage();
     } else {
       throw new Error("[ChromiumManager] Browser restart failed — cannot create session");
@@ -580,6 +613,7 @@ export async function getOrCreateSession(sessionId: string): Promise<BrowserSess
     sessionId,
     context,
     page,
+    viewport,
     createdAt: now,
     lastAccessedAt: now,
   };
@@ -593,6 +627,19 @@ export async function getOrCreateSession(sessionId: string): Promise<BrowserSess
   });
 
   return session;
+}
+
+export async function setBrowserSessionViewport(
+  sessionId: string,
+  viewportInput: BrowserViewportInput
+): Promise<BrowserViewport> {
+  const session = await getOrCreateSession(sessionId);
+  session.lastAccessedAt = Date.now();
+  return applyViewportToSession(session, viewportInput);
+}
+
+export function getBrowserSessionViewport(sessionId: string): BrowserViewport | null {
+  return getState().sessions.get(sessionId)?.viewport ?? null;
 }
 
 /**

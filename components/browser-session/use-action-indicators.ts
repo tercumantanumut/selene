@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useRef, useState, useEffect, type RefObject } from "react";
+import type { BrowserViewportSize } from "./use-browser-interaction";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,7 @@ interface UseActionIndicatorsOptions {
   sessionId: string;
   imgRef: RefObject<HTMLImageElement | null>;
   containerRef: RefObject<HTMLElement | null>;
+  viewportSize?: BrowserViewportSize | null;
   enabled: boolean;
 }
 
@@ -70,26 +72,30 @@ function viewportToDisplay(
   viewportX: number,
   viewportY: number,
   img: HTMLImageElement,
-  container: HTMLElement | null
+  container: HTMLElement | null,
+  viewportSize?: BrowserViewportSize | null
 ): { x: number; y: number } | null {
+  const viewport = viewportSize?.width && viewportSize.height
+    ? viewportSize
+    : img.naturalWidth > 0 && img.naturalHeight > 0
+      ? { width: img.naturalWidth, height: img.naturalHeight }
+      : null;
+
+  if (!viewport) return null;
+
   const rect = img.getBoundingClientRect();
   const containerRect = container?.getBoundingClientRect();
-  // Viewport is always 1280x720 as set in session-manager.ts.
-  // Using naturalWidth/naturalHeight would be wrong on HiDPI/Retina
-  // displays where the screencast frame is rendered at 2x pixel ratio.
-  const VIEWPORT_W = 1280;
-  const VIEWPORT_H = 720;
 
-  const scale = Math.min(rect.width / VIEWPORT_W, rect.height / VIEWPORT_H);
-  const renderedW = VIEWPORT_W * scale;
-  const renderedH = VIEWPORT_H * scale;
+  const scale = Math.min(rect.width / viewport.width, rect.height / viewport.height);
+  const renderedW = viewport.width * scale;
+  const renderedH = viewport.height * scale;
   const offsetX = (rect.width - renderedW) / 2;
   const offsetY = (rect.height - renderedH) / 2;
   const baseX = containerRect ? rect.left - containerRect.left : 0;
   const baseY = containerRect ? rect.top - containerRect.top : 0;
 
-  const displayX = baseX + (viewportX / VIEWPORT_W) * renderedW + offsetX;
-  const displayY = baseY + (viewportY / VIEWPORT_H) * renderedH + offsetY;
+  const displayX = baseX + (viewportX / viewport.width) * renderedW + offsetX;
+  const displayY = baseY + (viewportY / viewport.height) * renderedH + offsetY;
 
   return { x: displayX, y: displayY };
 }
@@ -101,6 +107,7 @@ let indicatorCounter = 0;
 export function useActionIndicators({
   imgRef,
   containerRef,
+  viewportSize,
   enabled,
 }: UseActionIndicatorsOptions): UseActionIndicatorsReturn {
   const [indicators, setIndicators] = useState<ActionIndicator[]>([]);
@@ -144,7 +151,7 @@ export function useActionIndicators({
       const inputY = data.input?.y;
 
       if (typeof inputX === "number" && typeof inputY === "number") {
-        const display = viewportToDisplay(inputX, inputY, img, containerRef.current);
+        const display = viewportToDisplay(inputX, inputY, img, containerRef.current, viewportSize);
         if (display) {
           x = display.x;
           y = display.y;
@@ -188,7 +195,7 @@ export function useActionIndicators({
 
       timersRef.current.set(id, timer);
     },
-    [containerRef, imgRef]
+    [containerRef, imgRef, viewportSize]
   );
 
   return { indicators, addAction, clearIndicators };

@@ -13,6 +13,7 @@ import {
   X,
   Play,
   ArrowRight,
+  ArrowClockwise,
 } from "@phosphor-icons/react";
 
 // ─── Action icon mapping ──────────────────────────────────────────────────────
@@ -26,6 +27,8 @@ const ACTION_ICONS: Record<string, typeof Globe> = {
   extract: Eye,
   replay: Play,
   evaluate: Code,
+  setViewport: Eye,
+  resetViewport: ArrowClockwise,
   close: X,
 };
 
@@ -42,6 +45,8 @@ export function getActionLabel(action: string): string {
     snapshot: "Snapshot",
     extract: "Extract",
     evaluate: "Evaluate",
+    setViewport: "Set Viewport",
+    resetViewport: "Reset Viewport",
     close: "Close",
     replay: "Replay",
   };

@@ -124,8 +124,20 @@ async function runDryRunTests(): Promise<void> {
   assert(typeof toolInstance === "object", "Tool instance is created");
   assert("execute" in toolInstance, "Tool has execute method");
 
-  // Test 7: Output matching for replay verification
-  section("7. Output Matching");
+  // Test 7: Viewport resolver
+  section("7. Viewport Resolver");
+  const { resolveBrowserViewport, DEFAULT_BROWSER_VIEWPORT } = await import("../../lib/browser/viewport");
+  const mobile = resolveBrowserViewport({ viewportPreset: "mobile" });
+  assert(mobile.width < mobile.height && mobile.isMobile, "Mobile preset resolves to portrait touch viewport");
+  const tabletLandscape = resolveBrowserViewport({ viewportPreset: "tablet", orientation: "landscape" });
+  assert(tabletLandscape.width === 1024 && tabletLandscape.height === 768, "Tablet landscape orientation is respected");
+  const custom = resolveBrowserViewport({ viewportWidth: 1024, viewportHeight: 768 });
+  assert(custom.width === 1024 && custom.height === 768, "Custom dimensions are resolved");
+  const reset = resolveBrowserViewport({ resetViewport: true }, mobile);
+  assert(reset.width === DEFAULT_BROWSER_VIEWPORT.width && reset.height === DEFAULT_BROWSER_VIEWPORT.height, "Reset restores default desktop viewport");
+
+  // Test 8: Output matching for replay verification
+  section("8. Output Matching");
   assert(typeof history.outputsMatch === "function", "outputsMatch is exported");
   assert(history.outputsMatch("hello", "hello") === true, "Identical strings match");
   assert(history.outputsMatch({ a: 1 }, { a: 1 }) === true, "Identical objects match");
@@ -133,8 +145,8 @@ async function runDryRunTests(): Promise<void> {
   assert(history.outputsMatch(null, null) === true, "Null values match");
   assert(history.outputsMatch(null, undefined) === true, "Null and undefined match");
 
-  // Test 8: Replay plan includes expected output
-  section("8. Replay Plan Expected Outputs");
+  // Test 9: Replay plan includes expected output
+  section("9. Replay Plan Expected Outputs");
   assert("expectedOutput" in replayPlan[0], "Replay plan includes expectedOutput field");
 }
 
@@ -153,6 +165,7 @@ async function runLiveTests(): Promise<void> {
     shutdownAll,
   } = await import("../../lib/browser/session-manager");
   const { initHistory, finalizeHistory } = await import("../../lib/browser/action-history");
+  const { executeAction } = await import("../../lib/ai/tools/chromium-workspace-tool");
 
   // Test 1: Create concurrent sessions
   section("1. Concurrent Session Creation");
@@ -219,8 +232,51 @@ async function runLiveTests(): Promise<void> {
   await recreatedB.page.goto("https://example.com", { waitUntil: "domcontentloaded" });
   assert(recreatedB.page.url().includes("example.com"), "Recreated session can navigate successfully");
 
-  // Test 6: Shutdown all
-  section("6. Full Shutdown");
+  // Test 6: Responsive viewport controls
+  section("6. Responsive Viewport Controls");
+  const viewportSessionId = "live-viewport";
+  const viewportUrl = `data:text/html,${encodeURIComponent(
+    '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>viewport test</body></html>'
+  )}`;
+  const readViewport = async () => {
+    const result = await executeAction(viewportSessionId, {
+      action: "evaluate",
+      expression: "({ width: window.innerWidth, height: window.innerHeight, screenWidth: screen.width, screenHeight: screen.height })",
+    }, 30_000);
+    return JSON.parse(String(result.data)) as { width: number; height: number; screenWidth: number; screenHeight: number };
+  };
+
+  await executeAction(viewportSessionId, {
+    action: "open",
+    url: viewportUrl,
+    viewportPreset: "mobile",
+    orientation: "portrait",
+  }, 30_000);
+  let dims = await readViewport();
+  assert(dims.width === 390 && dims.height === 844, "Mobile portrait viewport is applied before open/navigation");
+
+  await executeAction(viewportSessionId, {
+    action: "setViewport",
+    viewportPreset: "tablet",
+    orientation: "landscape",
+  }, 30_000);
+  dims = await readViewport();
+  assert(dims.width === 1024 && dims.height === 768, "Tablet landscape viewport is applied");
+
+  await executeAction(viewportSessionId, {
+    action: "setViewport",
+    viewportWidth: 901,
+    viewportHeight: 701,
+  }, 30_000);
+  dims = await readViewport();
+  assert(dims.width === 901 && dims.height === 701, "Custom viewport dimensions are applied");
+
+  await executeAction(viewportSessionId, { action: "resetViewport" }, 30_000);
+  dims = await readViewport();
+  assert(dims.width === 1280 && dims.height === 720, "Reset restores the default desktop viewport");
+
+  // Test 7: Shutdown all
+  section("7. Full Shutdown");
   await shutdownAll();
   assert(getActiveSessionCount() === 0, "All sessions closed");
 

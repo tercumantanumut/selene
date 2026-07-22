@@ -132,11 +132,17 @@ describe("sanitizeMessagesForInit", () => {
             type: "tool-chromiumWorkspace",
             toolCallId: "tool-browser",
             state: "input-available",
-            input: { action: "open", url: "https://example.com" },
+            input: {
+              action: "open",
+              url: "https://example.com",
+              viewportPreset: "mobile",
+              orientation: "portrait",
+            },
             output: {
               status: "success",
               data: "Browser session opened. Navigated to: https://example.com",
               pageUrl: "https://example.com",
+              viewport: { width: 390, height: 844, orientation: "portrait", preset: "mobile" },
             },
           },
         ],
@@ -152,10 +158,17 @@ describe("sanitizeMessagesForInit", () => {
     );
 
     expect(browserPart).toBeDefined();
+    expect((browserPart as any).input).toEqual({
+      action: "open",
+      url: "https://example.com",
+      viewportPreset: "mobile",
+      orientation: "portrait",
+    });
     expect((browserPart as any).output).toEqual({
       status: "success",
       data: "Browser session opened. Navigated to: https://example.com",
       pageUrl: "https://example.com",
+      viewport: { width: 390, height: 844, orientation: "portrait", preset: "mobile" },
     });
   });
 

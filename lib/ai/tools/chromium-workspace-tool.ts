@@ -2,12 +2,15 @@
  * Chromium Workspace Tool
  *
  * Single multi-action tool for embedded browser automation.
- * Actions: open, navigate, click, type, snapshot, extract, evaluate, close
+ * Actions: open, navigate, click, type, snapshot, extract, evaluate,
+ * setViewport, resetViewport, close, replay
  *
- * Each invocation is scoped to the calling agent's sessionId via the
- * session manager — parallel agents get isolated BrowserContexts.
+ * Each invocation is scoped to the calling agent's sessionId via the session
+ * manager. Standalone browser mode uses isolated BrowserContexts; user-chrome
+ * mode intentionally shares one persistent browser profile and isolates sessions
+ * at the page/tab level.
  *
- * Every action is recorded with full input/output/domSnapshot for
+ * Every action is recorded with full input/output/viewport/domSnapshot for
  * deterministic replay and audit trails.
  *
  * Observation model: accessibility tree snapshots (token-efficient,
@@ -18,6 +21,8 @@ import { tool, jsonSchema } from "ai";
 import {
   getOrCreateSession,
   closeSession,
+  setBrowserSessionViewport,
+  getBrowserSessionViewport,
   type BrowserSession,
 } from "@/lib/browser/session-manager";
 import {
@@ -27,10 +32,17 @@ import {
   outputsMatch,
   type ReplayResult,
 } from "@/lib/browser/action-history";
+import {
+  DEFAULT_BROWSER_VIEWPORT,
+  hasBrowserViewportInput,
+  listBrowserViewportPresets,
+  type BrowserViewport,
+  type BrowserViewportInput,
+} from "@/lib/browser/viewport";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ActionType =
+export type ActionType =
   | "open"
   | "navigate"
   | "click"
@@ -38,10 +50,12 @@ type ActionType =
   | "snapshot"
   | "extract"
   | "evaluate"
+  | "setViewport"
+  | "resetViewport"
   | "close"
   | "replay";
 
-interface ChromiumWorkspaceInput {
+export interface ChromiumWorkspaceInput extends BrowserViewportInput {
   action: ActionType;
   /** URL to navigate to (open, navigate) */
   url?: string;
@@ -77,6 +91,7 @@ interface ActionResult {
   data: unknown;
   pageUrl?: string;
   pageTitle?: string;
+  viewport?: BrowserViewport;
   /** Accessibility snapshot captured after action (for history) */
   domSnapshot?: string;
 }
@@ -93,6 +108,7 @@ export function createChromiumWorkspaceTool(options: {
   agentId?: string;
 }) {
   const { sessionId, agentId } = options;
+  const viewportPresetNames = listBrowserViewportPresets();
 
   return tool({
     description: `Embedded Chromium workspace for browser automation. Single tool, multiple actions.
@@ -105,12 +121,21 @@ export function createChromiumWorkspaceTool(options: {
 - \`snapshot\`: Get an accessibility tree snapshot of the current page (token-efficient observation).
 - \`extract\`: Extract text content from an element. \`{ action: "extract", selector: ".content" }\`
 - \`evaluate\`: Execute JavaScript in the page context. \`{ action: "evaluate", expression: "document.title" }\`
+- \`setViewport\`: Set the active browser viewport. \`{ action: "setViewport", viewportPreset: "mobile", orientation: "portrait" }\`
+- \`resetViewport\`: Reset to the default desktop viewport. \`{ action: "resetViewport" }\`
 - \`close\`: Close the browser session and return full execution history.
 - \`replay\`: Re-execute a recorded action history with optional output verification.
 
-**Isolation:** Each agent session gets its own sandboxed browser context (cookies, storage, service workers are isolated).
+**Responsive viewport controls:** Pass viewport options directly on \`open\`, \`navigate\`, \`snapshot\`, \`extract\`, \`evaluate\`, \`click\`, or \`type\` and they are applied before the action runs. Use \`viewportWidth\` + \`viewportHeight\` for custom CSS pixel dimensions, \`orientation\` for \`portrait\`/\`landscape\`, \`viewportPreset\` for common devices (${viewportPresetNames.join(", ")}), or \`resetViewport: true\` to restore desktop.
+
+**Examples:**
+- Mobile portrait open: \`{ action: "open", url: "https://example.com", viewportPreset: "mobile", orientation: "portrait" }\`
+- Tablet landscape inspect: \`{ action: "snapshot", viewportPreset: "tablet", orientation: "landscape" }\`
+- Custom size: \`{ action: "setViewport", viewportWidth: 1024, viewportHeight: 768 }\`
+
+**Isolation:** Standalone browser mode gives each agent session its own sandboxed browser context (cookies, storage, service workers are isolated). User-chrome mode shares the persistent browser profile and isolates sessions at the page/tab level.
 **Observation:** Use \`snapshot\` to observe page state — returns structured accessibility data, not screenshots.
-**History:** Every action is recorded with input, output, and DOM snapshot for replay.
+**History:** Every action is recorded with input, output, viewport, and DOM snapshot for replay.
 **Replay:** Use \`close\` to get a history, then \`replay\` to deterministically re-execute it.`,
 
     inputSchema: jsonSchema<ChromiumWorkspaceInput>({
@@ -121,7 +146,7 @@ export function createChromiumWorkspaceTool(options: {
           type: "string",
           enum: [
             "open", "navigate", "click", "type",
-            "snapshot", "extract", "evaluate", "close", "replay",
+            "snapshot", "extract", "evaluate", "setViewport", "resetViewport", "close", "replay",
           ],
           description: "The browser action to perform",
         },
@@ -144,6 +169,28 @@ export function createChromiumWorkspaceTool(options: {
         timeout: {
           type: "number",
           description: "Timeout in milliseconds (default: 30000)",
+        },
+        viewportPreset: {
+          type: "string",
+          enum: viewportPresetNames,
+          description: "Common responsive viewport preset. Can be used with open/navigate/snapshot/extract/evaluate/click/type or action=setViewport. Available presets include mobile, tablet, ipad, ipad-pro, iphone-se, iphone-14, pixel-7, desktop, desktop-wide.",
+        },
+        viewportWidth: {
+          type: "number",
+          description: "Custom viewport width in CSS pixels (100-10000). Can be combined with viewportHeight and orientation.",
+        },
+        viewportHeight: {
+          type: "number",
+          description: "Custom viewport height in CSS pixels (100-10000). Can be combined with viewportWidth and orientation.",
+        },
+        orientation: {
+          type: "string",
+          enum: ["portrait", "landscape"],
+          description: "Viewport orientation. If the selected/custom dimensions are in the opposite orientation, width and height are swapped before the action runs.",
+        },
+        resetViewport: {
+          type: "boolean",
+          description: "Reset the current session to the default desktop viewport before running this action. Equivalent to action=resetViewport when used alone.",
         },
         history: {
           type: "string",
@@ -173,6 +220,7 @@ export function createChromiumWorkspaceTool(options: {
           success: true,
           durationMs,
           output: result.data,
+          viewport: result.viewport,
           pageUrl: result.pageUrl,
           pageTitle: result.pageTitle,
           domSnapshot: result.domSnapshot,
@@ -186,6 +234,7 @@ export function createChromiumWorkspaceTool(options: {
           data: result.data,
           pageUrl: result.pageUrl,
           pageTitle: result.pageTitle,
+          viewport: result.viewport,
         };
       } catch (err) {
         const durationMs = Date.now() - startTime;
@@ -194,6 +243,7 @@ export function createChromiumWorkspaceTool(options: {
         recordAction(sessionId, action, sanitizeInput(input), {
           success: false,
           durationMs,
+          viewport: getBrowserSessionViewport(sessionId) ?? undefined,
           error: errorMsg,
           source: "agent",
         });
@@ -234,13 +284,19 @@ export async function executeAction(
       result = await handleType(sessionId, input, timeout);
       break;
     case "snapshot":
-      result = await handleSnapshot(sessionId);
+      result = await handleSnapshot(sessionId, input);
       break;
     case "extract":
       result = await handleExtract(sessionId, input, timeout);
       break;
     case "evaluate":
       result = await handleEvaluate(sessionId, input, timeout);
+      break;
+    case "setViewport":
+      result = await handleSetViewport(sessionId, input);
+      break;
+    case "resetViewport":
+      result = await handleResetViewport(sessionId);
       break;
     case "close":
       result = await handleClose(sessionId);
@@ -271,7 +327,7 @@ async function handleOpen(
   if (!input.url) throw new Error("'url' is required for the 'open' action");
 
   initHistory(sessionId, agentId);
-  const session = await getOrCreateSession(sessionId);
+  const session = await getOrCreateSession(sessionId, input);
 
   await session.page.goto(input.url, {
     waitUntil: "domcontentloaded",
@@ -282,6 +338,7 @@ async function handleOpen(
     data: `Browser session opened. Navigated to: ${input.url}`,
     pageUrl: session.page.url(),
     pageTitle: await session.page.title(),
+    viewport: session.viewport,
   };
 }
 
@@ -292,7 +349,7 @@ async function handleNavigate(
 ): Promise<ActionResult> {
   if (!input.url) throw new Error("'url' is required for the 'navigate' action");
 
-  const session = await getSessionOrThrow(sessionId);
+  const session = await getSessionOrThrow(sessionId, input);
 
   await session.page.goto(input.url, {
     waitUntil: "domcontentloaded",
@@ -303,6 +360,7 @@ async function handleNavigate(
     data: `Navigated to: ${input.url}`,
     pageUrl: session.page.url(),
     pageTitle: await session.page.title(),
+    viewport: session.viewport,
   };
 }
 
@@ -313,7 +371,7 @@ async function handleClick(
 ): Promise<ActionResult> {
   if (!input.selector) throw new Error("'selector' is required for the 'click' action");
 
-  const session = await getSessionOrThrow(sessionId);
+  const session = await getSessionOrThrow(sessionId, input);
 
   await session.page.waitForSelector(input.selector, { timeout });
   await session.page.click(input.selector);
@@ -325,6 +383,7 @@ async function handleClick(
     data: `Clicked element: ${input.selector}`,
     pageUrl: session.page.url(),
     pageTitle: await session.page.title(),
+    viewport: session.viewport,
   };
 }
 
@@ -336,7 +395,7 @@ async function handleType(
   if (!input.selector) throw new Error("'selector' is required for the 'type' action");
   if (!input.text) throw new Error("'text' is required for the 'type' action");
 
-  const session = await getSessionOrThrow(sessionId);
+  const session = await getSessionOrThrow(sessionId, input);
 
   await session.page.waitForSelector(input.selector, { timeout });
   await session.page.fill(input.selector, input.text);
@@ -345,13 +404,15 @@ async function handleType(
     data: `Typed "${input.text.slice(0, 50)}${input.text.length > 50 ? "..." : ""}" into ${input.selector}`,
     pageUrl: session.page.url(),
     pageTitle: await session.page.title(),
+    viewport: session.viewport,
   };
 }
 
 async function handleSnapshot(
-  sessionId: string
+  sessionId: string,
+  input: ChromiumWorkspaceInput
 ): Promise<ActionResult> {
-  const session = await getSessionOrThrow(sessionId);
+  const session = await getSessionOrThrow(sessionId, input);
 
   const snapshot = await session.page.locator("body").ariaSnapshot();
   const pageUrl = session.page.url();
@@ -361,10 +422,12 @@ async function handleSnapshot(
     data: {
       url: pageUrl,
       title: pageTitle,
+      viewport: session.viewport,
       accessibilityTree: snapshot,
     },
     pageUrl,
     pageTitle,
+    viewport: session.viewport,
     // snapshot action itself IS the domSnapshot
     domSnapshot: snapshot,
   };
@@ -377,7 +440,7 @@ async function handleExtract(
 ): Promise<ActionResult> {
   if (!input.selector) throw new Error("'selector' is required for the 'extract' action");
 
-  const session = await getSessionOrThrow(sessionId);
+  const session = await getSessionOrThrow(sessionId, input);
 
   await session.page.waitForSelector(input.selector, { timeout });
   const textContent = await session.page.$eval(input.selector, (el) => el.textContent ?? "");
@@ -390,6 +453,7 @@ async function handleExtract(
     data: truncated,
     pageUrl: session.page.url(),
     pageTitle: await session.page.title(),
+    viewport: session.viewport,
   };
 }
 
@@ -400,7 +464,7 @@ async function handleEvaluate(
 ): Promise<ActionResult> {
   if (!input.expression) throw new Error("'expression' is required for the 'evaluate' action");
 
-  const session = await getSessionOrThrow(sessionId);
+  const session = await getSessionOrThrow(sessionId, input);
 
   // Apply a timeout to prevent indefinite blocking from long-running
   // expressions (e.g., those with setTimeout delays for audio playback).
@@ -428,18 +492,60 @@ async function handleEvaluate(
     data: serialized?.slice(0, 5000) ?? null,
     pageUrl: session.page.url(),
     pageTitle: await session.page.title(),
+    viewport: session.viewport,
+  };
+}
+
+async function handleSetViewport(
+  sessionId: string,
+  input: ChromiumWorkspaceInput
+): Promise<ActionResult> {
+  if (!hasBrowserViewportInput(input)) {
+    throw new Error("setViewport requires viewportPreset, viewportWidth/viewportHeight, orientation, or resetViewport");
+  }
+
+  const viewport = await setBrowserSessionViewport(sessionId, input);
+  const session = await getSessionOrThrow(sessionId);
+
+  return {
+    data: {
+      message: `Viewport set to ${viewport.width}×${viewport.height} (${viewport.orientation})`,
+      viewport,
+    },
+    pageUrl: session.page.url(),
+    pageTitle: await session.page.title(),
+    viewport,
+  };
+}
+
+async function handleResetViewport(
+  sessionId: string
+): Promise<ActionResult> {
+  const viewport = await setBrowserSessionViewport(sessionId, { resetViewport: true });
+  const session = await getSessionOrThrow(sessionId);
+
+  return {
+    data: {
+      message: `Viewport reset to default desktop ${viewport.width}×${viewport.height}`,
+      viewport,
+    },
+    pageUrl: session.page.url(),
+    pageTitle: await session.page.title(),
+    viewport,
   };
 }
 
 async function handleClose(
   sessionId: string
 ): Promise<ActionResult> {
+  const viewport = getBrowserSessionViewport(sessionId) ?? DEFAULT_BROWSER_VIEWPORT;
   const history = finalizeHistory(sessionId);
   await closeSession(sessionId);
 
   return {
     data: {
       message: "Browser session closed",
+      viewport,
       history: history
         ? {
             sessionId: history.sessionId,
@@ -454,6 +560,7 @@ async function handleClose(
           }
         : null,
     },
+    viewport,
   };
 }
 
@@ -501,12 +608,14 @@ async function handleReplay(
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Build the input for this action
-        const stepInput: ChromiumWorkspaceInput = {
+        // Build the input for this action. Keep the replay plan action authoritative.
+        const sanitizedStepInput = { ...step.input };
+        delete sanitizedStepInput.action;
+        const stepInput = {
+          ...sanitizedStepInput,
           action: step.action as ActionType,
-          ...step.input,
           timeout,
-        };
+        } as ChromiumWorkspaceInput;
 
         const result = await executeAction(sessionId, stepInput, timeout, agentId);
         replayOutput = result.data;
@@ -551,6 +660,8 @@ async function handleReplay(
     ? results.filter((r) => r.outputMatches).length
     : null;
 
+  const viewport = getBrowserSessionViewport(sessionId) ?? DEFAULT_BROWSER_VIEWPORT;
+
   return {
     data: {
       message: aborted
@@ -561,8 +672,10 @@ async function handleReplay(
       failedActions: failCount,
       outputMatchCount: verifyCount,
       aborted,
+      viewport,
       results,
     },
+    viewport,
   };
 }
 
@@ -572,8 +685,11 @@ function sleep(ms: number): Promise<void> {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function getSessionOrThrow(sessionId: string): Promise<BrowserSession> {
-  const session = await getOrCreateSession(sessionId);
+async function getSessionOrThrow(
+  sessionId: string,
+  viewportInput?: BrowserViewportInput
+): Promise<BrowserSession> {
+  const session = await getOrCreateSession(sessionId, viewportInput);
   if (!session) {
     throw new Error(
       `No active browser session for this agent. Use action "open" with a URL to start one.`
@@ -603,5 +719,10 @@ function sanitizeInput(input: ChromiumWorkspaceInput): Record<string, unknown> {
   if (input.text) params.text = input.text.slice(0, 200);
   if (input.expression) params.expression = input.expression.slice(0, 200);
   if (input.timeout) params.timeout = input.timeout;
+  if (input.viewportPreset) params.viewportPreset = input.viewportPreset;
+  if (input.viewportWidth != null) params.viewportWidth = input.viewportWidth;
+  if (input.viewportHeight != null) params.viewportHeight = input.viewportHeight;
+  if (input.orientation) params.orientation = input.orientation;
+  if (input.resetViewport === true) params.resetViewport = true;
   return params;
 }
