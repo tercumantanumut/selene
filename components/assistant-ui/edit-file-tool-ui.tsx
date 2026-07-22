@@ -8,6 +8,7 @@ import { useToolExpansion } from "./tool-expansion-context";
 import { DiffStyledPre } from "./diff-styled-pre";
 import { MarkdownFilePreview } from "./markdown-file-preview";
 import { isMarkdownFile } from "@/lib/markdown/file-preview";
+import { generateBeforeAfterDiff } from "@/lib/ai/filesystem/diff-utils";
 import {
   type ToolDiagnosticResult,
   getDiagnosticCounts,
@@ -136,11 +137,25 @@ export const EditFileToolUI: ToolCallContentPartComponent = ({
   const ActionIcon = isCreating ? PlusIcon : PencilIcon;
 
   const resultDiff = result?.diff;
-  const fallbackDiff =
-    !isWrite && args?.oldString && args?.newString
-      ? `- ${String(args.oldString)}\n+ ${String(args.newString)}`
-      : null;
-  const diffText = resultDiff || fallbackDiff;
+  const fallbackEdits = hasEditsArray
+    ? args.edits ?? []
+    : args?.oldString && args?.newString !== undefined
+      ? [{ oldString: args.oldString, newString: args.newString }]
+      : [];
+  const fallbackDiff = !isWrite && resultDiff === undefined
+    ? fallbackEdits
+        .map((edit) => {
+          if (edit.oldString === undefined || edit.newString === undefined) return "";
+          return generateBeforeAfterDiff(
+            filePath || fileName,
+            edit.oldString,
+            edit.newString
+          );
+        })
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  const diffText = resultDiff !== undefined ? resultDiff : fallbackDiff;
   const diffLines = diffText ? diffText.split("\n") : [];
   const maxDiffLines = 150;
   const isDiffTruncated = diffLines.length > maxDiffLines;

@@ -19,6 +19,7 @@ vi.mock("@/components/assistant-ui/tool-expansion-context", () => ({
 }));
 
 import { EditFileToolUI } from "@/components/assistant-ui/edit-file-tool-ui";
+import { generateBeforeAfterDiff } from "@/lib/ai/filesystem/diff-utils";
 
 describe("EditFileToolUI", () => {
   let container: HTMLDivElement;
@@ -72,6 +73,50 @@ describe("EditFileToolUI", () => {
     expect(container.textContent).toContain("3 | + LINE3");
     expect(container.textContent).not.toContain("line1");
     expect(container.textContent).not.toContain("line6");
+  });
+
+  it("highlights only the eight changed lines and renders surrounding context neutrally", () => {
+    const beforeLines = Array.from({ length: 20 }, (_, index) => `line${index + 1}`);
+    const afterLines = [...beforeLines];
+    for (const index of [1, 3, 5, 7, 9, 11, 13, 15]) {
+      afterLines[index] = `LINE${index + 1}`;
+    }
+    const before = beforeLines.join("\n");
+    const after = afterLines.join("\n");
+
+    flushSync(() => {
+      root.render(
+        createElement(EditFileToolUI, {
+          toolName: "editFile",
+          args: {
+            filePath: "/workspace/example.txt",
+            oldString: before,
+            newString: after,
+          },
+          result: {
+            status: "success",
+            filePath: "/workspace/example.txt",
+            message: "Edited example.txt (8 lines changed)",
+            linesChanged: 8,
+            diff: generateBeforeAfterDiff("example.txt", before, after),
+          },
+        })
+      );
+    });
+
+    const button = container.querySelector("button");
+    flushSync(() => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const diffSpans = Array.from(container.querySelectorAll("pre > span"));
+    expect(diffSpans.filter((span) => span.className.includes("text-red-700"))).toHaveLength(8);
+    expect(diffSpans.filter((span) => span.className.includes("text-emerald-700"))).toHaveLength(8);
+
+    const unchangedContext = diffSpans.find((span) => span.textContent === "3 3 |   line3");
+    expect(unchangedContext).toBeDefined();
+    expect(unchangedContext?.className).not.toContain("text-red-700");
+    expect(unchangedContext?.className).not.toContain("text-emerald-700");
   });
 
   it("labels editFile calls with an edits array as edited, not created", () => {

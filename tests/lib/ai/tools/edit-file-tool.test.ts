@@ -215,8 +215,10 @@ describe("edit-file-tool", () => {
       expect(result.diff).toContain("@@");
       expect(result.diff).toContain("- const x = 1;");
       expect(result.diff).toContain("+ const x = 42;");
-      // Only changed lines appear (no unchanged context dumped)
-      expect(result.diff).not.toContain("const y = 2;");
+      // Nearby unchanged lines remain visible but are explicitly neutral context.
+      expect(result.diff).toContain("2 2 |   const y = 2;");
+      expect(result.diff).not.toContain("2 | - const y = 2;");
+      expect(result.diff).not.toContain("2 | + const y = 2;");
       expect(fsMocks.writeFile).toHaveBeenCalled();
       expect(fsMocks.rename).toHaveBeenCalled();
     });
@@ -240,9 +242,43 @@ describe("edit-file-tool", () => {
       expect(result.status).toBe("success");
       expect(result.message).toContain("(1 line changed)");
       expect(result.linesChanged).toBe(1);
-      expect(result.diff).toContain("@@ -3,1 +3,1 @@");
       expect(result.diff).toContain("3 | - line3");
       expect(result.diff).toContain("3 | + LINE3");
+    });
+
+    it("reports and highlights only eight non-adjacent changed lines", async () => {
+      const beforeLines = Array.from({ length: 20 }, (_, index) => `line${index + 1}`);
+      const afterLines = [...beforeLines];
+      for (const index of [1, 3, 5, 7, 9, 11, 13, 15]) {
+        afterLines[index] = `LINE${index + 1}`;
+      }
+      const before = beforeLines.join("\n");
+      const after = afterLines.join("\n");
+
+      recordFileRead(SESSION_ID, FILE);
+      fsMocks.readFile.mockResolvedValue(before);
+      fsMocks.writeFile.mockResolvedValue(undefined);
+      fsMocks.rename.mockResolvedValue(undefined);
+
+      const result = await createTool().execute(
+        {
+          filePath: FILE,
+          oldString: before,
+          newString: after,
+        },
+        { toolCallId: "tc-1", messages: [], abortSignal: new AbortController().signal }
+      );
+
+      expect(result.status).toBe("success");
+      expect(result.message).toContain("(8 lines changed)");
+      expect(result.linesChanged).toBe(8);
+
+      const diffLines = result.diff?.split("\n") ?? [];
+      expect(diffLines.filter((line) => /\| - /.test(line))).toHaveLength(8);
+      expect(diffLines.filter((line) => /\| \+ /.test(line))).toHaveLength(8);
+      expect(result.diff).toContain("3 3 |   line3");
+      expect(result.diff).not.toContain("3 | - line3");
+      expect(result.diff).not.toContain("3 | + line3");
     });
 
     it("serializes concurrent edits to the same file so neither update is lost", async () => {

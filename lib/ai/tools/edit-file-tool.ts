@@ -20,7 +20,6 @@ import {
   wasFileReadBefore,
   isFileStale,
   runPostWriteDiagnostics,
-  generateLineNumberDiff,
   generateBeforeAfterDiff,
   type DiagnosticResult,
   applyFileEdits,

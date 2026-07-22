@@ -12,7 +12,10 @@ import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 import { resolveWorkspaceAwarePaths } from "@/lib/ai/filesystem";
 import { areUnsafeAgentPermissionsEnabled } from "@/lib/config/unsafe-agent-permissions";
 import { executeCommandWithValidation } from "@/lib/command-execution";
-import { computeInlineDiffs } from "./execute-command-tool";
+import {
+    captureInlineDiffBeforeState,
+    computeInlineDiffs,
+} from "./execute-command-tool";
 import type {
     ExecuteCommandToolOptions,
     ExecuteCommandProgressUpdate,
@@ -186,6 +189,12 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                     metadata: { cwd: executionDir, patchLength: patch.length },
                 });
 
+                const inlineDiffBeforeState = await captureInlineDiffBeforeState(
+                    patch,
+                    executionDir,
+                    syncedFolders,
+                    areUnsafeAgentPermissionsEnabled(),
+                );
                 const result = await executeCommandWithValidation(
                     {
                         command: "apply_patch",
@@ -204,7 +213,11 @@ applyPatch({ patch: "*** Begin Patch\\n*** Update File: src/index.ts\\n@@\\n-old
                 let inlineDiff: string | InlineDiffPayload | undefined;
                 if (result.success) {
                     try {
-                        inlineDiff = await computeInlineDiffs(patch, executionDir);
+                        inlineDiff = await computeInlineDiffs(
+                            patch,
+                            executionDir,
+                            inlineDiffBeforeState,
+                        );
                     } catch {
                         inlineDiff = patch;
                     }

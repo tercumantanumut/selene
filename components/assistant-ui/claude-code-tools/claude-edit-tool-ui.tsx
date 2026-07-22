@@ -1,12 +1,13 @@
 "use client";
 
-import { type FC, useEffect, useRef, useState } from "react";
+import { type FC, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircleIcon, XCircleIcon, PencilIcon, PlusIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToolExpansion } from "../tool-expansion-context";
 import { useTranslations } from "next-intl";
 import { DiffStyledPre } from "../diff-styled-pre";
 import { parseTextResult } from "./parse-text-result";
+import { generateSnippetDiff } from "@/lib/ai/filesystem/diff-utils";
 
 type ToolCallContentPartComponent = FC<{
   toolName: string;
@@ -71,28 +72,23 @@ export const ClaudeEditToolUI: ToolCallContentPartComponent = ({ args, result })
       ? "text-red-600 dark:text-red-400"
       : "text-emerald-600 dark:text-emerald-400";
 
-  // Build diff from args
-  const diffLines: string[] = [];
-  if (args?.old_string) {
-    for (const line of args.old_string.split("\n")) {
-      diffLines.push(`- ${line}`);
-    }
-  }
-  if (args?.new_string) {
-    for (const line of args.new_string.split("\n")) {
-      diffLines.push(`+ ${line}`);
-    }
-  }
+  const diff = useMemo(
+    () => generateSnippetDiff(
+      filePath,
+      args?.old_string ?? "",
+      args?.new_string ?? ""
+    ),
+    [args?.new_string, args?.old_string, filePath]
+  );
+  const diffLines = diff.lines;
+  const additions = diff.additions;
+  const removals = diff.deletions;
 
   const maxDiffLines = 150;
   const isDiffTruncated = diffLines.length > maxDiffLines;
   const visibleDiffLines = !showFullDiff && isDiffTruncated
     ? diffLines.slice(0, maxDiffLines)
     : diffLines;
-
-  // Count additions/removals
-  const additions = diffLines.filter(l => l.startsWith("+ ")).length;
-  const removals = diffLines.filter(l => l.startsWith("- ")).length;
 
   return (
     <div className="my-1 rounded-md border border-border bg-terminal-cream/50 dark:bg-terminal-cream/80 font-mono text-xs overflow-hidden">

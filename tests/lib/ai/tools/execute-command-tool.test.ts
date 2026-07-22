@@ -60,6 +60,8 @@ vi.mock("child_process", () => ({
 }));
 
 import {
+  captureInlineDiffBeforeState,
+  computeInlineDiffs,
   createExecuteCommandTool,
   normalizeExecuteCommandInput,
 } from "@/lib/ai/tools/execute-command-tool";
@@ -340,6 +342,54 @@ describe("execute-command-tool normalization", () => {
     expect(result.inlineDiff).toContain("*** Begin Patch");
   });
 
+  it("does not snapshot patch files before an out-of-scope cwd is rejected", async () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: secrets.txt",
+      "@@",
+      "-old",
+      "+new",
+      "*** End Patch",
+    ].join("\n");
+
+    const beforeState = await captureInlineDiffBeforeState(
+      patch,
+      "/outside",
+      ["/workspace"],
+    );
+
+    expect(beforeState.size).toBe(0);
+    expect(fspMocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it("computes apply_patch previews from the pre-patch working tree instead of HEAD", async () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/foo.ts",
+      "@@",
+      "-old target",
+      "+new target",
+      "*** End Patch",
+    ].join("\n");
+
+    fspMocks.readFile.mockResolvedValue("working tree context\nnew target\n");
+    childProcessMocks.execSync.mockReturnValue("HEAD context\nold target\n");
+
+    const payload = await computeInlineDiffs(
+      patch,
+      "C:\\workspace",
+      new Map([["src/foo.ts", "working tree context\nold target\n"]])
+    );
+
+    expect(payload.files).toHaveLength(1);
+    expect(payload.files[0].diff).toContain("-old target");
+    expect(payload.files[0].diff).toContain("+new target");
+    expect(payload.files[0].diff).not.toContain("HEAD context");
+    expect(payload.files[0].diff).not.toContain("-working tree context");
+    expect(payload.files[0].diff).not.toContain("+working tree context");
+    expect(childProcessMocks.execSync).not.toHaveBeenCalled();
+  });
+
   it("returns structured inlineDiff with modify operation showing before/after", async () => {
     commandExecutionMocks.executeCommandWithValidation.mockResolvedValue({
       success: true,
@@ -350,10 +400,10 @@ describe("execute-command-tool normalization", () => {
       executionTime: 5,
     });
 
-    // Mock reading the patched (after) file
-    fspMocks.readFile.mockResolvedValue("line1\nnew line\nline3\n");
-    // Mock git show returning the before content
-    childProcessMocks.execSync.mockReturnValue("line1\nold line\nline3\n");
+    // Snapshot the current file before execution, then read the patched file.
+    fspMocks.readFile
+      .mockResolvedValueOnce("line1\nold line\nline3\n")
+      .mockResolvedValueOnce("line1\nnew line\nline3\n");
 
     const tool = createExecuteCommandTool({
       sessionId: "sess-1",

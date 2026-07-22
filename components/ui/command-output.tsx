@@ -96,16 +96,18 @@ function parseHunkHeader(line: string): DiffLineState | null {
 
 /** Render a single diff's lines with line-number gutters */
 function DiffLines({ diffText }: { diffText: string }) {
-    const lines = diffText
-        .replace(/\r\n/g, "\n")
-        .split("\n")
-        .filter((line) => {
-            // Skip unified diff file headers (--- a/file, +++ b/file, Index:, diff --git)
-            if (line.startsWith("---") || line.startsWith("+++")) return false;
-            if (line.startsWith("Index:") || line.startsWith("diff --git")) return false;
-            if (line.startsWith("===")) return false;
-            return true;
-        });
+    const rawLines = diffText.replace(/\r\n/g, "\n").split("\n");
+    while (rawLines.at(-1) === "") {
+        rawLines.pop();
+    }
+
+    const lines = rawLines.filter((line) => {
+        // Skip unified diff file headers (--- a/file, +++ b/file, Index:, diff --git)
+        if (line.startsWith("---") || line.startsWith("+++")) return false;
+        if (line.startsWith("Index:") || line.startsWith("diff --git")) return false;
+        if (line.startsWith("===")) return false;
+        return true;
+    });
 
     if (lines.length === 0) return null;
 
@@ -115,6 +117,7 @@ function DiffLines({ diffText }: { diffText: string }) {
         <div className="font-mono text-xs">
             {lines.map((line, index) => {
                 const isHunkHeader = line.startsWith("@@");
+                const isNoNewlineMarker = line === "\\ No newline at end of file";
                 const isAdd = line.startsWith("+");
                 const isDelete = line.startsWith("-");
 
@@ -126,8 +129,8 @@ function DiffLines({ diffText }: { diffText: string }) {
                 let oldLineNum = "";
                 let newLineNum = "";
 
-                if (isHunkHeader) {
-                    // No line numbers for hunk headers
+                if (isHunkHeader || isNoNewlineMarker) {
+                    // Metadata rows do not consume old or new file lines.
                 } else if (isAdd) {
                     newLineNum = String(state.newLine);
                     state = { ...state, newLine: state.newLine + 1 };
