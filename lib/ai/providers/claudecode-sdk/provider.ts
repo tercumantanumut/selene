@@ -17,7 +17,7 @@ import type {
 import type { LanguageModel } from "ai";
 import {
   classifyRecoverability,
-  getBackoffDelayMs,
+  getRetryDelayMs,
   shouldRetry,
   sleepWithAbort,
 } from "@/lib/ai/retry/stream-recovery";
@@ -2176,7 +2176,7 @@ async function withClaudeCodeRetry<T>(
 
       if (!retry) throw error;
 
-      const delay = getBackoffDelayMs(n);
+      const delay = getRetryDelayMs({ attempt: n, classification });
       console.debug(`[ClaudeCode] Retrying Agent SDK ${label}`, {
         attempt: n + 1,
         reason: classification.reason,
@@ -2194,7 +2194,7 @@ async function withClaudeCodeRetry<T>(
  * accepts native SDK options such as agent definitions, lifecycle hooks, plugin
  * loading, session continuation, structured output, and thinking controls.
  *
- * Includes the same retry-with-exponential-backoff and auth-check behaviour as
+ * Includes the same paced retry/backoff and auth-check behaviour as
  * the fetch interceptor, making it safe to use from background tasks, prompt
  * enhancement pipelines, and direct SDK integrations.
  *

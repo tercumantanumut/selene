@@ -121,7 +121,8 @@ vi.mock("@/lib/utils/heartbeat-stream", () => ({
 }));
 vi.mock("@/lib/ai/retry/stream-recovery", () => ({
   classifyRecoverability: vi.fn(),
-  getBackoffDelayMs: vi.fn(() => 0),
+  getRetryDelayMs: vi.fn(() => 0),
+  PROVIDER_RECOVERY_MAX_RETRIES: 5,
   normalizeStreamError: vi.fn((error) => error),
   shouldRetry: vi.fn(() => false),
   sleepWithAbort: vi.fn(),

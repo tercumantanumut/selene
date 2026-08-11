@@ -51,7 +51,8 @@ import { markDelegationResultDelivered } from "@/lib/ai/tools/delegation-deliver
 import { createHeartbeatStream } from "@/lib/utils/heartbeat-stream";
 import {
     classifyRecoverability,
-    getBackoffDelayMs,
+    getRetryDelayMs,
+    PROVIDER_RECOVERY_MAX_RETRIES,
     normalizeStreamError,
     shouldRetry,
     sleepWithAbort,
@@ -131,6 +132,7 @@ import { ollamaModelSupportsThinking } from "@/lib/ai/providers/ollama-capabilit
 import { detectEmotion } from "@/lib/emotion";
 import {
   isUiChunkCommittable,
+  isUiFinishErrorChunk,
   shouldAttemptPrecommitRecovery,
 } from "./ui-stream-recovery";
 
@@ -1739,7 +1741,7 @@ export async function POST(req: Request) {
       )
     );
 
-    const STREAM_RECOVERY_MAX_ATTEMPTS = 7;
+    const STREAM_RECOVERY_MAX_ATTEMPTS = PROVIDER_RECOVERY_MAX_RETRIES;
     let result: Awaited<ReturnType<typeof createStreamResult>>;
 
     const createStreamResultWithRecovery = async (startAttempt = 0) => {
@@ -1818,15 +1820,14 @@ export async function POST(req: Request) {
 
           const classification = classifyRecoverability({ provider, error, message: errorMessage });
           const retry = shouldRetry({ classification, attempt, maxAttempts: STREAM_RECOVERY_MAX_ATTEMPTS, aborted: streamAbortSignal.aborted });
+          const delay = retry ? getRetryDelayMs({ attempt, classification }) : 0;
 
           if (runId) {
-            const delay = retry ? getBackoffDelayMs(attempt) : 0;
             await appendRunEvent({ runId, eventType: "llm_request_failed", level: retry ? "info" : "warn", pipelineName: "chat", data: { attempt: attempt + 1, reason: classification.reason, recoverable: classification.recoverable, delayMs: delay, outcome: retry ? "retrying" : "exhausted" } });
           }
 
           if (!retry) throw error;
 
-          const delay = getBackoffDelayMs(attempt);
           console.debug("[CHAT API] Retrying stream creation", { attempt: attempt + 1, reason: classification.reason, delayMs: delay, provider });
           await sleepWithAbort(delay, streamAbortSignal);
         }
@@ -1852,7 +1853,7 @@ export async function POST(req: Request) {
       assistantMessageId = crypto.randomUUID();
     };
 
-    const buildUiMessageStream = () =>
+    const buildUiMessageStream = (onStreamError?: (error: unknown) => void) =>
       result!.toUIMessageStream({
         generateMessageId: () => assistantMessageId,
         messageMetadata: ({ part }) => {
@@ -1871,7 +1872,10 @@ export async function POST(req: Request) {
           }
           return undefined;
         },
-        onError: (error) => normalizeStreamError(error).message,
+        onError: (error) => {
+          onStreamError?.(error);
+          return normalizeStreamError(error).message;
+        },
       });
 
     let activeUiReader: ReadableStreamDefaultReader<UIMessageChunk> | null = null;
@@ -1881,6 +1885,7 @@ export async function POST(req: Request) {
         let clientCommitted = false;
         let bufferedChunks: UIMessageChunk[] = [];
         let visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
+        let lastUiStreamError: unknown;
 
         const emitChunk = (chunk: UIMessageChunk) => {
           if (closed) return;
@@ -1953,25 +1958,37 @@ export async function POST(req: Request) {
 
           if (!retry) return false;
 
-          const delay = getBackoffDelayMs(requestAttempt);
+          const delay = getRetryDelayMs({ attempt: requestAttempt, classification });
           if (runId) {
             await appendRunEvent({ runId, eventType: "llm_request_failed", level: "info", pipelineName: "chat", data: { attempt: requestAttempt + 1, reason: classification.reason, recoverable: classification.recoverable, delayMs: delay, outcome: "retrying_precommit" } });
           }
           console.warn("[CHAT API] Retrying recoverable pre-commit UI stream failure", { attempt: requestAttempt + 1, reason: classification.reason, delayMs: delay, provider });
+          await sleepWithAbort(delay, streamAbortSignal);
+          if (clientDisconnected || closed || streamAbortSignal.aborted) return false;
           resetStreamingStateForRetry();
           recreateThinkTagFilter();
           bufferedChunks = [];
           clientCommitted = false;
           visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
-          await sleepWithAbort(delay, streamAbortSignal);
-          ({ result, attempt: requestAttempt } = await createStreamResultWithRecovery(requestAttempt + 1));
+          lastUiStreamError = undefined;
+          const nextAttempt = requestAttempt + 1;
+          requestAttempt = nextAttempt;
+          try {
+            ({ result, attempt: requestAttempt } = await createStreamResultWithRecovery(nextAttempt));
+          } catch (recreateError) {
+            const recreateErrorMessage = normalizeStreamError(recreateError).message;
+            await finalizeAndEmitError(recreateErrorMessage, recreateError);
+            return false;
+          }
           return true;
         };
 
         const pump = async () => {
           while (!closed) {
             let shouldRestart = false;
-            activeUiReader = buildUiMessageStream().getReader();
+            activeUiReader = buildUiMessageStream((error) => {
+              lastUiStreamError = error;
+            }).getReader();
             try {
               while (!closed) {
                 const { done, value } = await activeUiReader.read();
@@ -2000,10 +2017,24 @@ export async function POST(req: Request) {
                 for (const sanitizedChunk of sanitizedChunks) {
                   if (sanitizedChunk.type === "error") {
                     shouldRestart = await preparePrecommitRetry(
-                      sanitizedChunk.errorText ?? "Unknown stream error"
+                      sanitizedChunk.errorText ?? "Unknown stream error",
+                      lastUiStreamError,
                     );
                     if (shouldRestart) break;
-                    await finalizeAndEmitError(sanitizedChunk.errorText ?? "Unknown stream error");
+                    if (!closed) {
+                      await finalizeAndEmitError(sanitizedChunk.errorText ?? "Unknown stream error", lastUiStreamError);
+                    }
+                    return;
+                  }
+
+                  if (isUiFinishErrorChunk(sanitizedChunk)) {
+                    const errorMessage = "Provider stream finished with finishReason=error before a UI error chunk";
+                    const sourceError = { provider, code: "server_error", message: errorMessage, finishReason: "error" };
+                    shouldRestart = await preparePrecommitRetry(errorMessage, sourceError);
+                    if (shouldRestart) break;
+                    if (!closed) {
+                      await finalizeAndEmitError(errorMessage, sourceError);
+                    }
                     return;
                   }
 
@@ -2029,7 +2060,9 @@ export async function POST(req: Request) {
               const errorMessage = normalizeStreamError(error).message;
               shouldRestart = await preparePrecommitRetry(errorMessage, error);
               if (!shouldRestart) {
-                await finalizeAndEmitError(errorMessage, error);
+                if (!closed) {
+                  await finalizeAndEmitError(errorMessage, error);
+                }
                 return;
               }
             } finally {

@@ -22,6 +22,10 @@ export function isUiChunkCommittable(chunk: UIMessageChunk): boolean {
   return !NON_COMMITTING_CHUNK_TYPES.has(chunk.type);
 }
 
+export function isUiFinishErrorChunk(chunk: UIMessageChunk): boolean {
+  return chunk.type === "finish" && (chunk as { finishReason?: unknown }).finishReason === "error";
+}
+
 export function hasPersistedStreamingProgress(
   streamingState: Pick<StreamingMessageState, "parts" | "messageId"> | null | undefined,
 ): boolean {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasPersistedStreamingProgress,
   isUiChunkCommittable,
+  isUiFinishErrorChunk,
   shouldAttemptPrecommitRecovery,
 } from "@/app/api/chat/ui-stream-recovery";
 
@@ -22,10 +23,53 @@ describe("ui-stream-recovery helpers", () => {
     expect(hasPersistedStreamingProgress({ messageId: "assistant-1", parts: [] } as any)).toBe(true);
   });
 
+  it("detects finishReason error chunks as pre-commit failures", () => {
+    expect(isUiFinishErrorChunk({ type: "finish", finishReason: "error" } as any)).toBe(true);
+    expect(isUiFinishErrorChunk({ type: "finish", finishReason: "stop" } as any)).toBe(false);
+    expect(isUiFinishErrorChunk({ type: "finish-step" } as any)).toBe(false);
+  });
+
   it("retries recoverable pre-commit failures before anything is committed", () => {
     const decision = shouldAttemptPrecommitRecovery({
       provider: "codex",
       errorMessage: "server_error: stream interrupted",
+      attempt: 0,
+      maxAttempts: 2,
+      aborted: false,
+      clientCommitted: false,
+      streamingState: { messageId: undefined, parts: [] } as any,
+    });
+
+    expect(decision.classification.recoverable).toBe(true);
+    expect(decision.retry).toBe(true);
+  });
+
+  it("retries Codex overload failures before anything is committed", () => {
+    const decision = shouldAttemptPrecommitRecovery({
+      provider: "codex",
+      errorMessage: "Our servers are currently overloaded. Please try again later.",
+      attempt: 0,
+      maxAttempts: 2,
+      aborted: false,
+      clientCommitted: false,
+      streamingState: { messageId: undefined, parts: [] } as any,
+    });
+
+    expect(decision.classification.recoverable).toBe(true);
+    expect(decision.classification.reason).toBe("provider_overloaded");
+    expect(decision.retry).toBe(true);
+  });
+
+  it("retries finishReason error failures before anything is committed", () => {
+    const decision = shouldAttemptPrecommitRecovery({
+      provider: "codex",
+      error: {
+        provider: "codex",
+        code: "server_error",
+        message: "Provider stream finished with finishReason=error before a UI error chunk",
+        finishReason: "error",
+      },
+      errorMessage: "Provider stream finished with finishReason=error before a UI error chunk",
       attempt: 0,
       maxAttempts: 2,
       aborted: false,

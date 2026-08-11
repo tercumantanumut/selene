@@ -1,8 +1,21 @@
-const RETRY_SCHEDULE_MS = [10_000, 30_000, 60_000, 120_000, 300_000, 600_000] as const;
-const RETRY_MAX_DELAY_MS = 600_000;
+/**
+ * Deliberate, provider-agnostic recovery cadence. Five retries occupy 7.5
+ * minutes before jitter, rather than immediately replaying failed requests.
+ */
+export const PROVIDER_RECOVERY_RETRY_SCHEDULE_MS = [30_000, 60_000, 90_000, 120_000, 150_000] as const;
+export const PROVIDER_RECOVERY_MAX_RETRIES = PROVIDER_RECOVERY_RETRY_SCHEDULE_MS.length;
+const RETRY_MAX_DELAY_MS = PROVIDER_RECOVERY_RETRY_SCHEDULE_MS[PROVIDER_RECOVERY_RETRY_SCHEDULE_MS.length - 1];
+const RETRY_AFTER_MAX_DELAY_MS = 10 * 60_000;
 
 const RECOVERABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const CONFLICT_STATUS_CODE = 409;
+
+const PROVIDER_OVERLOAD_PATTERNS = [
+  /temporar(?:y|ily) overloaded/i,
+  /currently overloaded/i,
+  /servers? (?:are|is) .*overloaded/i,
+  /\boverloaded\b/i,
+];
 
 const TRANSIENT_PAYLOAD_PATTERNS = [
   /resource exhausted/i,
@@ -10,7 +23,6 @@ const TRANSIENT_PAYLOAD_PATTERNS = [
   /rate\s*limit/i,
   /too many requests/i,
   /temporar(?:y|ily) unavailable/i,
-  /temporar(?:y|ily) overloaded/i,
   /upstream.*(closed|reset|interrupted)/i,
   /stream.*(closed|interrupted|terminated)/i,
   /incomplete chunk/i,
@@ -62,6 +74,7 @@ const UPSTREAM_ABORT_PATTERNS = [
 ];
 
 type RecoveryReason =
+  | "provider_overloaded"
   | "recoverable_status"
   | "conflict"
   | "recoverable_payload"
@@ -88,6 +101,8 @@ export interface RecoveryClassification {
   normalized: NormalizedStreamError;
 }
 
+type HeaderSource = Headers | Record<string, unknown>;
+
 function parseStatusCode(input: unknown): number | undefined {
   if (typeof input === "number" && Number.isFinite(input)) {
     return input;
@@ -99,12 +114,51 @@ function parseStatusCode(input: unknown): number | undefined {
   return undefined;
 }
 
-function parseRetryAfterMs(headers?: Headers): number | undefined {
+function parseDurationMs(input: unknown): number | undefined {
+  if (typeof input === "number" && Number.isFinite(input) && input >= 0) {
+    return input;
+  }
+  if (typeof input === "string") {
+    const parsed = Number.parseFloat(input);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
+function toRecord(input: unknown): Record<string, unknown> | undefined {
+  return typeof input === "object" && input !== null
+    ? input as Record<string, unknown>
+    : undefined;
+}
+
+function toHeaderSource(input: unknown): HeaderSource | undefined {
+  if (typeof Headers !== "undefined" && input instanceof Headers) return input;
+  return toRecord(input);
+}
+
+function getHeaderValue(headers: HeaderSource | undefined, headerName: string): string | undefined {
   if (!headers) return undefined;
-  const raw = headers.get("retry-after");
+  if (typeof Headers !== "undefined" && headers instanceof Headers) {
+    return headers.get(headerName) ?? undefined;
+  }
+
+  const target = headerName.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== target) continue;
+    if (typeof value === "string") return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+}
+
+function parseRetryAfterMs(headers?: HeaderSource): number | undefined {
+  const retryAfterMs = parseDurationMs(getHeaderValue(headers, "retry-after-ms"));
+  if (retryAfterMs !== undefined) return retryAfterMs;
+
+  const raw = getHeaderValue(headers, "retry-after");
   if (!raw) return undefined;
 
-  const seconds = Number.parseInt(raw, 10);
+  const seconds = Number.parseFloat(raw);
   if (Number.isFinite(seconds) && seconds >= 0) {
     return seconds * 1000;
   }
@@ -127,6 +181,27 @@ function safeStringify(value: unknown): string {
   }
 }
 
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((v) => typeof v === "string") as string | undefined;
+}
+
+function unwrapRetryError(input: unknown): unknown {
+  const record = toRecord(input);
+  if (!record) return input;
+
+  const name = firstString(record.name);
+  if (name !== "AI_RetryError" && name !== "RetryError") return input;
+
+  if (record.lastError !== undefined) return record.lastError;
+
+  const errors = record.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    return errors[errors.length - 1];
+  }
+
+  return input;
+}
+
 export function normalizeStreamError(input: unknown): NormalizedStreamError {
   if (input instanceof Response) {
     const msg = `${input.status} ${input.statusText}`.trim();
@@ -140,38 +215,146 @@ export function normalizeStreamError(input: unknown): NormalizedStreamError {
     };
   }
 
-  const objectLike = typeof input === "object" && input !== null
-    ? input as Record<string, unknown>
-    : undefined;
+  const effectiveInput = unwrapRetryError(input);
+  const objectLike = toRecord(effectiveInput);
+  const nestedError = unwrapRetryError(objectLike?.error);
+  const nestedErrorObj = toRecord(nestedError);
+  const dataObj = toRecord(objectLike?.data);
+  const dataErrorObj = toRecord(dataObj?.error);
+  const nestedErrorDataObj = toRecord(nestedErrorObj?.data);
+  const nestedErrorDataErrorObj = toRecord(nestedErrorDataObj?.error);
+  const responseObj = toRecord(objectLike?.response);
+  const responseErrorObj = toRecord(responseObj?.error);
+  const nestedErrorResponseObj = toRecord(nestedErrorObj?.response);
+  const nestedErrorResponseErrorObj = toRecord(nestedErrorResponseObj?.error);
+  const nestedCause = objectLike?.cause;
+  const nestedCauseObj = toRecord(nestedCause);
 
-  const nestedError = objectLike?.error;
-  const nestedErrorObj = typeof nestedError === "object" && nestedError !== null
-    ? nestedError as Record<string, unknown>
-    : undefined;
-
-  const message = [
+  const message = firstString(
     objectLike?.message,
-    objectLike?.error,
+    objectLike?.responseBody,
+    dataErrorObj?.message,
+    nestedErrorDataErrorObj?.message,
+    dataObj?.message,
+    nestedErrorDataObj?.message,
+    responseErrorObj?.message,
+    nestedErrorResponseErrorObj?.message,
+    responseObj?.message,
+    nestedErrorResponseObj?.message,
+    nestedError instanceof Error ? nestedError.message : undefined,
     nestedErrorObj?.message,
+    nestedErrorObj?.responseBody,
     nestedErrorObj?.error,
+    nestedCause instanceof Error ? nestedCause.message : undefined,
+    nestedCauseObj?.message,
+    nestedCauseObj?.responseBody,
+    effectiveInput instanceof Error ? effectiveInput.message : undefined,
     input instanceof Error ? input.message : undefined,
-  ].find((v) => typeof v === "string") as string | undefined;
+  );
 
   const statusCode =
     parseStatusCode(objectLike?.statusCode) ??
     parseStatusCode(objectLike?.status) ??
+    parseStatusCode(dataErrorObj?.statusCode) ??
+    parseStatusCode(dataErrorObj?.status) ??
+    parseStatusCode(nestedErrorDataErrorObj?.statusCode) ??
+    parseStatusCode(nestedErrorDataErrorObj?.status) ??
+    parseStatusCode(dataObj?.statusCode) ??
+    parseStatusCode(dataObj?.status) ??
+    parseStatusCode(nestedErrorDataObj?.statusCode) ??
+    parseStatusCode(nestedErrorDataObj?.status) ??
+    parseStatusCode(responseErrorObj?.statusCode) ??
+    parseStatusCode(responseErrorObj?.status) ??
+    parseStatusCode(nestedErrorResponseErrorObj?.statusCode) ??
+    parseStatusCode(nestedErrorResponseErrorObj?.status) ??
+    parseStatusCode(responseObj?.statusCode) ??
+    parseStatusCode(responseObj?.status) ??
+    parseStatusCode(nestedErrorResponseObj?.statusCode) ??
+    parseStatusCode(nestedErrorResponseObj?.status) ??
     parseStatusCode(nestedErrorObj?.statusCode) ??
-    parseStatusCode(nestedErrorObj?.status);
+    parseStatusCode(nestedErrorObj?.status) ??
+    parseStatusCode(nestedCauseObj?.statusCode) ??
+    parseStatusCode(nestedCauseObj?.status);
 
-  const code = [
-    objectLike?.code,
+  const code = firstString(
+    dataErrorObj?.code,
+    dataErrorObj?.errorType,
+    dataErrorObj?.type,
+    nestedErrorDataErrorObj?.code,
+    nestedErrorDataErrorObj?.errorType,
+    nestedErrorDataErrorObj?.type,
+    responseErrorObj?.code,
+    responseErrorObj?.errorType,
+    responseErrorObj?.type,
+    nestedErrorResponseErrorObj?.code,
+    nestedErrorResponseErrorObj?.errorType,
+    nestedErrorResponseErrorObj?.type,
     nestedErrorObj?.code,
+    nestedErrorObj?.errorType,
+    nestedErrorObj?.type,
+    nestedError instanceof Error ? nestedError.name : undefined,
+    nestedCauseObj?.code,
+    nestedCauseObj?.errorType,
+    nestedCauseObj?.type,
+    nestedCause instanceof Error ? nestedCause.name : undefined,
+    dataObj?.code,
+    dataObj?.errorType,
+    dataObj?.type,
+    nestedErrorDataObj?.code,
+    nestedErrorDataObj?.errorType,
+    nestedErrorDataObj?.type,
+    responseObj?.code,
+    responseObj?.errorType,
+    responseObj?.type,
+    nestedErrorResponseObj?.code,
+    nestedErrorResponseObj?.errorType,
+    nestedErrorResponseObj?.type,
+    objectLike?.code,
+    objectLike?.errorType,
+    objectLike?.type,
+    effectiveInput instanceof Error ? effectiveInput.name : undefined,
     input instanceof Error ? input.name : undefined,
-  ].find((v) => typeof v === "string") as string | undefined;
+  );
 
-  const provider = typeof objectLike?.provider === "string"
-    ? objectLike.provider
-    : undefined;
+  const provider = firstString(
+    objectLike?.provider,
+    dataErrorObj?.provider,
+    nestedErrorDataErrorObj?.provider,
+    dataObj?.provider,
+    nestedErrorDataObj?.provider,
+    responseErrorObj?.provider,
+    nestedErrorResponseErrorObj?.provider,
+    responseObj?.provider,
+    nestedErrorResponseObj?.provider,
+    nestedErrorObj?.provider,
+    nestedCauseObj?.provider,
+  );
+
+  const retryAfterMs =
+    parseDurationMs(objectLike?.retryAfterMs) ??
+    parseDurationMs(objectLike?.retryAfter) ??
+    parseRetryAfterMs(toHeaderSource(objectLike?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(objectLike?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(dataErrorObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(dataErrorObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorDataErrorObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorDataErrorObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(dataObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(dataObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorDataObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorDataObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(responseErrorObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(responseErrorObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorResponseErrorObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorResponseErrorObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(responseObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(responseObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorResponseObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorResponseObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(nestedErrorObj?.responseHeaders)) ??
+    parseRetryAfterMs(toHeaderSource(nestedCauseObj?.headers)) ??
+    parseRetryAfterMs(toHeaderSource(nestedCauseObj?.responseHeaders));
 
   const messageText = message ?? safeStringify(input);
   const lower = messageText.toLowerCase();
@@ -183,7 +366,7 @@ export function normalizeStreamError(input: unknown): NormalizedStreamError {
     statusCode,
     code,
     provider,
-    retryAfterMs: undefined,
+    retryAfterMs,
     isAbort,
     isUserAbort,
     raw: input,
@@ -203,18 +386,25 @@ export function classifyRecoverability(input: unknown): RecoveryClassification {
     return { recoverable: false, reason: "conflict", normalized };
   }
 
-  if (typeof normalized.statusCode === "number") {
-    if (RECOVERABLE_STATUS_CODES.has(normalized.statusCode)) {
-      return { recoverable: true, reason: "recoverable_status", normalized };
-    }
-
-    if (normalized.statusCode >= 400 && normalized.statusCode < 500) {
-      return { recoverable: false, reason: "terminal_status", normalized };
-    }
+  if (
+    typeof normalized.statusCode === "number" &&
+    normalized.statusCode >= 400 &&
+    normalized.statusCode < 500 &&
+    !RECOVERABLE_STATUS_CODES.has(normalized.statusCode)
+  ) {
+    return { recoverable: false, reason: "terminal_status", normalized };
   }
 
   if (TERMINAL_PAYLOAD_PATTERNS.some((pattern) => pattern.test(haystack))) {
     return { recoverable: false, reason: "terminal_payload", normalized };
+  }
+
+  if (PROVIDER_OVERLOAD_PATTERNS.some((pattern) => pattern.test(haystack))) {
+    return { recoverable: true, reason: "provider_overloaded", normalized };
+  }
+
+  if (typeof normalized.statusCode === "number" && RECOVERABLE_STATUS_CODES.has(normalized.statusCode)) {
+    return { recoverable: true, reason: "recoverable_status", normalized };
   }
 
   if (TRANSIENT_PAYLOAD_PATTERNS.some((pattern) => pattern.test(haystack))) {
@@ -244,9 +434,22 @@ export function getFriendlyErrorMessage(normalized: NormalizedStreamError): stri
 
 export function getBackoffDelayMs(attempt: number, jitterRatio = 0.2): number {
   const safeAttempt = Number.isFinite(attempt) ? Math.max(0, Math.floor(attempt)) : 0;
-  const base = RETRY_SCHEDULE_MS[Math.min(safeAttempt, RETRY_SCHEDULE_MS.length - 1)];
+  const base = PROVIDER_RECOVERY_RETRY_SCHEDULE_MS[Math.min(safeAttempt, PROVIDER_RECOVERY_RETRY_SCHEDULE_MS.length - 1)];
   const jitter = base * jitterRatio * (Math.random() * 2 - 1);
   return Math.min(Math.max(0, Math.round(base + jitter)), RETRY_MAX_DELAY_MS);
+}
+
+export function getRetryDelayMs(args: {
+  attempt: number;
+  classification: RecoveryClassification;
+  jitterRatio?: number;
+}): number {
+  const retryAfterMs = args.classification.normalized.retryAfterMs;
+  if (retryAfterMs !== undefined && retryAfterMs > 0) {
+    return Math.min(Math.round(retryAfterMs), RETRY_AFTER_MAX_DELAY_MS);
+  }
+
+  return getBackoffDelayMs(args.attempt, args.jitterRatio);
 }
 
 export function shouldRetry(args: {

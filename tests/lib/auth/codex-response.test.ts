@@ -38,6 +38,19 @@ describe("convertSseToJson", () => {
     });
   });
 
+  it("throws CodexStreamError with provider error type for failed SSE events", async () => {
+    const response = new Response(
+      'data: {"type":"response.failed","response":{"error":{"type":"server_error","message":"Our servers are currently overloaded. Please try again later."}}}\n\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+
+    await expect(convertSseToJson(response, ensureContentType(response.headers))).rejects.toMatchObject({
+      name: "CodexStreamError",
+      message: "Codex API error: Our servers are currently overloaded. Please try again later.",
+      errorType: "server_error",
+    });
+  });
+
   it("parses Codex SSE data fields without a space after the colon", async () => {
     const json = await convertSseBody(
       'event: response.reasoning_summary_text.delta\r\n' +
