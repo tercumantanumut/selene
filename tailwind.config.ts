@@ -90,7 +90,19 @@ export default {
   				'100%': { backgroundPosition: '-200% center' },
   			},
   		},
-  		boxShadow: {
+		fontSize: {
+			xs: ['0.75rem', { lineHeight: '1rem' }],
+			sm: ['0.8125rem', { lineHeight: '1.125rem' }],
+			base: ['0.9375rem', { lineHeight: '1.375rem' }],
+			lg: ['1.0625rem', { lineHeight: '1.5rem' }],
+			xl: ['1.1875rem', { lineHeight: '1.625rem' }],
+			'2xl': ['1.375rem', { lineHeight: '1.75rem' }],
+			'3xl': ['1.75rem', { lineHeight: '2rem' }],
+			'4xl': ['2.125rem', { lineHeight: '2.375rem' }],
+		},
+		boxShadow: {
+			'surface': 'var(--surface-shadow)',
+			'floating': 'var(--surface-shadow-raised)',
   			'glow-green': '0 0 8px rgba(194, 113, 79, 0.5)',
   			'glow-amber': '0 0 8px rgba(255, 176, 0, 0.5)',
   		},
