@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#12382f">
+  <title>Phuket Elephant Sanctuary + Old Phuket Town — 29 July 2026</title>
+  <style>
+    :root {
+      --ink: #17211e;
+      --muted: #5c6b65;
+      --paper: #f6f4ed;
+      --card: #ffffff;
+      --line: #d9ded8;
+      --forest: #12382f;
+      --forest-2: #1e5b4a;
+      --gold: #d7a53b;
+      --gold-soft: #fff4d6;
+      --rain: #0f5f91;
+      --rain-soft: #e8f5fd;
+      --warn: #9a3f20;
+      --warn-soft: #fff0e9;
+      --ok: #166143;
+      --ok-soft: #e9f7f0;
+      --estimate: #6b4ea2;
+      --estimate-soft: #f3effb;
+      --shadow: 0 10px 28px rgba(20, 47, 38, 0.08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top right, rgba(215,165,59,.13), transparent 28rem),
+        linear-gradient(180deg, #eef4ef 0, var(--paper) 22rem);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--forest-2); text-underline-offset: 3px; }
+    a:hover { text-decoration-thickness: 2px; }
+
+    .wrap {
+      width: min(100% - 24px, 860px);
+      margin: 0 auto;
+      padding-bottom: 64px;
+    }
+
+    .hero {
+      margin: 12px 0 16px;
+      padding: 28px 22px 24px;
+      color: #fff;
+      background:
+        linear-gradient(135deg, rgba(18,56,47,.98), rgba(30,91,74,.95)),
+        radial-gradient(circle at 90% 10%, rgba(255,255,255,.18), transparent 16rem);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: .76rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: #dcebe4;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.8rem, 7vw, 3rem);
+      line-height: 1.05;
+      letter-spacing: -.035em;
+    }
+
+    .hero p { margin: 14px 0 0; color: #edf7f2; }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 750;
+      background: rgba(255,255,255,.13);
+      border: 1px solid rgba(255,255,255,.22);
+    }
+
+    .status {
+      margin: 0 0 16px;
+      padding: 18px;
+      border: 2px solid #df8b69;
+      border-radius: var(--radius);
+      background: var(--warn-soft);
+      box-shadow: var(--shadow);
+    }
+
+    .status h2 { color: var(--warn); margin-top: 0; }
+    .status p:last-child { margin-bottom: 0; }
+
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 11px 13px;
+      border-radius: 12px;
+      text-align: center;
+      text-decoration: none;
+      font-weight: 800;
+      line-height: 1.25;
+      background: var(--forest);
+      color: #fff;
+    }
+
+    .btn.alt { background: #fff; color: var(--forest); border: 1px solid var(--forest); }
+    .btn.gold { background: #8b5a00; }
+
+    .section {
+      margin: 16px 0;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: color-mix(in srgb, var(--card) 96%, transparent);
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.32rem;
+      line-height: 1.2;
+      letter-spacing: -.015em;
+    }
+
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 1.06rem;
+      line-height: 1.25;
+    }
+
+    p { margin: 8px 0; }
+    ul, ol { padding-left: 1.25rem; }
+    li + li { margin-top: 6px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfcfa;
+    }
+
+    .metric b { display: block; margin-bottom: 3px; color: var(--forest); font-size: .84rem; }
+    .metric span { font-size: 1.02rem; font-weight: 800; }
+    .metric small { display: block; margin-top: 3px; color: var(--muted); }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0 0;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: .69rem;
+      font-weight: 850;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .verified { color: var(--ok); background: var(--ok-soft); }
+    .estimated { color: var(--estimate); background: var(--estimate-soft); }
+    .assumption { color: #7a5200; background: var(--gold-soft); }
+    .warning { color: var(--warn); background: var(--warn-soft); }
+
+    .timeline { margin-top: 8px; }
+
+    .stop {
+      position: relative;
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 14px;
+      padding: 0 0 20px;
+    }
+
+    .stop:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      left: 37px;
+      top: 36px;
+      bottom: 4px;
+      width: 2px;
+      background: #c9d6d0;
+    }
+
+    .time {
+      position: relative;
+      z-index: 1;
+      align-self: start;
+      padding: 7px 6px;
+      border-radius: 10px;
+      text-align: center;
+      font-size: .82rem;
+      font-weight: 900;
+      color: #fff;
+      background: var(--forest-2);
+    }
+
+    .stop-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .stop-card h3 { margin: 0 0 6px; }
+    .stop-card p { margin: 5px 0; }
+
+    .route {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      border-left: 4px solid var(--gold);
+      background: #fffaf0;
+      border-radius: 8px;
+      font-size: .9rem;
+    }
+
+    .maplinks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .maplinks a {
+      display: inline-flex;
+      min-height: 40px;
+      align-items: center;
+      padding: 8px 10px;
+      border: 1px solid #b9cac2;
+      border-radius: 10px;
+      background: #f5faf7;
+      text-decoration: none;
+      font-size: .83rem;
+      font-weight: 800;
+    }
+
+    .weather {
+      border-color: #9dc9e2;
+      background: linear-gradient(180deg, var(--rain-soft), #fff);
+    }
+
+    .alert {
+      padding: 13px 14px;
+      border-radius: 12px;
+      border-left: 5px solid var(--warn);
+      background: var(--warn-soft);
+    }
+
+    .good {
+      padding: 13px 14px;
+      border-radius: 12px;
+      border-left: 5px solid var(--ok);
+      background: var(--ok-soft);
+    }
+
+    .compact-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: .91rem;
+    }
+
+    .compact-table th,
+    .compact-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    .compact-table th { color: var(--forest); font-size: .76rem; text-transform: uppercase; letter-spacing: .045em; }
+    .compact-table td:last-child, .compact-table th:last-child { text-align: right; }
+
+    details {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    summary {
+      cursor: pointer;
+      padding: 13px 14px;
+      font-weight: 850;
+      color: var(--forest);
+    }
+
+    details > div { padding: 0 14px 14px; }
+
+    .sources {
+      word-break: break-word;
+      font-size: .9rem;
+    }
+
+    .sources li + li { margin-top: 10px; }
+    .sources small { color: var(--muted); }
+
+    .footnote {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .82rem;
+    }
+
+    .sticky {
+      position: sticky;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      z-index: 10;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 8px;
+      margin: 18px 0 0;
+      border: 1px solid rgba(255,255,255,.25);
+      border-radius: 15px;
+      background: rgba(18,56,47,.94);
+      box-shadow: 0 12px 30px rgba(0,0,0,.22);
+      backdrop-filter: blur(10px);
+    }
+
+    .sticky a {
+      display: flex;
+      min-height: 45px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      background: #fff;
+      color: var(--forest);
+      text-align: center;
+      text-decoration: none;
+      font-size: .82rem;
+      font-weight: 900;
+    }
+
+    @media (max-width: 560px) {
+      .wrap { width: min(100% - 16px, 860px); }
+      .hero { padding: 24px 18px 21px; border-radius: 20px; }
+      .section { padding: 17px; }
+      .grid { grid-template-columns: 1fr 1fr; }
+      .actions { grid-template-columns: 1fr; }
+      .stop { grid-template-columns: 66px minmax(0, 1fr); gap: 10px; }
+      .stop:not(:last-child)::after { left: 32px; }
+      .compact-table { font-size: .84rem; }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #eaf1ed;
+        --muted: #a9b7b0;
+        --paper: #0f1714;
+        --card: #17211d;
+        --line: #32413a;
+        --warn-soft: #3a2119;
+        --ok-soft: #183127;
+        --estimate-soft: #29233b;
+        --gold-soft: #382d14;
+        --rain-soft: #162b38;
+      }
+      body { background: linear-gradient(180deg, #12231d, var(--paper) 22rem); }
+      .metric, .stop-card, details { background: #17211d; }
+      .route { background: #2b2518; }
+      .maplinks a { background: #1c2b25; border-color: #496158; }
+      .weather { background: linear-gradient(180deg, var(--rain-soft), var(--card)); }
+      .btn.alt { background: #eef5f1; }
+    }
+
+    @media print {
+      body { background: #fff; color: #111; }
+      .wrap { width: 100%; padding: 0; }
+      .hero, .section, .status { box-shadow: none; break-inside: avoid; }
+      .sticky { display: none; }
+      a { color: #111; text-decoration: none; }
+      a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 8pt; font-weight: normal; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <p class="eyebrow">Verified one-day plan · Phuket, Thailand</p>
+      <h1>Ethical Elephants + Old Phuket Town</h1>
+      <p>Wednesday, 29 July 2026 · Start and finish at Patong Bay Residence Phuket</p>
+      <div class="hero-meta">
+        <span class="pill">Recommended departure 07:30</span>
+        <span class="pill">Main program 09:30–13:00</span>
+        <span class="pill">Heavy-rain resilient</span>
+        <span class="pill">Moderate pace</span>
+      </div>
+    </header>
+
+    <section class="status" aria-labelledby="booking-status">
+      <h2 id="booking-status">Action required: sanctuary booking is not confirmed</h2>
+      <p><strong>Book or call immediately.</strong> At the time of the live check—about 11:00 ICT on 28 July—less than 24 hours remained before the 09:30 program. Phuket Elephant Sanctuary states that bookings made inside 24 hours must arrange their own transportation.</p>
+      <p>The online calendar is dynamic, so this file does not guarantee remaining space. Do not leave Patong without a written booking confirmation.</p>
+      <div class="actions">
+        <a class="btn" href="https://fareharbor.com/embeds/book/phuketelephantsanctuary/items/date/2026-07-29/?full-items=yes&amp;flow=1319999" target="_blank" rel="noopener noreferrer">Check official availability</a>
+        <a class="btn gold" href="tel:+6676529099">Call office: +66 76 529 099</a>
+        <a class="btn alt" href="https://wa.me/66627677111" target="_blank" rel="noopener noreferrer">WhatsApp: +66 62 767 7111</a>
+        <a class="btn alt" href="https://www.phuketelephantsanctuary.org/contact/" target="_blank" rel="noopener noreferrer">Official contact page</a>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="summary">
+      <h2 id="summary">At a glance</h2>
+      <div class="grid">
+        <div class="metric">
+          <b>Day length</b>
+          <span>07:30–17:00</span>
+          <small>Return may slip to 17:30 in holiday traffic.</small>
+        </div>
+        <div class="metric">
+          <b>Walking</b>
+          <span>About 2–4 km</span>
+          <small>Sanctuary trails plus optional 1.5–2 km Old Town loop.</small>
+        </div>
+        <div class="metric">
+          <b>Ticket</b>
+          <span>฿3,000/adult</span>
+          <small>Official starting price for the no-transfer half-day program.</small>
+        </div>
+        <div class="metric">
+          <b>Weather</b>
+          <span>Heavy rain likely</span>
+          <small>Sanctuary operates in rain; Old Town is optional.</small>
+        </div>
+      </div>
+      <div class="legend" aria-label="Information status legend">
+        <span class="tag verified">Verified</span>
+        <span class="tag estimated">Practical estimate</span>
+        <span class="tag assumption">Assumption</span>
+        <span class="tag warning">Warning</span>
+      </div>
+      <p class="footnote"><strong>Recommended change from the preliminary plan:</strong> leave at 07:30 rather than 07:45. The sanctuary’s own FAQ estimates Patong–Paklok at 31 km and about 55 minutes in normal conditions; rain and the three-day public-holiday period justify additional buffer.</p>
+    </section>
+
+    <section class="section weather" aria-labelledby="warnings">
+      <h2 id="warnings">Major verified warnings</h2>
+      <div class="alert">
+        <p><strong>Heavy rain and thunderstorms:</strong> The Thai Meteorological Department’s 28 July update forecasts scattered thunderstorms and isolated heavy rain in Phuket, with heavy to very heavy rain possible during this period. Open-Meteo’s supplementary model gives a 97% maximum precipitation probability and about 40.5 mm of total precipitation for 29 July.</p>
+      </div>
+      <ul>
+        <li><span class="tag verified">Verified</span> TMD reports strengthened southwest monsoon conditions, with southwesterly winds around 20–35/40 km/h and rough Andaman seas. This itinerary avoids boats and planned swimming.</li>
+        <li><span class="tag verified">Verified</span> Phuket Elephant Sanctuary says it operates whatever the weather and supplies large umbrellas, raincoats, wellington boots and socks.</li>
+        <li><span class="tag verified">Verified</span> 29 July is Asarnha Bucha Day, part of a three-day public-holiday sequence from 28–30 July. Police have mobilised for traffic, accident response and possible road water pooling.</li>
+        <li><span class="tag verified">Verified</span> Alcohol sales are restricted on 29–30 July, with exemptions limited to specified licensed venues, hotels and international airports. This itinerary does not depend on alcohol service.</li>
+        <li><span class="tag estimated">Estimate</span> Cross-island travel may take 20–40 minutes longer than normal during intense rain or holiday traffic.</li>
+      </ul>
+    </section>
+
+    <section class="section" aria-labelledby="schedule">
+      <h2 id="schedule">Detailed schedule</h2>
+      <div class="timeline">
+        <article class="stop">
+          <div class="time">06:45</div>
+          <div class="stop-card">
+            <h3>Breakfast and final checks at the hotel</h3>
+            <p>Eat a normal breakfast; the sanctuary meal is served at the end of the program. Use the restroom and pack a waterproof phone pouch, quick-dry clothes, hat, sunscreen, spare shirt, and any medication.</p>
+            <p><span class="tag verified">Verified</span> Bring the booking confirmation and a copy/photo of your passport for registration and insurance.</p>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">07:30</div>
+          <div class="stop-card">
+            <h3>Private car: Patong → Paklok</h3>
+            <p>Ask the hotel to arrange a fixed-price car and driver for the whole route: Patong → sanctuary office → Old Phuket Town → Patong. Confirm that the driver will wait during the 3.5-hour program.</p>
+            <p class="route"><strong>Route estimate:</strong> approximately 31 km; normally about 55 minutes, but allow 75–90 minutes in heavy rain and holiday traffic. Avoid scooters or motorbikes.</p>
+            <div class="maplinks">
+              <a href="https://www.google.com/maps/search/?api=1&amp;query=Patong%20Bay%20Residence%20Phuket" target="_blank" rel="noopener noreferrer">Start map</a>
+              <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Patong%20Bay%20Residence%20Phuket&amp;destination=Phuket%20Elephant%20Sanctuary%20Office%20Paklok&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Open driving route</a>
+            </div>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">08:50</div>
+          <div class="stop-card">
+            <h3>Arrive at the Paklok office and check in</h3>
+            <p><span class="tag verified">Verified</span> Official check-in window for the morning program is 09:00–09:15. Public vehicles and private cars cannot enter the sanctuary itself; guests meet at the Paklok office and transfer in sanctuary vehicles.</p>
+            <p>Show your confirmation and passport copy. Use the waiting time to apply sunscreen and protect electronics. Do not wander away—the operator starts on time.</p>
+            <div class="maplinks">
+              <a href="https://www.google.com/maps/search/?api=1&amp;query=Phuket%20Elephant%20Sanctuary%20Office%20Paklok" target="_blank" rel="noopener noreferrer">Office map</a>
+            </div>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">09:30</div>
+          <div class="stop-card">
+            <h3>Phuket Elephant Sanctuary half-day program</h3>
+            <p><span class="tag verified">Verified</span> Scheduled 09:30–13:00, approximately 3.5 hours.</p>
+            <ul>
+              <li>Sanctuary vehicle transfer to the Tree Top Reception.</li>
+              <li>Educational film about elephant welfare and protection.</li>
+              <li>Visit Phuket’s first elephant hospital and learn about veterinary care.</li>
+              <li>Walk the canopy walkway and natural trails with a guide.</li>
+              <li>Observe elephants roaming, foraging, socialising and bathing from a respectful distance.</li>
+              <li>Finish with a vegetarian/vegan Thai buffet, filtered water, coffee, tea and soft drinks.</li>
+            </ul>
+            <div class="good">
+              <p><strong>Current welfare format:</strong> Phuket Elephant Sanctuary ended all guest feeding interactions on 1 April 2026. There is no riding, bathing, mud-bathing or staged touching in this plan.</p>
+            </div>
+            <p><span class="tag verified">Verified</span> Golf carts can assist visitors who need reduced walking; the canopy walkway is wheelchair accessible, subject to transfer into a golf cart for other areas.</p>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">13:00</div>
+          <div class="stop-card">
+            <h3>Return to Paklok office and weather decision</h3>
+            <p>Meet the private driver. Before leaving, check the radar/sky, ask staff about roads, and decide between the full Old Town extension and the direct-return rain plan.</p>
+            <p><strong>Go to Old Town only if:</strong> roads are passable, rain is moderate rather than torrential, and you still have dry clothing and energy.</p>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">13:15</div>
+          <div class="stop-card">
+            <h3>Private car: Paklok → Old Phuket Town</h3>
+            <p class="route"><strong>Route estimate:</strong> about 23–27 km and 40–60 minutes; allow up to 70 minutes in heavy rain. Ask the driver to drop you near Soi Romanee and remain nearby.</p>
+            <div class="maplinks">
+              <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Phuket%20Elephant%20Sanctuary%20Office%20Paklok&amp;destination=Soi%20Romanee%20Phuket&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Open driving route</a>
+            </div>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">14:15</div>
+          <div class="stop-card">
+            <h3>Short Old Town architecture and dessert loop</h3>
+            <p><span class="tag estimated">Estimate</span> Walk 1.5–2 km for 60–90 minutes, keeping close to covered five-foot ways and cafés.</p>
+            <ol>
+              <li><strong>Soi Romanee:</strong> colourful Sino-European shophouses and sheltered photo stops.</li>
+              <li><strong>Torry’s Ice Cream:</strong> suggested local dessert stop at 16 Soi Romanee. Reported daily hours are 10:00–18:00, but public-holiday opening is not guaranteed.</li>
+              <li><strong>Thalang Road:</strong> arcades, shophouses and small stores. The famous walking-street market is Sunday only and will not operate Wednesday.</li>
+              <li><strong>Shrine of the Serene Light:</strong> optional brief visit only if the gate is open. Dress respectfully, keep voices low and do not obstruct worshippers.</li>
+              <li><strong>Phang Nga Road:</strong> finish near an open café/restroom, then call the waiting driver.</li>
+            </ol>
+            <div class="maplinks">
+              <a href="https://www.google.com/maps/search/?api=1&amp;query=Soi%20Romanee%20Phuket" target="_blank" rel="noopener noreferrer">Soi Romanee</a>
+              <a href="https://www.google.com/maps/search/?api=1&amp;query=Torry%27s%20Ice%20Cream%2016%20Soi%20Romanee%20Phuket" target="_blank" rel="noopener noreferrer">Torry’s</a>
+              <a href="https://www.google.com/maps/search/?api=1&amp;query=Thalang%20Road%20Phuket%20Old%20Town" target="_blank" rel="noopener noreferrer">Thalang Road</a>
+              <a href="https://www.google.com/maps/search/?api=1&amp;query=Shrine%20of%20the%20Serene%20Light%20Phuket" target="_blank" rel="noopener noreferrer">Serene Light Shrine</a>
+            </div>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">15:45</div>
+          <div class="stop-card">
+            <h3>Old Town → Patong Bay Residence</h3>
+            <p class="route"><strong>Route estimate:</strong> approximately 15–18 km and 40–60 minutes; allow 75 minutes if rain or holiday traffic intensifies.</p>
+            <div class="maplinks">
+              <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Phuket%20Old%20Town&amp;destination=Patong%20Bay%20Residence%20Phuket&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Return route</a>
+            </div>
+          </div>
+        </article>
+
+        <article class="stop">
+          <div class="time">16:45</div>
+          <div class="stop-card">
+            <h3>Return to the hotel</h3>
+            <p>Shower, change and rest. Plan a simple dinner near the hotel. Because 29 July is a Buddhist holy day, do not make alcohol service central to the evening.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="transport">
+      <h2 id="transport">Transport plan</h2>
+      <div class="alert">
+        <p><strong>Use one private car and driver.</strong> A same-day sequence involving Paklok and Old Town is inefficient with separate ride-hail trips, and official sanctuary transportation cannot be newly arranged inside 24 hours.</p>
+      </div>
+      <table class="compact-table">
+        <thead>
+          <tr><th>Leg</th><th>Distance / time</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Patong → Paklok</td><td>31 km; 55 min normally, 75–90 min allowed</td></tr>
+          <tr><td>Paklok → Old Town</td><td>About 23–27 km; 40–70 min</td></tr>
+          <tr><td>Old Town → Patong</td><td>About 15–18 km; 40–75 min</td></tr>
+        </tbody>
+      </table>
+      <h3>What to confirm with the driver</h3>
+      <ul>
+        <li>Fixed total price, fuel, parking and waiting time included.</li>
+        <li>Pickup at 07:30 from the hotel lobby.</li>
+        <li>Wait at or near the Paklok office until about 13:15.</li>
+        <li>Old Town extension is optional and may be cancelled for rain.</li>
+        <li>No scooter substitution; seat belts required.</li>
+      </ul>
+    </section>
+
+    <section class="section" aria-labelledby="costs">
+      <h2 id="costs">Expected cost</h2>
+      <table class="compact-table">
+        <thead>
+          <tr><th>Item</th><th>Expected cost</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Sanctuary half-day adult ticket</td><td>฿3,000 pp <span class="tag verified">Verified</span></td></tr>
+          <tr><td>Private car/driver for full route</td><td>฿2,500–3,500 per vehicle <span class="tag estimated">Estimate</span></td></tr>
+          <tr><td>Old Town dessert/coffee</td><td>฿150–400 pp <span class="tag estimated">Estimate</span></td></tr>
+          <tr><td>Optional shrine donation</td><td>฿20–100 <span class="tag estimated">Estimate</span></td></tr>
+        </tbody>
+      </table>
+      <p><strong>Estimated solo total:</strong> ฿5,650–7,000.</p>
+      <p><strong>Estimated total per person for two sharing the car:</strong> ฿4,400–5,250.</p>
+      <p class="footnote"><strong>Payment notes:</strong> pay the sanctuary through its official booking flow. Ask the driver whether payment is cash, bank transfer or card; carry at least ฿1,500–2,000 cash for the driver balance, dessert and incidentals. Card acceptance outside major venues is not guaranteed.</p>
+    </section>
+
+    <section class="section" aria-labelledby="packing">
+      <h2 id="packing">What to wear and carry</h2>
+      <div class="grid">
+        <div class="metric">
+          <b>Wear</b>
+          <span>Quick-dry layers</span>
+          <small>Grippy closed shoes or secure sandals; modest enough for a shrine.</small>
+        </div>
+        <div class="metric">
+          <b>Carry</b>
+          <span>Waterproof pouch</span>
+          <small>Phone, booking confirmation, passport copy and medication.</small>
+        </div>
+      </div>
+      <ul>
+        <li>Spare dry shirt and lightweight trousers/shorts.</li>
+        <li>Small towel, reusable water bottle and plastic bag for wet clothing.</li>
+        <li>Hat and sunscreen: supplementary forecast UV index peaks around 7 even with cloud.</li>
+        <li>Sanctuary supplies umbrellas, plastic raincoats, wellington boots, socks, mosquito spray and purified water.</li>
+        <li>Avoid loose scarves or dangling accessories on wet trails.</li>
+      </ul>
+    </section>
+
+    <section class="section" aria-labelledby="backups">
+      <h2 id="backups">Backups and decision rules</h2>
+
+      <details open>
+        <summary>Heavy rain or flooded roads after the sanctuary</summary>
+        <div>
+          <p>Skip Old Town completely. Leave Paklok around 13:15 and return directly to Patong. The sanctuary is the main experience; Old Town is optional.</p>
+          <div class="maplinks">
+            <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Phuket%20Elephant%20Sanctuary%20Office%20Paklok&amp;destination=Patong%20Bay%20Residence%20Phuket&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Direct rain route</a>
+          </div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Morning program is sold out or cannot be confirmed</summary>
+        <div>
+          <p>Do not substitute an elephant-riding, bathing or feeding venue merely to preserve the theme. First ask Phuket Elephant Sanctuary about:</p>
+          <ol>
+            <li>The official 13:30 half-day program, if still available.</li>
+            <li>The 1.5-hour Canopy Walkway Tour, officially priced from ฿1,900.</li>
+            <li>A wait-list or cancellation space.</li>
+          </ol>
+          <p>If none is available, switch to a rain-resilient Old Phuket Town food-and-architecture day rather than a hands-on elephant camp.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Low-energy version</summary>
+        <div>
+          <p>Request golf-cart assistance at the sanctuary, then return directly to Patong after the included lunch. Total outing becomes approximately 07:30–14:30 with no Old Town walking.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Old Town shops close for the public holiday</summary>
+        <div>
+          <p>Keep the walk exterior-only: Soi Romanee, Thalang Road arcades and Phang Nga Road. Use any visibly open hotel or café for a drink and restroom, then return early. Do not rely on Wednesday museum access.</p>
+        </div>
+      </details>
+    </section>
+
+    <section class="section" aria-labelledby="etiquette">
+      <h2 id="etiquette">Animal welfare, cultural etiquette and safety</h2>
+      <ul>
+        <li>Follow the guide and maintain the requested distance from elephants.</li>
+        <li>Do not ask for touching, riding, feeding, bathing or posed interactions.</li>
+        <li>Do not use flash or block an elephant’s route.</li>
+        <li>At shrines, cover shoulders and knees, remove shoes where requested, keep voices low and avoid photographing worshippers without permission.</li>
+        <li>Wet pavements and painted road markings become slippery. Use pedestrian crossings carefully and assume drivers may not yield.</li>
+        <li>Do not walk through moving or deep water. Ask the driver to turn back if water is pooling across the road.</li>
+        <li>Tourist Police: <a href="tel:1155">1155</a>. Emergency medical service: <a href="tel:1669">1669</a>.</li>
+      </ul>
+    </section>
+
+    <section class="section sources" aria-labelledby="sources">
+      <h2 id="sources">Sources and verification record</h2>
+      <p>Live checks were performed on <strong>28 July 2026 at approximately 11:00 ICT</strong>. Schedule-sensitive claims are linked below.</p>
+      <ol>
+        <li>
+          <a href="https://www.phuketelephantsanctuary.org/programs/half-day/" target="_blank" rel="noopener noreferrer">Phuket Elephant Sanctuary — Half-Day Program</a><br>
+          <small>Official: program time, adult starting price, itinerary, included meal, equipment, cancellation rule and no-feeding policy.</small>
+        </li>
+        <li>
+          <a href="https://www.phuketelephantsanctuary.org/faq/" target="_blank" rel="noopener noreferrer">Phuket Elephant Sanctuary — FAQ</a><br>
+          <small>Official: 09:00–09:15 check-in, Patong distance/time, weather operation, rain equipment, passport requirement, dietary support, golf carts and accessibility.</small>
+        </li>
+        <li>
+          <a href="https://www.phuketelephantsanctuary.org/terms-conditions/" target="_blank" rel="noopener noreferrer">Phuket Elephant Sanctuary — Terms and Conditions</a><br>
+          <small>Official: sanctuary transport must be arranged at least 24 hours before the program; last-minute guests must arrange their own transportation.</small>
+        </li>
+        <li>
+          <a href="https://fareharbor.com/embeds/book/phuketelephantsanctuary/items/date/2026-07-29/?full-items=yes&amp;flow=1319999" target="_blank" rel="noopener noreferrer">Official booking calendar — 29 July 2026</a><br>
+          <small>Live inventory changes continuously. The presence of this link is not a reservation or availability guarantee.</small>
+        </li>
+        <li>
+          <a href="https://www.tmd.go.th/en/weather/region/southernwestcoast" target="_blank" rel="noopener noreferrer">Thai Meteorological Department — Southern West Coast</a><br>
+          <small>Official 28 July update: thunderstorms, heavy rain risk, southwest winds and rough seas.</small>
+        </li>
+        <li>
+          <a href="https://www.tmd.go.th/en/forecast/sevenday" target="_blank" rel="noopener noreferrer">Thai Meteorological Department — Seven-Day Forecast</a><br>
+          <small>Official regional outlook for heavy to very heavy rain during the active monsoon period.</small>
+        </li>
+        <li>
+          <a href="https://api.open-meteo.com/v1/forecast?latitude=7.884&amp;longitude=98.389&amp;hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,rain,weather_code,wind_speed_10m,wind_gusts_10m&amp;daily=weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,precipitation_probability_max,precipitation_sum,rain_sum,wind_speed_10m_max,wind_gusts_10m_max,uv_index_max&amp;timezone=Asia%2FBangkok&amp;start_date=2026-07-29&amp;end_date=2026-07-29" target="_blank" rel="noopener noreferrer">Open-Meteo — Phuket model forecast for 29 July</a><br>
+          <small>Supplementary model estimate: 23.8–26.2°C, apparent maximum 31.9°C, 97% maximum precipitation probability, 40.5 mm precipitation and UV index 7.2.</small>
+        </li>
+        <li>
+          <a href="https://www.thephuketnews.com/thalang-police-mobilise-for-long-holiday-traffic-road-safety-101098.php" target="_blank" rel="noopener noreferrer">The Phuket News — Holiday traffic and road-safety mobilisation</a><br>
+          <small>Current local report dated 27 July 2026: 28–30 July holiday sequence, road-safety measures, rain-water pooling concern and alcohol restrictions on 29–30 July.</small>
+        </li>
+        <li>
+          <a href="https://www.tourismthailand.org/Attraction/phuket-old-town" target="_blank" rel="noopener noreferrer">Tourism Authority of Thailand — Phuket Old Town</a><br>
+          <small>Official: heritage streets, Sino-European architecture and Sunday-only walking street.</small>
+        </li>
+        <li>
+          <a href="https://www.torrys.com" target="_blank" rel="noopener noreferrer">Torry’s Ice Cream — official website</a><br>
+          <small>Official location at 16 Soi Romanee; reported daily hours were checked separately and remain subject to public-holiday change.</small>
+        </li>
+      </ol>
+
+      <h3>What remains an estimate</h3>
+      <ul>
+        <li>Private-driver fare, Paklok–Old Town travel time, Old Town–Patong travel time and total walking distance.</li>
+        <li>The exact duration and route of the optional Old Town loop.</li>
+        <li>Public-holiday opening of Torry’s and other independent Old Town shops.</li>
+        <li>Road conditions at the exact time of travel.</li>
+      </ul>
+
+      <p class="footnote">This file is a travel-planning document, not a booking voucher. Recheck the official booking confirmation and weather before departure.</p>
+    </section>
+
+    <nav class="sticky" aria-label="Quick actions">
+      <a href="https://fareharbor.com/embeds/book/phuketelephantsanctuary/items/date/2026-07-29/?full-items=yes&amp;flow=1319999" target="_blank" rel="noopener noreferrer">Book sanctuary</a>
+      <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Patong%20Bay%20Residence%20Phuket&amp;destination=Phuket%20Elephant%20Sanctuary%20Office%20Paklok&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Start route</a>
+    </nav>
+  </main>
+</body>
+</html>
