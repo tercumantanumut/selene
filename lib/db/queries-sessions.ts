@@ -300,7 +300,7 @@ export async function updateSession(id: string, data: Partial<NewSession>) {
 export async function updateSessionSummary(
   id: string,
   summary: string,
-  summaryUpToMessageId: string
+  summaryUpToMessageId: string | null
 ) {
   return updateSession(id, { summary, summaryUpToMessageId });
 }

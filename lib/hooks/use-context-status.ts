@@ -35,6 +35,7 @@ export interface ContextStatusInfo {
 /** Module-level cache to prevent redundant fetches (e.g. Strict Mode double-mount). */
 const statusCache = new Map<string, { data: ContextStatusInfo; timestamp: number }>();
 const STALE_TIME_MS = 10_000; // 10 seconds
+const MANUAL_COMPACTION_TIMEOUT_MS = 10 * 60_000;
 
 interface UseContextStatusOptions {
   /** Session ID to track. Null/undefined disables polling. */
@@ -164,7 +165,11 @@ export function useContextStatus({
       success?: boolean;
       compacted?: boolean;
       status?: ContextStatusInfo;
-    }>(`/api/sessions/${sessionId}/context-status`, { method: "POST", retries: 0 });
+    }>(`/api/sessions/${sessionId}/context-status`, {
+      method: "POST",
+      retries: 0,
+      timeout: MANUAL_COMPACTION_TIMEOUT_MS,
+    });
 
     if (fetchError) {
       setError(fetchError);

@@ -28,6 +28,16 @@ const dbMocks = vi.hoisted(() => ({
   markMessagesAsCompactedByIds: vi.fn(),
 }));
 
+const providerMocks = vi.hoisted(() => ({
+  utilityModel: { modelId: "mock-utility-model" },
+  getUtilityModel: vi.fn(),
+  getLanguageModelForProvider: vi.fn(),
+}));
+
+const resolverMocks = vi.hoisted(() => ({
+  resolveSessionModelScopeForSession: vi.fn(),
+}));
+
 vi.mock("@/lib/db/queries", () => ({
   getSession: dbMocks.getSession,
   getNonCompactedMessages: dbMocks.getNonCompactedMessages,
@@ -36,13 +46,14 @@ vi.mock("@/lib/db/queries", () => ({
   markMessagesAsCompactedByIds: dbMocks.markMessagesAsCompactedByIds,
 }));
 
-// Mock the AI provider used by CompactionService
+// Mock the AI provider and session-scoped resolver used by CompactionService.
 vi.mock("@/lib/ai/providers", () => ({
-  getUtilityModel: vi.fn(() => ({
-    doGenerate: vi.fn().mockResolvedValue({
-      text: "Compacted summary of the conversation.",
-    }),
-  })),
+  getUtilityModel: providerMocks.getUtilityModel,
+  getLanguageModelForProvider: providerMocks.getLanguageModelForProvider,
+}));
+
+vi.mock("@/lib/ai/session-model-resolver", () => ({
+  resolveSessionModelScopeForSession: resolverMocks.resolveSessionModelScopeForSession,
 }));
 
 // Mock generateText for the compaction service
@@ -126,6 +137,58 @@ describe("Compaction boundary persistence", () => {
     });
     dbMocks.updateSessionSummary.mockResolvedValue(undefined);
     dbMocks.markMessagesAsCompactedByIds.mockResolvedValue(0);
+    providerMocks.getUtilityModel.mockReturnValue(providerMocks.utilityModel);
+    providerMocks.getLanguageModelForProvider.mockReturnValue(providerMocks.utilityModel);
+    resolverMocks.resolveSessionModelScopeForSession.mockResolvedValue({
+      effectiveConfig: {
+        provider: "codex",
+        utilityModel: "gpt-5.4-low",
+      },
+    });
+  });
+
+  it("uses the session-scoped utility provider instead of the global utility getter", async () => {
+    const sessionMetadata = {
+      sessionProvider: "kimi",
+      sessionUtilityModel: "kimi-k2-turbo-preview",
+    };
+    dbMocks.getSession.mockResolvedValue({
+      id: sessionId,
+      summary: null,
+      summaryUpToMessageId: null,
+      characterId: "character-1",
+      metadata: sessionMetadata,
+    });
+    dbMocks.getNonCompactedMessages.mockResolvedValue([
+      makeRawMessage(
+        "msg-session-utility",
+        "user",
+        "Session-scoped context ".repeat(100),
+        "2026-02-10T09:59:00.000Z",
+      ),
+    ]);
+    resolverMocks.resolveSessionModelScopeForSession.mockResolvedValueOnce({
+      effectiveConfig: {
+        provider: "kimi",
+        utilityModel: "kimi-k2-turbo-preview",
+      },
+    });
+
+    const result = await CompactionService.compact(sessionId, {
+      keepRecentMessages: 0,
+      enableAutoPruning: false,
+    });
+
+    expect(resolverMocks.resolveSessionModelScopeForSession).toHaveBeenCalledWith(
+      sessionMetadata,
+      { characterId: "character-1" },
+    );
+    expect(providerMocks.getLanguageModelForProvider).toHaveBeenCalledWith(
+      "kimi",
+      "kimi-k2-turbo-preview",
+    );
+    expect(providerMocks.getUtilityModel).not.toHaveBeenCalled();
+    expect(result.summaryMethod).toBe("utility_model");
   });
 
   it("uses a 10K-token output budget for generated compaction summaries", async () => {
@@ -151,8 +214,85 @@ describe("Compaction boundary persistence", () => {
     );
   });
 
-  it("does not split surrogate pairs when truncating compaction prompt content", async () => {
-    const contentThatSplitsWithStringSlice = `${"A".repeat(1999)}📄 trailing text`;
+  it("sends the utility model a non-empty, relevant prompt bounded near the 10K source-token budget", async () => {
+    const messages = Array.from({ length: 80 }, (_, index) =>
+      makeRawMessage(
+        `msg-budget-${index}`,
+        index % 2 === 0 ? "user" : "assistant",
+        `message-${index} ${"x".repeat(3_000)}`,
+        new Date(Date.UTC(2026, 1, 10, 10, 0, index)).toISOString(),
+      ),
+    );
+    dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: "Synthesized utility-model summary.",
+    } as never);
+
+    const result = await CompactionService.compact(sessionId, {
+      keepRecentMessages: 0,
+      enableAutoPruning: false,
+    });
+
+    const [{ prompt }] = vi.mocked(generateText).mock.calls.at(-1)!;
+    expect(prompt.trim()).not.toBe("");
+    expect(prompt).toContain("message-0");
+    expect(prompt).toContain("message-79");
+    expect(Math.ceil(prompt.length / 4)).toBeLessThanOrEqual(12_000);
+    expect(result.newSummary).toBe("Synthesized utility-model summary.");
+    expect(result.summaryMethod).toBe("utility_model");
+    expect(result.summaryDiagnostics?.boundedSourceTokens).toBeGreaterThanOrEqual(9_900);
+    expect(result.summaryDiagnostics?.sourceTruncated).toBe(true);
+  });
+
+  it("shrinks the prompt and output budget to fit a smaller configured utility-model context", async () => {
+    const previousContextOverride = process.env.VLLM_CONTEXT_WINDOW;
+    process.env.VLLM_CONTEXT_WINDOW = "8K";
+    resolverMocks.resolveSessionModelScopeForSession.mockResolvedValueOnce({
+      effectiveConfig: {
+        provider: "vllm",
+        utilityModel: "small-utility-model",
+      },
+    });
+    dbMocks.getNonCompactedMessages.mockResolvedValue(
+      Array.from({ length: 20 }, (_, index) =>
+        makeRawMessage(
+          `msg-small-budget-${index}`,
+          index % 2 === 0 ? "user" : "assistant",
+          `small-budget-message-${index} ${"y".repeat(3_000)}`,
+          new Date(Date.UTC(2026, 1, 10, 11, 0, index)).toISOString(),
+        ),
+      ),
+    );
+
+    try {
+      const result = await CompactionService.compact(sessionId, {
+        keepRecentMessages: 0,
+        enableAutoPruning: false,
+      });
+      const diagnostics = result.summaryDiagnostics!;
+
+      expect(result.summaryMethod).toBe("utility_model");
+      expect(diagnostics.inputLimitTokens).toBe(8_000);
+      expect(
+        (diagnostics.promptTokens ?? 0) +
+          (diagnostics.maxOutputTokens ?? 0) +
+          (diagnostics.safetyTokens ?? 0),
+      ).toBeLessThanOrEqual(8_000);
+      expect(providerMocks.getLanguageModelForProvider).toHaveBeenCalledWith(
+        "vllm",
+        "small-utility-model",
+      );
+    } finally {
+      if (previousContextOverride === undefined) {
+        delete process.env.VLLM_CONTEXT_WINDOW;
+      } else {
+        process.env.VLLM_CONTEXT_WINDOW = previousContextOverride;
+      }
+    }
+  });
+
+  it("does not split surrogate pairs when globally bounding compaction prompt content", async () => {
+    const contentThatSplitsWithStringSlice = `prefix ${"📄".repeat(80_000)} tail`;
     const messages = [
       makeRawMessage("msg-1", "user", contentThatSplitsWithStringSlice, "2026-02-10T10:00:00.000Z"),
       makeRawMessage("msg-2", "assistant", "middle", "2026-02-10T10:00:01.000Z"),
@@ -161,14 +301,15 @@ describe("Compaction boundary persistence", () => {
 
     dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
 
-    await CompactionService.compact(sessionId, {
+    const result = await CompactionService.compact(sessionId, {
       keepRecentMessages: 0,
       minMessagesForCompaction: 3,
       enableAutoPruning: false,
     });
 
     const [{ prompt }] = vi.mocked(generateText).mock.calls.at(-1)!;
-    expect(prompt).toContain("... [truncated]");
+    expect(prompt).toContain("[Middle context omitted to fit the utility-model input budget.]");
+    expect(result.summaryDiagnostics?.boundedSourceTokens).toBeLessThanOrEqual(10_000);
     expect(hasLoneSurrogate(prompt)).toBe(false);
   });
 
@@ -272,23 +413,126 @@ describe("Compaction boundary persistence", () => {
     expect(compactedSameTimestamp.length).toBeGreaterThan(0);
   });
 
-  it("does not compact when there are insufficient messages", async () => {
-    // Only 2 messages — too few to compact
+  it("compacts sparse oversized sessions instead of dead-ending below the message-count threshold", async () => {
     const messages = [
-      makeMessage("msg-1", "user", "Hello", "2026-02-10T10:00:00.000Z"),
-      makeMessage("msg-2", "assistant", "Hi!", "2026-02-10T10:00:01.000Z"),
+      makeMessage("msg-1", "user", "A".repeat(20_000), "2026-02-10T10:00:00.000Z"),
+      makeMessage("msg-2", "assistant", "B".repeat(20_000), "2026-02-10T10:00:01.000Z"),
     ];
 
     dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
 
     const result = await CompactionService.compact(sessionId, {
-      targetTokensToFree: 1000,
+      targetTokensToFree: 1_000,
     });
 
-    // Should fail gracefully with insufficient messages
+    expect(result.success).toBe(true);
+    expect(dbMocks.updateSessionSummary).toHaveBeenCalled();
+    expect(dbMocks.markMessagesAsCompactedByIds).toHaveBeenCalledWith(
+      sessionId,
+      ["msg-1", "msg-2"],
+    );
+  });
+
+  it("records when utility-model summarization is skipped because no compactable context exists", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    dbMocks.getNonCompactedMessages.mockResolvedValue([]);
+
+    const result = await CompactionService.compact(sessionId);
+
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Not enough messages");
+    expect(generateText).not.toHaveBeenCalled();
+    expect(result.summaryMethod).toBe("skipped");
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Utility-model summary skipped"),
+    );
+    logSpy.mockRestore();
+  });
+
+  it("recompacts an oversized existing summary when no live messages remain", async () => {
+    const previousSummary = "Previous compacted context ".repeat(10_000);
+    dbMocks.getSession.mockResolvedValue({
+      id: sessionId,
+      summary: previousSummary,
+      summaryUpToMessageId: "msg-existing-boundary",
+    });
+    dbMocks.getNonCompactedMessages.mockResolvedValue([]);
+
+    const result = await CompactionService.compact(sessionId, {
+      targetTokensToFree: 1_000,
+      keepRecentMessages: 0,
+    });
+
+    expect(result.success).toBe(true);
+    expect(generateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining(previousSummary.slice(0, 1_000)),
+      }),
+    );
+    expect(dbMocks.updateSessionSummary).toHaveBeenCalledWith(
+      sessionId,
+      "Compacted summary of the conversation.",
+      "msg-existing-boundary",
+    );
     expect(dbMocks.markMessagesAsCompactedByIds).not.toHaveBeenCalled();
+  });
+
+  it("uses a bounded deterministic fallback when required compaction cannot call the utility model", async () => {
+    const messages = [
+      makeRawMessage(
+        "msg-fallback",
+        "user",
+        "Critical context ".repeat(20_000),
+        "2026-02-10T10:00:00.000Z",
+      ),
+    ];
+    dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
+    vi.mocked(generateText).mockRejectedValueOnce(new Error("utility model unavailable"));
+
+    const result = await CompactionService.compact(sessionId, {
+      targetTokensToFree: 1_000,
+      keepRecentMessages: 0,
+      allowDeterministicFallback: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(result.newSummary).toContain(
+      "[Middle context omitted to fit the utility-model input budget.]",
+    );
+    expect(Array.from(result.newSummary).length).toBeLessThanOrEqual(24_000);
+    expect(result.summaryMethod).toBe("deterministic_fallback");
+    expect(result.summaryDiagnostics?.fallbackReason).toBe("utility_model_call_failed");
+    expect(dbMocks.markMessagesAsCompactedByIds).toHaveBeenCalledWith(
+      sessionId,
+      ["msg-fallback"],
+    );
+  });
+
+  it("does not replace a successful utility summary with fallback when persistence fails", async () => {
+    const messages = [
+      makeRawMessage(
+        "msg-persist-failure",
+        "user",
+        "Context that must be synthesized before persistence.",
+        "2026-02-10T10:00:00.000Z",
+      ),
+    ];
+    dbMocks.getNonCompactedMessages.mockResolvedValue(messages);
+    vi.mocked(generateText).mockResolvedValueOnce({
+      text: "Useful synthesized summary.",
+    } as never);
+    dbMocks.updateSessionSummary.mockRejectedValueOnce(new Error("database unavailable"));
+
+    const result = await CompactionService.compact(sessionId, {
+      keepRecentMessages: 0,
+      allowDeterministicFallback: true,
+    });
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(dbMocks.updateSessionSummary).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("database unavailable");
+    expect(result.summaryMethod).toBe("utility_model");
   });
 
   it("compacted IDs match exactly the messages included in summary", async () => {

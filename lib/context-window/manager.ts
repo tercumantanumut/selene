@@ -396,11 +396,10 @@ export class ContextWindowManager {
       const compactionStartedAt = Date.now();
       const compactionResult = await CompactionService.compact(sessionId, {
         targetTokensToFree: Math.max(0, targetTokensToFree),
+        allowDeterministicFallback: true,
       });
 
       if (compactionResult.success) {
-        const compactionDurationMs = Date.now() - compactionStartedAt;
-
         // Re-check status after compaction
         let newStatus = await this.checkContextWindow(
           sessionId,
@@ -414,8 +413,9 @@ export class ContextWindowManager {
           `(${newStatus.formatted.current}/${newStatus.formatted.max})`
         );
 
-        // RETRY: If still exceeded, attempt aggressive compaction (keepRecent=0)
-        if (newStatus.status === "exceeded") {
+        // RETRY: If compaction still leaves the request blocked, compact every
+        // remaining message, including normally preserved tool results.
+        if (newStatus.mustCompact) {
           console.warn(
             `[ContextWindowManager] First compaction insufficient, retrying with aggressive strategy (keepRecent=0)`
           );
@@ -423,7 +423,9 @@ export class ContextWindowManager {
           const aggressiveTarget = newStatus.currentTokens - Math.floor(targetMaxTokens * 0.5);
           const retryResult = await CompactionService.compact(sessionId, {
             targetTokensToFree: Math.max(0, aggressiveTarget),
-            keepRecentMessages: 0, // Compact ALL messages into summary
+            keepRecentMessages: 0,
+            preserveToolResults: [],
+            allowDeterministicFallback: true,
           });
 
           if (retryResult.success) {
@@ -439,12 +441,17 @@ export class ContextWindowManager {
               `(${newStatus.formatted.current}/${newStatus.formatted.max})`
             );
 
-            // Merge compaction results for reporting
+            // Merge compaction results for reporting. The final summary and its
+            // provenance come from the aggressive retry.
             compactionResult.tokensFreed += retryResult.tokensFreed;
             compactionResult.messagesCompacted += retryResult.messagesCompacted;
             compactionResult.newSummary = retryResult.newSummary;
+            compactionResult.summaryMethod = retryResult.summaryMethod;
+            compactionResult.summaryDiagnostics = retryResult.summaryDiagnostics;
           }
         }
+
+        const compactionDurationMs = Date.now() - compactionStartedAt;
 
         // FORCE-PROCEED: If compaction freed tokens but we're still slightly over,
         // allow the request through. The provider may accept it (context limits are
@@ -636,43 +643,65 @@ export class ContextWindowManager {
     // Target 50% usage after compaction for maximum headroom
     const targetTokensToFree = beforeStatus.currentTokens - Math.floor(targetMaxTokens * 0.5);
 
-    // Run aggressive compaction with keepRecent=2 (keep only the last exchange)
-    const compactionResult = await CompactionService.compact(sessionId, {
+    // First pass keeps the latest exchange when possible.
+    let compactionResult = await CompactionService.compact(sessionId, {
       targetTokensToFree: Math.max(0, targetTokensToFree),
       keepRecentMessages: 2,
+      allowDeterministicFallback: true,
     });
 
-    // If first pass didn't free enough, retry with keepRecent=0
-    if (compactionResult.success) {
-      const midStatus = await this.checkContextWindow(
-        sessionId,
-        modelId,
-        systemPromptLength,
-        provider
-      );
-
-      if (midStatus.status === "exceeded" || midStatus.status === "critical") {
-        console.log(
-          `[ContextWindowManager] Force compaction: first pass at ${midStatus.formatted.percentage}, retrying with keepRecent=0`
-        );
-        const retryResult = await CompactionService.compact(sessionId, {
-          targetTokensToFree: midStatus.currentTokens - Math.floor(targetMaxTokens * 0.5),
-          keepRecentMessages: 0,
-        });
-        if (retryResult.success) {
-          compactionResult.tokensFreed += retryResult.tokensFreed;
-          compactionResult.messagesCompacted += retryResult.messagesCompacted;
-          compactionResult.newSummary = retryResult.newSummary;
-        }
-      }
-    }
-
-    const afterStatus = await this.checkContextWindow(
+    // Always re-check, even if the first pass reported failure. Sparse sessions
+    // can have all of their weight in one message or in the existing summary.
+    let afterStatus = await this.checkContextWindow(
       sessionId,
       modelId,
       systemPromptLength,
       provider
     );
+
+    if (afterStatus.mustCompact) {
+      console.log(
+        `[ContextWindowManager] Force compaction: first pass at ${afterStatus.formatted.percentage}, retrying with keepRecent=0`
+      );
+      const retryResult = await CompactionService.compact(sessionId, {
+        targetTokensToFree: Math.max(
+          0,
+          afterStatus.currentTokens - Math.floor(targetMaxTokens * 0.5),
+        ),
+        keepRecentMessages: 0,
+        preserveToolResults: [],
+        allowDeterministicFallback: true,
+      });
+
+      if (retryResult.success) {
+        compactionResult = {
+          ...retryResult,
+          tokensFreed: compactionResult.tokensFreed + retryResult.tokensFreed,
+          messagesCompacted:
+            compactionResult.messagesCompacted + retryResult.messagesCompacted,
+          breakdown: {
+            autoPruned:
+              (compactionResult.breakdown?.autoPruned ?? 0) +
+              (retryResult.breakdown?.autoPruned ?? 0),
+            summarized:
+              (compactionResult.breakdown?.summarized ?? 0) +
+              (retryResult.breakdown?.summarized ?? 0),
+          },
+        };
+      } else if (!compactionResult.success) {
+        compactionResult = {
+          ...compactionResult,
+          error: retryResult.error ?? compactionResult.error,
+        };
+      }
+
+      afterStatus = await this.checkContextWindow(
+        sessionId,
+        modelId,
+        systemPromptLength,
+        provider
+      );
+    }
 
     console.log(
       `[ContextWindowManager] Force compaction complete: ` +
@@ -681,7 +710,7 @@ export class ContextWindowManager {
     );
 
     return {
-      success: compactionResult.success,
+      success: compactionResult.success && !afterStatus.mustCompact,
       beforeStatus,
       afterStatus,
       compactionResult,

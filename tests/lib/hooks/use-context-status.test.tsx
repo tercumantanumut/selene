@@ -53,6 +53,19 @@ function Harness({ sessionId }: { sessionId: string }) {
   );
 }
 
+function CompactHarness({ sessionId }: { sessionId: string }) {
+  const { compact } = useContextStatus({
+    sessionId,
+    pollIntervalMs: 0,
+  });
+
+  return createElement(
+    "button",
+    { type: "button", onClick: () => void compact() },
+    "compact",
+  );
+}
+
 describe("useContextStatus", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -89,5 +102,37 @@ describe("useContextStatus", () => {
 
     expect(fetchMocks.resilientFetch).toHaveBeenCalledTimes(2);
     expect(container.textContent).toBe("8500");
+  });
+
+  it("allows manual compaction to run beyond the default ten-second fetch timeout", async () => {
+    const sessionId = "manual-compaction-timeout";
+    fetchMocks.resilientFetch
+      .mockResolvedValueOnce({ data: makeStatus(190_000), error: null, timedOut: false, status: 200 })
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          compacted: true,
+          status: makeStatus(20_000),
+        },
+        error: null,
+        timedOut: false,
+        status: 200,
+      });
+
+    await act(async () => {
+      root.render(createElement(CompactHarness, { sessionId }));
+    });
+    await act(async () => {
+      container.querySelector("button")?.click();
+    });
+
+    expect(fetchMocks.resilientFetch).toHaveBeenLastCalledWith(
+      `/api/sessions/${sessionId}/context-status`,
+      expect.objectContaining({
+        method: "POST",
+        retries: 0,
+        timeout: 600_000,
+      }),
+    );
   });
 });

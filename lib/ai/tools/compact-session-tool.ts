@@ -82,6 +82,8 @@ async function executeCompactSession(
     compacted: result.success,
     tokensFreed: result.compactionResult.tokensFreed,
     messagesCompacted: result.compactionResult.messagesCompacted,
+    summaryMethod: result.compactionResult.summaryMethod,
+    summaryDiagnostics: result.compactionResult.summaryDiagnostics,
     compactionSummaryPreview: result.compactionResult.newSummary.slice(0, 500),
     error: result.compactionResult.error,
     message: result.success
