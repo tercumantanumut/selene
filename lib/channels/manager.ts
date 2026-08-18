@@ -33,6 +33,14 @@ class ChannelManager {
   private connectPromises = new Map<string, Promise<ChannelConnector | null>>();
 
   async bootstrap(userId?: string): Promise<void> {
+    // Start the durable outbox worker at channel bootstrap so pending
+    // deliveries from a previous process are retried even if no inbound
+    // message arrives (inbound.ts is only loaded lazily on first inbound).
+    // Dynamic import avoids a manager → outbox → delivery → manager cycle.
+    void import("./outbox")
+      .then((m) => m.ensureOutboxWorkerStarted())
+      .catch((err) => console.error("[ChannelManager] Failed to start outbox worker:", err));
+
     const settings = loadSettings();
     const targetUserId = userId || settings.localUserId;
     const key = targetUserId || "default";

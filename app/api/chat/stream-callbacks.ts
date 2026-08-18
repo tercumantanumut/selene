@@ -15,7 +15,7 @@ import {
   appendRunEvent,
 } from "@/lib/observability";
 import { triggerExtraction } from "@/lib/agent-memory";
-import { deliverChannelReply } from "@/lib/channels/delivery";
+import { deliverChannelReplyDurable } from "@/lib/channels/outbox";
 import { taskRegistry } from "@/lib/background-tasks/registry";
 import { removeChatAbortController } from "@/lib/background-tasks/chat-abort-registry";
 import { removeLivePromptQueue, drainLivePromptQueue } from "@/lib/background-tasks/live-prompt-queue-registry";
@@ -25,7 +25,6 @@ import { addDelegationCompletion } from "@/lib/ai/tools/delegation-completion-st
 import { runStopHooks } from "@/lib/plugins/hook-integration";
 import { buildInterruptionMessage, buildInterruptionMetadata } from "@/lib/messages/interruption";
 import { mergeDesignContext } from "@/lib/design/workspace/design-context";
-import type { DBContentPart } from "@/lib/messages/converter";
 import {
   type StepLike,
   buildCanonicalAssistantContentFromSteps,
@@ -377,17 +376,15 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
     }
 
     if (finalMessageId) {
-      try {
-        await deliverChannelReply({
-          sessionId: ctx.sessionId,
-          messageId: finalMessageId,
-          content: content as DBContentPart[],
-          sessionMetadata: ctx.sessionMetadata,
-          rawMode: ctx.rawMode,
-        });
-      } catch (error) {
-        console.error("[CHAT API] Channel delivery error:", error);
-      }
+      // Durable delivery: enqueues in the channel outbox and attempts the
+      // first send inline. Failures/timeouts are retried by the outbox
+      // worker with backoff — the reply is never silently dropped even if
+      // this stream context is gone by the time delivery succeeds.
+      await deliverChannelReplyDurable({
+        sessionId: ctx.sessionId,
+        messageId: finalMessageId,
+        rawMode: ctx.rawMode,
+      });
     }
 
     // Trigger memory extraction in background (only for character-specific chats)

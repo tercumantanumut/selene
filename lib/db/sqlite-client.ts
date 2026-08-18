@@ -34,7 +34,8 @@ const globalForDb = globalThis as unknown as {
   didLogSqliteOpen?: boolean;
 };
 
-const SCHEMA_VERSION = 5;
+// v6: adds channel_outbox (durable channel delivery queue)
+const SCHEMA_VERSION = 6;
 
 function createConnection(): { sqlite: Database.Database; db: BetterSQLite3Database<typeof schema> } {
   const dbPath = getDbPath();

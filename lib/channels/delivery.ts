@@ -87,14 +87,25 @@ export async function deliverChannelReply(params: {
     parseMode,
   });
 
-  await createChannelMessage({
-    connectionId: connection.id,
-    channelType: connection.channelType,
-    externalMessageId: result.externalMessageId,
-    sessionId: params.sessionId,
-    messageId: params.messageId,
-    direction: "outbound",
-  });
+  try {
+    await createChannelMessage({
+      connectionId: connection.id,
+      channelType: connection.channelType,
+      externalMessageId: result.externalMessageId,
+      sessionId: params.sessionId,
+      messageId: params.messageId,
+      direction: "outbound",
+    });
+  } catch (error) {
+    // A partial unique index enforces one outbound record per message. If a
+    // late-landing timed-out attempt raced a retry, the record already
+    // exists — the send above still happened, so treat this as success.
+    if (error instanceof Error && /UNIQUE/i.test(error.message)) {
+      console.warn(`[ChannelDelivery] Outbound record already exists for message ${params.messageId} (duplicate send race)`);
+    } else {
+      throw error;
+    }
+  }
 
   await touchChannelConversation(conversation.id);
 }

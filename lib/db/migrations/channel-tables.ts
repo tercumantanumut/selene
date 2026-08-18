@@ -219,7 +219,64 @@ export function initChannelTablesWith(sqlite: Database.Database): void {
     )
   `);
 
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS channel_outbox (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      raw_mode INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'delivering', 'delivered', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      delivered_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   migrateChannelTablesToSupportDiscord(sqlite);
+
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS channel_outbox_status_idx
+      ON channel_outbox (status, next_attempt_at)
+  `);
+  // message_id must be unique: one logical delivery per final message. This
+  // makes enqueue idempotent and prevents concurrent workers from creating
+  // duplicate deliveries. Drop the pre-release non-unique index and clean up
+  // any duplicate rows before creating the unique index.
+  sqlite.exec(`DROP INDEX IF EXISTS channel_outbox_message_idx`);
+  sqlite.exec(`
+    DELETE FROM channel_outbox
+      WHERE rowid NOT IN (SELECT MIN(rowid) FROM channel_outbox GROUP BY message_id)
+  `);
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS channel_outbox_message_uidx
+      ON channel_outbox (message_id)
+  `);
+  // Supports resetStaleChannelOutboxEntries (status='delivering' AND updated_at < t).
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS channel_outbox_status_updated_idx
+      ON channel_outbox (status, updated_at)
+  `);
+
+  // At most one outbound channel_messages record per internal message. This
+  // backs the outbox dedup check ("did a previous attempt actually land?")
+  // with a DB invariant and an index. Clean up any pre-existing duplicates
+  // (possible from the pre-outbox delivery path) before creating it.
+  sqlite.exec(`
+    DELETE FROM channel_messages
+      WHERE direction = 'outbound'
+        AND rowid NOT IN (
+          SELECT MIN(rowid) FROM channel_messages
+            WHERE direction = 'outbound'
+            GROUP BY message_id
+        )
+  `);
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_messages_outbound_message_uidx
+      ON channel_messages (message_id) WHERE direction = 'outbound'
+  `);
 
   sqlite.exec(`
     CREATE INDEX IF NOT EXISTS idx_channel_connections_user

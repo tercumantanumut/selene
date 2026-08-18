@@ -59,6 +59,12 @@ export async function createMessage(data: NewMessage) {
   }
 }
 
+export async function getMessageById(id: string) {
+  return db.query.messages.findFirst({
+    where: eq(messages.id, id),
+  });
+}
+
 export async function getMessages(sessionId: string) {
   return db.query.messages.findMany({
     where: eq(messages.sessionId, sessionId),
