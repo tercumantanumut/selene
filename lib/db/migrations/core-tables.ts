@@ -200,16 +200,19 @@ export function initCoreTablesWith(sqlite: Database.Database): void {
         messagesBySession.set(msg.session_id, sessionMessages);
       }
 
-      const updateStmt = sqlite.prepare(`UPDATE messages SET ordering_index = ? WHERE id = ?`);
+      // Raw writes bypass Drizzle's $onUpdateFn, so stamp updated_at explicitly
+      // (same ISO format) for incremental pollers.
+      const updateStmt = sqlite.prepare(`UPDATE messages SET ordering_index = ?, updated_at = ? WHERE id = ?`);
       const updateSessionStmt = sqlite.prepare(`UPDATE sessions SET last_ordering_index = ? WHERE id = ?`);
 
+      const updatedAt = new Date().toISOString();
       sqlite.exec("BEGIN TRANSACTION");
       try {
         for (const [sessionId, sessionMessages] of messagesBySession) {
           let maxIndex = 0;
           for (let i = 0; i < sessionMessages.length; i++) {
             const orderingIndex = i + 1; // 1-based indexing
-            updateStmt.run(orderingIndex, sessionMessages[i].id);
+            updateStmt.run(orderingIndex, updatedAt, sessionMessages[i].id);
             maxIndex = orderingIndex;
           }
           updateSessionStmt.run(maxIndex, sessionId);

@@ -2,7 +2,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useLiveToolStatuses } from "@/components/assistant-ui/tool-live-status";
 
 type ActEnvironmentGlobal = typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
@@ -26,6 +26,24 @@ function emitProgress(sessionId: string, toolCallId: string, command: string) {
             state: "input-available",
             args: { command },
           },
+        ],
+      },
+    })
+  );
+}
+
+function emitAgentResult(sessionId: string, toolCallId: string, result: string) {
+  window.dispatchEvent(
+    new CustomEvent("background-task-progress", {
+      detail: {
+        eventType: "task:progress",
+        runId: "run-1",
+        type: "chat",
+        userId: "u",
+        sessionId,
+        timestamp: new Date().toISOString(),
+        progressContent: [
+          { type: "tool-result", toolCallId, toolName: "Agent", result },
         ],
       },
     })
@@ -90,5 +108,29 @@ describe("useLiveToolStatuses shared store", () => {
 
     expect(renders.c).toBe(afterFirst);
     expect(latest.c).toBe(firstSnapshot);
+  });
+
+  it("publishes new Agent steps even when the output preview is unchanged", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const ids = ["call-agent"];
+      act(() => root.render(createElement(Probe, { name: "agent", ids })));
+
+      const longPrefix = "x".repeat(600);
+      act(() => emitAgentResult("session-1", "call-agent", `${longPrefix}\n1. first step\n2. second step`));
+      const first = latest.agent["call-agent"] as { stepCount?: number; outputPreview?: string };
+      expect(first.stepCount).toBe(2);
+
+      act(() =>
+        emitAgentResult("session-1", "call-agent", `${longPrefix}\n1. first step\n2. second step\n3. third step`)
+      );
+      const second = latest.agent["call-agent"] as { stepCount?: number; steps?: string[]; outputPreview?: string };
+
+      expect(second.outputPreview).toBe(first.outputPreview);
+      expect(second.stepCount).toBe(3);
+      expect(second.steps).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

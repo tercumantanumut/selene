@@ -6,7 +6,9 @@
 # Reports, for the Selene process tree:
 #   - per-role CPU% (avg / p95) and RSS MB (avg / max) sampled every 2s
 #   - request counts per endpoint (normalized ids) in debug.log during the window
-#   - debug.log growth in bytes
+#     (H2 proxy request lines are logged at verbose level only; launch the app
+#     with LOG_LEVEL=verbose to collect them in production builds)
+#   - debug.log growth in bytes (including across one runtime rotation)
 # Nothing in the app or its data is modified.
 
 set -euo pipefail
@@ -17,6 +19,7 @@ LABEL="${2:-run}"
 INTERVAL=2
 DATA_DIR="${SELENE_USER_DATA:-$HOME/Library/Application Support/Selene}"
 LOG="$DATA_DIR/debug.log"
+OLD_LOG="$LOG.old"
 OUT_DIR="${SELENE_PERF_OUT:-${TMPDIR:-/tmp}/selene-perf}"
 mkdir -p "$OUT_DIR"
 SAMPLES="$OUT_DIR/$LABEL-samples.tsv"
@@ -28,8 +31,10 @@ if [[ -z "$ROOT_PID" ]]; then
   exit 1
 fi
 
-log_size() { [[ -f "$LOG" ]] && stat -f %z "$LOG" || echo 0; }
-LOG_START_SIZE="$(log_size)"
+file_size() { [[ -f "$1" ]] && stat -f %z "$1" || echo 0; }
+file_inode() { [[ -f "$1" ]] && stat -f %i "$1" || echo 0; }
+LOG_START_SIZE="$(file_size "$LOG")"
+LOG_START_INODE="$(file_inode "$LOG")"
 START_ISO="$(date -u +%Y-%m-%dT%H:%M:%S)"
 
 # Classify every descendant of the Selene main process into a role.
@@ -65,7 +70,16 @@ while (( SECONDS < end )); do
   sleep "$INTERVAL"
 done
 
-LOG_END_SIZE="$(log_size)"
+# The logger renames debug.log to debug.log.old at 10 MiB. If that happened
+# during the window, growth = rest of the rotated file + the new file.
+LOG_END_SIZE="$(file_size "$LOG")"
+if [[ "$(file_inode "$LOG")" != "$LOG_START_INODE" && "$(file_inode "$OLD_LOG")" == "$LOG_START_INODE" ]]; then
+  LOG_GROWTH=$(( $(file_size "$OLD_LOG") - LOG_START_SIZE + LOG_END_SIZE ))
+  LOG_GROWTH_NOTE=" (spans a rotation)"
+else
+  LOG_GROWTH=$(( LOG_END_SIZE - LOG_START_SIZE ))
+  LOG_GROWTH_NOTE=""
+fi
 
 echo
 echo "== $LABEL: per-role resources (summed per sample) =="
@@ -91,12 +105,20 @@ awk -F'\t' '
 echo
 echo "== $LABEL: requests during window (debug.log, since $START_ISO) =="
 if [[ -f "$LOG" ]]; then
-  awk -v start="$START_ISO" 'substr($0,2,19) >= start' "$LOG" \
+  LOG_FILES=()
+  [[ -f "$OLD_LOG" ]] && LOG_FILES+=("$OLD_LOG")
+  LOG_FILES+=("$LOG")
+  LOG_LEVEL_LINE="$(grep -h '^logLevel: ' "${LOG_FILES[@]}" | tail -1 || true)"
+  if [[ -n "$LOG_LEVEL_LINE" && "$LOG_LEVEL_LINE" != "logLevel: verbose" ]]; then
+    echo "note: app is running with '$LOG_LEVEL_LINE'; request lines are verbose-only."
+    echo "      Relaunch with LOG_LEVEL=verbose /Applications/Selene.app/Contents/MacOS/Selene"
+  fi
+  awk -v start="$START_ISO" 'substr($0,2,19) >= start' "${LOG_FILES[@]}" \
     | grep -oE '(GET|POST|PUT|PATCH|DELETE) /api/[^ ?]*' \
     | sed -E 's/[0-9a-f]{8}-[0-9a-f-]{27}/:id/g' \
     | sort | uniq -c | sort -nr | head -20 || true
   echo
-  echo "debug.log growth: $((LOG_END_SIZE - LOG_START_SIZE)) bytes in ${DURATION}s"
+  echo "debug.log growth: ${LOG_GROWTH} bytes in ${DURATION}s${LOG_GROWTH_NOTE}"
 else
   echo "no debug.log at $LOG"
 fi

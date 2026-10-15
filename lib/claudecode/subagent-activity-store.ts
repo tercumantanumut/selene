@@ -198,7 +198,7 @@ function getStatements(sqlite: SqliteHandle) {
           AND id NOT IN (
             SELECT id FROM claudecode_subagent_events
             WHERE activity_id = @activityId
-            ORDER BY timestamp DESC
+            ORDER BY timestamp DESC, rowid DESC
             LIMIT @limit
           )
       `),
@@ -503,7 +503,7 @@ export function getClaudeCodeSubagentSnapshot(input: { userId: string; sessionId
       const persistedEvents: Record<string, ClaudeCodeSubagentEvent[]> = {};
       // Newest events only, matching the in-memory cap.
       const eventQuery = sqlite.prepare(
-        "SELECT * FROM claudecode_subagent_events WHERE activity_id = ? ORDER BY timestamp DESC LIMIT ?",
+        "SELECT * FROM claudecode_subagent_events WHERE activity_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?",
       );
       for (const activity of persistedActivities) {
         persistedEvents[activity.id] = (eventQuery.all(activity.id, MAX_EVENTS_PER_ACTIVITY) as EventRow[])
