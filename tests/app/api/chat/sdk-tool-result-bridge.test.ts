@@ -52,6 +52,26 @@ describe("createSdkToolResultBridge", () => {
     await expect(b).resolves.toBeUndefined();
   });
 
+  it("dispose is sticky: waits registered after dispose resolve immediately with undefined", async () => {
+    const bridge = createSdkToolResultBridge();
+    bridge.dispose?.();
+    const started = Date.now();
+    await expect(bridge.waitFor("after-dispose", { timeoutMs: null })).resolves.toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it("dispose keeps buffered results so a late executor still receives its real output", async () => {
+    const bridge = createSdkToolResultBridge();
+    bridge.publish("buffered", { stdout: "done" }, "Bash");
+    bridge.dispose?.();
+    await expect(bridge.waitFor("buffered", { timeoutMs: null })).resolves.toEqual({
+      output: { stdout: "done" },
+      toolName: "Bash",
+    });
+    // Consumed exactly once.
+    await expect(bridge.waitFor("buffered", { timeoutMs: null })).resolves.toBeUndefined();
+  });
+
   it("ignores publish/wait with an empty toolCallId", async () => {
     const bridge = createSdkToolResultBridge();
     bridge.publish("", { ignored: true });

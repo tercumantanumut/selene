@@ -25,6 +25,7 @@ import { readClaudeAgentSdkAuthStatus, getSdkExecutableConfig } from "./auth";
 import { getCliPath } from "./login-process";
 import {
   mcpContextStore,
+  type SdkToolResultBridge,
   type SeleneMcpContext,
 } from "../mcp-context-store";
 import { createSeleneSdkMcpServer } from "./mcp-server";
@@ -58,6 +59,15 @@ import {
 } from "@/lib/claudecode/subagent-activity-store";
 
 const CLAUDECODE_MAX_RETRY_ATTEMPTS = 5;
+
+/**
+ * After the CLI reports that every background task has drained
+ * (`background_tasks_changed` → []), it wakes the model with a follow-up turn
+ * (observed ~100ms later). If no such turn starts within this window the turn
+ * is ended rather than held open indefinitely.
+ */
+const BACKGROUND_TASK_WAKE_GRACE_MS = 15_000;
+const BACKGROUND_TASK_GRACE_ELAPSED = Symbol("claudecode-background-task-grace-elapsed");
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 /**
@@ -895,6 +905,42 @@ async function* buildMultimodalSdkPrompt(
   } as SDKUserMessage;
 }
 
+/**
+ * `system/background_tasks_changed` is a level signal with REPLACE semantics:
+ * the payload is the full set of live background tasks. Ambient entries
+ * (watchers, skip_transcript tasks) are not activity and are excluded.
+ */
+function extractLiveBackgroundTaskIds(rawMessage: unknown): Set<string> | null {
+  if (!isDictionary(rawMessage)) return null;
+  if (rawMessage.type !== "system" || rawMessage.subtype !== "background_tasks_changed") return null;
+  const ids = new Set<string>();
+  if (Array.isArray(rawMessage.tasks)) {
+    for (const task of rawMessage.tasks) {
+      if (!isDictionary(task) || typeof task.task_id !== "string") continue;
+      if (task.ambient === true) continue;
+      ids.add(task.task_id);
+    }
+  }
+  return ids;
+}
+
+/** Root-level traffic that proves the CLI started (or is finishing) a model turn. */
+function isSdkTurnActivity(rawMessage: unknown): boolean {
+  if (!isDictionary(rawMessage)) return false;
+  switch (rawMessage.type) {
+    case "stream_event":
+    case "assistant":
+    case "user":
+    case "tool_use_summary":
+    case "result":
+      return true;
+    case "system":
+      return rawMessage.subtype === "init" || rawMessage.subtype === "status";
+    default:
+      return false;
+  }
+}
+
 function buildSdkUserMessage(content: string, sessionId: string): SDKUserMessage {
   return {
     type: "user" as const,
@@ -992,9 +1038,17 @@ async function pumpLivePromptQueue(options: {
   runId?: string;
   signal: AbortSignal;
   onQueueMessages?: (entries: LivePromptEntry[]) => Promise<void>;
+  /**
+   * Prompt channel already handed to the SDK as `prompt`. When set, injections
+   * are pushed into it (the SDK consumes it via its own internal streamInput)
+   * and the caller owns the channel's close. When absent (string-prompt
+   * callers), a private channel is opened via `query.streamInput`.
+   */
+  channel?: SdkUserMessageChannel;
 }): Promise<void> {
   const { query, runId, signal, onQueueMessages } = options;
-  if (!runId || typeof query.streamInput !== "function") {
+  const sharedChannel = options.channel;
+  if (!runId || (!sharedChannel && typeof query.streamInput !== "function")) {
     return;
   }
 
@@ -1007,17 +1061,19 @@ async function pumpLivePromptQueue(options: {
   // after we call channel.close() in the finally block). That's also when
   // the SDK internally calls transport.endInput(), which is exactly the
   // moment we want stdin to close: at end-of-query, never mid-query.
-  const channel = createSdkUserMessageChannel();
-  const streamInputPromise = query
-    .streamInput(channel.iterable)
-    .catch((err: unknown) => {
-      if (!signal.aborted) {
-        console.warn(
-          "[ClaudeCode] Persistent streamInput channel failed:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-    });
+  const channel = sharedChannel ?? createSdkUserMessageChannel();
+  const streamInputPromise = sharedChannel
+    ? Promise.resolve()
+    : query
+        .streamInput!(channel.iterable)
+        .catch((err: unknown) => {
+          if (!signal.aborted) {
+            console.warn(
+              "[ClaudeCode] Persistent streamInput channel failed:",
+              err instanceof Error ? err.message : err,
+            );
+          }
+        });
 
   // Close the channel if the query is aborted so the pending streamInput
   // iterator resolves cleanly instead of hanging.
@@ -1067,13 +1123,18 @@ async function pumpLivePromptQueue(options: {
       channel.push(buildSdkUserMessage(content, inputSessionId));
 
       if (entries.some((entry) => entry.stopIntent)) {
+        // Explicit stop: close stdin so the CLI winds down after this run.
+        channel.close();
         break;
       }
     }
   } finally {
-    // Always close the channel so streamInput's iterator returns and the
-    // SDK closes stdin exactly once, at query-end.
-    channel.close();
+    // Close a private channel so streamInput's iterator returns and the SDK
+    // closes stdin exactly once, at query-end. A shared channel is closed by
+    // the stream loop that owns the query lifecycle.
+    if (!sharedChannel) {
+      channel.close();
+    }
     signal.removeEventListener("abort", onAbort);
     // Don't await — stream lifetime is owned by the query loop. We just
     // ensure the promise doesn't become an unhandled rejection.
@@ -1214,12 +1275,53 @@ function createStreamingClaudeCodeResponse(options: {
       let livePromptAbortController: AbortController | undefined;
       let onLivePromptAbort: (() => void) | undefined;
       let livePromptPump: Promise<void> = Promise.resolve();
+      let sdkQuery: ClaudeAgentQueryStream | undefined;
+      let sdkToolResultBridge: SdkToolResultBridge | undefined;
+      /** Every tool_use id this stream surfaced to the AI SDK (all turns). */
+      const emittedToolUseIds = new Set<string>();
+
+      // ── Prompt channel ────────────────────────────────────────────────
+      // The SDK treats a string prompt as a single-user-turn query: after the
+      // first `result` it closes stdin and the CLI exits, killing every
+      // background task/agent it hosts. Feeding the SDK an AsyncIterable keeps
+      // the CLI session alive so it can wake the model when those tasks
+      // finish. The same channel carries live-prompt injections.
+      const promptChannel = createSdkUserMessageChannel();
+
+      // ── Background-task hold ──────────────────────────────────────────
+      const liveBackgroundTaskIds = new Set<string>();
+      let heldResultCount = 0;
+      // Ref object (not a `let`): it is mutated from closures, which TS flow
+      // analysis cannot see.
+      const backgroundTaskGrace: {
+        current: { elapsed: Promise<void>; timer: ReturnType<typeof setTimeout> } | null;
+      } = { current: null };
+      const clearBackgroundTaskGrace = () => {
+        if (!backgroundTaskGrace.current) return;
+        clearTimeout(backgroundTaskGrace.current.timer);
+        backgroundTaskGrace.current = null;
+      };
+      const armBackgroundTaskGrace = () => {
+        clearBackgroundTaskGrace();
+        let resolveElapsed!: () => void;
+        const elapsed = new Promise<void>((resolve) => { resolveElapsed = resolve; });
+        const timer = setTimeout(resolveElapsed, BACKGROUND_TASK_WAKE_GRACE_MS);
+        backgroundTaskGrace.current = { elapsed, timer };
+      };
 
       try {
+        if (typeof options.prompt === "string") {
+          promptChannel.push(buildSdkUserMessage(options.prompt, crypto.randomUUID()));
+        } else {
+          for await (const message of options.prompt) {
+            promptChannel.push(message);
+          }
+        }
+
         const sdk = options.sdkOptions;
         const { mcpCtx, seleneMcpServers, resolvedCwd, mergedPlugins, mergedHookMap } =
           await resolveSeleneContext(sdk);
-        const sdkToolResultBridge = mcpCtx?.sdkToolResultBridge;
+        sdkToolResultBridge = mcpCtx?.sdkToolResultBridge;
         const subagentCaptureScope: ClaudeCodeSubagentCaptureContext = {
           userId: mcpCtx?.userId,
           sessionId: mcpCtx?.sessionId,
@@ -1347,7 +1449,7 @@ function createStreamingClaudeCodeResponse(options: {
         const { executable: sdkExecutable, env: sdkEnv } = getSdkExecutableConfig();
 
         const query = claudeAgentQuery({
-          prompt: options.prompt,
+          prompt: promptChannel.iterable,
           options: {
             abortController,
             cwd: resolvedCwd,
@@ -1376,6 +1478,7 @@ function createStreamingClaudeCodeResponse(options: {
             ...(sdk?.persistSession !== undefined ? { persistSession: sdk.persistSession } : {}),
           },
         }) as ClaudeAgentQueryStream;
+        sdkQuery = query;
 
         livePromptAbortController = new AbortController();
         onLivePromptAbort = () => livePromptAbortController?.abort();
@@ -1391,6 +1494,7 @@ function createStreamingClaudeCodeResponse(options: {
           runId: mcpCtx?.runId,
           signal: livePromptAbortController.signal,
           onQueueMessages: mcpCtx?.onQueueMessages,
+          channel: promptChannel,
         });
 
         // Emit message_start
@@ -1412,6 +1516,8 @@ function createStreamingClaudeCodeResponse(options: {
         let inputTokens = 0;
         let outputTokens = 0;
         let finalUsage: AnthropicTokenUsage | undefined;
+        /** Output tokens of turns already swallowed by the background-task hold. */
+        let heldTurnsOutputTokens = 0;
         let syntheticStreamLocalIndex = -1;
         let sawStreamTextThisTurn = false;
         const streamedToolUseIdsThisTurn = new Set<string>();
@@ -1454,6 +1560,7 @@ function createStreamingClaudeCodeResponse(options: {
           index?: number,
         ) => {
           const targetIndex = index ?? allocateContentIndex();
+          emittedToolUseIds.add(id);
           emit("content_block_start", {
             type: "content_block_start",
             index: targetIndex,
@@ -1579,9 +1686,46 @@ function createStreamingClaudeCodeResponse(options: {
           streamedToolUseIdsThisTurn.clear();
         };
 
-        for await (const rawMessage of query) {
+        const sdkIterator = query[Symbol.asyncIterator]();
+        while (true) {
+          const nextMessage = sdkIterator.next();
+          const grace = backgroundTaskGrace.current;
+          const step: IteratorResult<ClaudeAgentQueryStreamMessage, void> | typeof BACKGROUND_TASK_GRACE_ELAPSED =
+            grace
+              ? await Promise.race([
+                  nextMessage,
+                  grace.elapsed.then((): typeof BACKGROUND_TASK_GRACE_ELAPSED => BACKGROUND_TASK_GRACE_ELAPSED),
+                ])
+              : await nextMessage;
+          if (step === BACKGROUND_TASK_GRACE_ELAPSED) {
+            console.warn(
+              `[ClaudeCode] Background tasks drained but the CLI started no follow-up turn within ${BACKGROUND_TASK_WAKE_GRACE_MS}ms — ending the turn`,
+            );
+            break;
+          }
+          if (step.done) break;
+          const rawMessage = step.value;
           const message = rawMessage as { type?: string };
           captureClaudeCodeSubagentMessage(rawMessage, subagentCaptureScope);
+
+          // ── background_tasks_changed: level signal, REPLACE semantics ──────
+          const liveTaskIds = extractLiveBackgroundTaskIds(rawMessage);
+          if (liveTaskIds) {
+            liveBackgroundTaskIds.clear();
+            for (const id of liveTaskIds) liveBackgroundTaskIds.add(id);
+            if (heldResultCount > 0) {
+              if (liveBackgroundTaskIds.size === 0) {
+                armBackgroundTaskGrace();
+              } else {
+                clearBackgroundTaskGrace();
+              }
+            }
+            continue;
+          }
+          if (backgroundTaskGrace.current && isSdkTurnActivity(rawMessage)) {
+            // The CLI woke the model (or is finishing a turn) — stop the clock.
+            clearBackgroundTaskGrace();
+          }
 
           // Claude SDK annotates nested subagent traffic with parent_tool_use_id.
           // Keep those events inside the root Task/Agent call instead of replaying
@@ -1687,6 +1831,7 @@ function createStreamingClaudeCodeResponse(options: {
                   });
                 }
                 streamedToolUseIdsThisTurn.add(toolUseId);
+                emittedToolUseIds.add(toolUseId);
               } else {
                 openStreamLocalIndices.delete(localIndex);
               }
@@ -1721,6 +1866,7 @@ function createStreamingClaudeCodeResponse(options: {
                     content_block: { type: "tool_use", id: toolUseId, name: toolName },
                   });
                   streamedToolUseIdsThisTurn.add(toolUseId);
+                emittedToolUseIds.add(toolUseId);
                 }
               }
 
@@ -1863,13 +2009,31 @@ function createStreamingClaudeCodeResponse(options: {
             if (result.usage) {
               finalUsage = result.usage;
               inputTokens = result.usage.input_tokens ?? inputTokens;
-              outputTokens = result.usage.output_tokens ?? outputTokens;
+              outputTokens = heldTurnsOutputTokens + (result.usage.output_tokens ?? outputTokens);
             }
 
             if (result.is_error) {
               console.error("[ClaudeCode] SDK query error:", result.subtype);
             }
-            continue;
+
+            // Live (non-ambient) background tasks/agents outlive this `result`.
+            // Ending the turn here would close the CLI session and kill them —
+            // keep consuming: the CLI wakes the model when they finish and that
+            // follow-up turn streams into this same response. The next `result`
+            // re-evaluates. Error results never hold.
+            if (!result.is_error && liveBackgroundTaskIds.size > 0) {
+              heldResultCount += 1;
+              heldTurnsOutputTokens = outputTokens;
+              console.debug(
+                `[ClaudeCode] result received with ${liveBackgroundTaskIds.size} live background task(s) — holding the turn for the CLI wake-up (held=${heldResultCount})`,
+              );
+              resetTurnStreamTracking();
+              continue;
+            }
+
+            // SDK `result` is terminal. Stop consuming after it so residual root events
+            // emitted by the SDK/CLI after result are not projected as trailing SSE blocks.
+            break;
           }
         }
 
@@ -1910,11 +2074,33 @@ function createStreamingClaudeCodeResponse(options: {
           // Controller may already be closed
         }
       } finally {
+        clearBackgroundTaskGrace();
         livePromptAbortController?.abort();
         if (options.signal && onLivePromptAbort) {
           options.signal.removeEventListener("abort", onLivePromptAbort);
         }
         await livePromptPump.catch(() => {});
+        // Close the prompt channel first (lets the SDK endInput() exactly once
+        // and a gracefully-idle CLI exit), then release the query: on the real
+        // SDK `return()` runs cleanup (transport close) — same as the former
+        // `for await … break`, now explicit because the loop is manual.
+        promptChannel.close();
+        if (sdkQuery) {
+          try {
+            await sdkQuery.return(undefined);
+          } catch {
+            // Already closed / process gone
+          }
+        }
+        // Passthrough executors wait without a timeout. Any tool_use this
+        // stream surfaced that never got a bridged result (abort, error,
+        // grace exit) must not park forever. Scoped per id — the bridge is
+        // per-request and a later step may still need it.
+        if (sdkToolResultBridge?.cancel) {
+          for (const toolUseId of emittedToolUseIds) {
+            sdkToolResultBridge.cancel(toolUseId);
+          }
+        }
         options.signal?.removeEventListener("abort", onAbort);
         for (const pending of pendingInputJsonDeltaByIndex.values()) {
           if (pending.timer) {
@@ -2119,7 +2305,7 @@ async function runClaudeAgentQuery(options: {
         if (result.is_error) {
           throw new Error(result.subtype || "error_during_execution");
         }
-        continue;
+        break;
       }
 
       // The SDK emits additional informational messages (system subtypes like

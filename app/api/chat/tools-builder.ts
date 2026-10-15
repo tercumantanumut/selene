@@ -15,7 +15,7 @@
  * resolved `scopedPlugins` and `pluginRoots`.
  */
 
-import { tool, jsonSchema, type Tool } from "ai";
+import type { Tool } from "ai";
 import type { ExecuteCommandProgressUpdate } from "@/lib/command-execution/types";
 import {
   createRetrieveFullContentTool,
@@ -57,19 +57,7 @@ import {
   normalizeReadFileInputArgs,
   WEB_SEARCH_NO_RESULT_GUARD,
 } from "./content-sanitizer";
-import { mcpContextStore } from "@/lib/ai/providers/mcp-context-store";
-import { sanitizeToolResultForBase64, attachMediaRefs } from "@/lib/media/base64-extract";
-import {
-  buildMissingSdkPassthroughOutput,
-  normalizeSdkPassthroughOutput,
-} from "./sdk-passthrough-normalizer";
-
-// Inputs above this byte threshold are not echoed back verbatim in the SDK
-// passthrough fallback — only a small preview + metadata is kept.
-const SDK_PASSTHROUGH_LARGE_INPUT_BYTES = (() => {
-  const parsed = Number(process.env.SDK_PASSTHROUGH_LARGE_INPUT_BYTES);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 262_144;
-})();
+import { createSdkPassthroughTool } from "./sdk-passthrough-tool";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
@@ -485,103 +473,10 @@ export async function buildToolsForRequest(
   // The Dario backend is a plain Anthropic Messages consumer with real tool
   // execution, so this block must NEVER run for it.
   const sdkPassthroughNames = new Set<string>();
-  const mcpPassthroughNames = new Set<string>();
 
   if (ctx.backend === "sdk") {
-    const createSdkPassthroughTool = (registeredToolName: string): Tool =>
-      tool({
-        description: "Claude Agent SDK passthrough tool (executed internally by the SDK agent)",
-        inputSchema: jsonSchema<Record<string, unknown>>({
-          type: "object",
-          additionalProperties: true,
-        }),
-        // Resolve the real SDK tool output from the per-request bridge.
-        // Fallback to passthrough marker only if no bridged output arrives in time.
-        execute: async (args, options) => {
-          const serializedArgs = (() => {
-            try {
-              return JSON.stringify(args ?? {});
-            } catch {
-              return "";
-            }
-          })();
-          const largeInputMetadata =
-            serializedArgs.length > SDK_PASSTHROUGH_LARGE_INPUT_BYTES
-              ? {
-                  _sdkLargeInput: true,
-                  _sdkLargeInputBytes: serializedArgs.length,
-                  _sdkLargeInputPreview: serializedArgs.slice(0, 2_000),
-                }
-              : null;
-
-          const toolCallId =
-            options && typeof options === "object" && "toolCallId" in options &&
-            typeof (options as { toolCallId?: unknown }).toolCallId === "string"
-              ? (options as { toolCallId: string }).toolCallId
-              : "";
-
-          const abortSignal =
-            options && typeof options === "object" && "abortSignal" in options &&
-            (options as { abortSignal?: unknown }).abortSignal instanceof AbortSignal
-              ? (options as { abortSignal: AbortSignal }).abortSignal
-              : undefined;
-
-          const bridge = mcpContextStore.getStore()?.sdkToolResultBridge;
-          if (bridge && toolCallId) {
-            // MCP tools (delegateToSubagent, etc.) and SDK agent tools (Task,
-            // Agent, etc.) can run arbitrarily long — never time them out.
-            const isLongRunningTool =
-              mcpPassthroughNames.has(registeredToolName) ||
-              registeredToolName === "Task" ||
-              registeredToolName === "Agent" ||
-              registeredToolName === "TaskCreate" ||
-              registeredToolName === "TaskGet" ||
-              registeredToolName === "TaskUpdate" ||
-              registeredToolName === "TaskList";
-
-            try {
-              const resolved = await bridge.waitFor(toolCallId, {
-                timeoutMs: isLongRunningTool ? null : 300_000,
-                abortSignal,
-              });
-              if (resolved) {
-                // Strip base64 image/document envelopes emitted by SDK-native
-                // built-ins like Read before the payload reaches the executor.
-                const { sanitized, mediaRefs } = await sanitizeToolResultForBase64(
-                  resolved.output,
-                  { sessionId, role: "generated" }
-                );
-                const normalized = normalizeSdkPassthroughOutput(
-                  resolved.toolName || registeredToolName,
-                  sanitized,
-                  args
-                );
-                const withMediaRefs = attachMediaRefs(normalized, mediaRefs);
-                if (largeInputMetadata) {
-                  return { ...withMediaRefs, ...largeInputMetadata };
-                }
-                return withMediaRefs;
-              }
-              console.warn(
-                `[CHAT API] SDK passthrough wait ended without result: ${toolCallId} tool=${registeredToolName}`
-              );
-              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
-                reason: `No bridged SDK tool result arrived for toolCallId=${toolCallId}. The underlying tool likely failed before publishing a structured result.`,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.warn(
-                `[CHAT API] SDK passthrough bridge wait failed: toolCallId=${toolCallId} tool=${registeredToolName} error=${message}`
-              );
-              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
-                reason: `SDK passthrough bridge wait failed for toolCallId=${toolCallId}: ${message}`,
-              });
-            }
-          }
-
-          return { _sdkPassthrough: true, ...(largeInputMetadata ?? {}) };
-        },
-      });
+    const createPassthrough = (registeredToolName: string): Tool =>
+      createSdkPassthroughTool(registeredToolName, { sessionId });
 
     // (a) SDK built-in tools (Bash, Read, Write, etc.)
     //
@@ -600,7 +495,7 @@ export async function buildToolsForRequest(
 
     for (const name of SDK_AGENT_TOOLS) {
       if (!allToolsWithMCP[name]) {
-        allToolsWithMCP[name] = createSdkPassthroughTool(name);
+        allToolsWithMCP[name] = createPassthrough(name);
         sdkPassthroughNames.add(name);
       }
     }
@@ -612,9 +507,8 @@ export async function buildToolsForRequest(
     const existingToolNames = Object.keys(allToolsWithMCP);
     for (const name of existingToolNames) {
       if (sdkPassthroughNames.has(name)) continue;
-      allToolsWithMCP[name] = createSdkPassthroughTool(name);
+      allToolsWithMCP[name] = createPassthrough(name);
       sdkPassthroughNames.add(name);
-      mcpPassthroughNames.add(name);
     }
   }
 
