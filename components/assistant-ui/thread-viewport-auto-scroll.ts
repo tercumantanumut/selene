@@ -99,15 +99,7 @@ export function useThreadViewportAutoScroll({
       animationFrameRef.current = requestAnimationFrame(scrollToBottomIfFollowing);
     };
 
-    // Inline-style writes (shimmers, transitions) arrive every frame and do not
-    // add content; following them forced a full-thread layout per frame.
-    // assistant-ui's own viewport observer ignores them for the same reason.
-    const mutationObserver = new MutationObserver((records) => {
-      if (records.every((record) => record.type === "attributes" && record.attributeName === "style")) {
-        return;
-      }
-      scheduleScrollToBottom();
-    });
+    const mutationObserver = new MutationObserver(scheduleScrollToBottom);
     mutationObserver.observe(viewport, {
       attributes: true,
       characterData: true,

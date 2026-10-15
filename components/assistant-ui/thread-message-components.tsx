@@ -396,7 +396,7 @@ const UserFileContent: FC<{ type: "file"; data: string; mimeType: string; filena
 export const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 flex-col items-end gap-2 pl-8 [content-visibility:auto] [contain-intrinsic-size:auto_120px]"
+      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 flex-col items-end gap-2 pl-8"
     >
       <div className="flex items-start gap-3">
         <UserActionBar />
@@ -640,7 +640,7 @@ export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = fa
 
   return (
     <MessagePrimitive.Root
-      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 gap-3 pr-8 [content-visibility:auto] [contain-intrinsic-size:auto_120px]"
+      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 gap-3 pr-8"
     >
       <Avatar className="size-8 shrink-0 shadow-sm">
         {displayChar.avatarUrl || displayChar.primaryImageUrl ? (
