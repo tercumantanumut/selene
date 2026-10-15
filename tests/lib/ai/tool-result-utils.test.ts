@@ -305,6 +305,110 @@ describe("normalizeToolResultOutput - readFile exemption", () => {
     expect(normalized.error).toBeTruthy();
   });
 
+  it("gives designWorkspace a raised 10K token budget in projection mode", async () => {
+    const { limitToolOutput } = await import("@/lib/ai/output-limiter");
+    vi.mocked(limitToolOutput).mockClear();
+
+    const output = {
+      success: true,
+      action: "readSource",
+      data: { componentId: "design-1", code: "export const X = 1;".repeat(700), status: "available" },
+    };
+
+    normalizeToolResultOutput("designWorkspace", output, undefined, {
+      mode: "projection",
+    });
+
+    expect(limitToolOutput).toHaveBeenCalledWith(
+      expect.anything(),
+      "designWorkspace",
+      expect.anything(),
+      { maxTokens: 10000 },
+    );
+  });
+
+  it("resolves per-tool budgets for MCP-prefixed tool names", async () => {
+    const { limitToolOutput } = await import("@/lib/ai/output-limiter");
+    vi.mocked(limitToolOutput).mockClear();
+
+    normalizeToolResultOutput(
+      "mcp__selene-platform__designWorkspace",
+      { success: true, action: "readSource", data: { code: "x" } },
+      undefined,
+      { mode: "projection" },
+    );
+
+    expect(limitToolOutput).toHaveBeenCalledWith(
+      expect.anything(),
+      "mcp__selene-platform__designWorkspace",
+      expect.anything(),
+      { maxTokens: 10000 },
+    );
+  });
+
+  it("replaces nested data.code (not just summary) when a designWorkspace result is limited", async () => {
+    const { limitToolOutput } = await import("@/lib/ai/output-limiter");
+
+    vi.mocked(limitToolOutput).mockReturnValueOnce({
+      limited: true,
+      output: "[STUB: tool=designWorkspace] retrieval instructions",
+      originalLength: 100000,
+      truncatedLength: 200,
+      estimatedTokens: 25000,
+      contentId: "trunc_design123",
+    });
+
+    const hugeCode = "export const Design = () => null;\n".repeat(3000);
+    const output = {
+      success: true,
+      action: "readSource",
+      summary: "Design source retrieved (102000 chars).",
+      data: { componentId: "design-1", code: hugeCode, status: "available" },
+    };
+
+    const result = normalizeToolResultOutput("designWorkspace", output, undefined, {
+      mode: "projection",
+    });
+
+    const normalized = result.output as Record<string, unknown>;
+    const data = normalized.data as Record<string, unknown>;
+    // The oversized payload must actually be replaced by the stub...
+    expect(data.code).toContain("[STUB: tool=designWorkspace]");
+    expect(data.code).not.toContain("export const Design");
+    // ...and truncation markers must point at retrievable content.
+    expect(normalized.truncated).toBe(true);
+    expect(normalized.truncatedContentId).toBe("trunc_design123");
+  });
+
+  it("does not leave full unknown-shape payloads behind truncation markers", async () => {
+    const { limitToolOutput } = await import("@/lib/ai/output-limiter");
+
+    vi.mocked(limitToolOutput).mockReturnValueOnce({
+      limited: true,
+      output: "[STUB] retrieval instructions",
+      originalLength: 100000,
+      truncatedLength: 100,
+      estimatedTokens: 25000,
+      contentId: "trunc_blob456",
+    });
+
+    const output = {
+      success: true,
+      action: "export",
+      payload: { blob: "z".repeat(100000) },
+    };
+
+    const result = normalizeToolResultOutput("someTool", output, undefined, {
+      mode: "projection",
+    });
+
+    const normalized = result.output as Record<string, unknown>;
+    expect(JSON.stringify(normalized)).not.toContain("zzzzzzzzzz");
+    expect(normalized.truncated).toBe(true);
+    expect(normalized.truncatedContentId).toBe("trunc_blob456");
+    expect(normalized.output).toContain("[STUB]");
+  });
+
   it("uses explicit stopped status for delegation summaries instead of completed", () => {
     const result = normalizeToolResultOutput(
       "delegateToSubagent",

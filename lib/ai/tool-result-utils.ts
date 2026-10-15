@@ -388,16 +388,24 @@ export function normalizeToolResultOutput(
     // Per-tool token budgets for tools that need more context than the default 3,000.
     // localGrep and vectorSearch results are dense, useful content — 10,000 tokens
     // (~40,000 chars) accommodates ~25 matches with context lines.
+    // designWorkspace readSource exists specifically to read back full component
+    // source for editing — truncating it below the stream-guard passthrough tier
+    // (10K tokens) causes re-read loops where the model keeps seeing "truncated".
     const TOOL_TOKEN_BUDGETS: Record<string, number> = {
       localGrep: 10000,
       vectorSearch: 10000,
+      designWorkspace: 10000,
     };
+
+    // Budgets/exemptions are keyed by canonical tool name — strip any
+    // MCP server prefix (e.g. "mcp__selene-platform__designWorkspace").
+    const canonicalToolName = /^mcp__.+?__(.+)$/.exec(toolName)?.[1] || toolName;
 
     // Apply token limit (universal safety net) — UNLESS tool is exempt
     // This prevents context bloat from massive outputs like ls -R, pip freeze, etc.
-    const limitResult = !EXEMPT_TOOLS.has(toolName)
+    const limitResult = !EXEMPT_TOOLS.has(canonicalToolName)
       ? limitToolOutput(normalizedOutput, toolName, sessionId, {
-          maxTokens: TOOL_TOKEN_BUDGETS[toolName],
+          maxTokens: TOOL_TOKEN_BUDGETS[canonicalToolName],
         })
       : { limited: false, output: "", originalLength: 0, truncatedLength: 0, estimatedTokens: 0 };
 
@@ -417,29 +425,54 @@ export function normalizeToolResultOutput(
       else if (normalizedOutput && typeof normalizedOutput === "object") {
         const obj = normalizedOutput as Record<string, unknown>;
 
-        // Update the primary text field
-        if (typeof obj.content === "string") {
-          obj.content = limitResult.output;
-        } else if (typeof obj.text === "string") {
-          obj.text = limitResult.output;
-        } else if (typeof obj.result === "string") {
-          obj.result = limitResult.output;
-        } else if (typeof obj.results === "string") {
-          obj.results = limitResult.output;
-        } else if (typeof obj.output === "string") {
-          obj.output = limitResult.output;
-        } else if (typeof obj.summary === "string") {
+        // Update the primary text field. `summary` is checked LAST — it is a
+        // short derived digest, and replacing only it would leave the actual
+        // oversized payload (e.g. nested data.code) untouched.
+        let replaced = false;
+        for (const field of ["content", "text", "result", "results", "output", "markdown", "stdout"] as const) {
+          if (typeof obj[field] === "string") {
+            obj[field] = limitResult.output;
+            replaced = true;
+            break;
+          }
+        }
+
+        // Nested payloads (designWorkspace and similar): { data: { code: "..." } }
+        if (!replaced) {
+          const data = getRecord(obj.data);
+          if (data) {
+            for (const field of ["code", "content", "text"] as const) {
+              if (typeof data[field] === "string") {
+                obj.data = { ...data, [field]: limitResult.output };
+                replaced = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!replaced && typeof obj.summary === "string") {
           obj.summary = limitResult.output;
-        } else if (typeof obj.markdown === "string") {
-          obj.markdown = limitResult.output;
-        } else if (typeof obj.stdout === "string") {
-          obj.stdout = limitResult.output;
+          replaced = true;
+        }
+
+        // Unknown shape: replace the payload wholesale. Projection is
+        // model-input only (canonical history stays lossless), and keeping the
+        // full object while flagging `truncated: true` both defeats the limit
+        // and misleads the model into retry loops.
+        if (!replaced) {
+          normalizedOutput = {
+            status: obj.status ?? "success",
+            ...(typeof obj.action === "string" ? { action: obj.action } : {}),
+            output: limitResult.output,
+          };
         }
 
         // Mark as truncated
-        obj.truncated = true;
+        const marked = normalizedOutput as Record<string, unknown>;
+        marked.truncated = true;
         if (limitResult.contentId) {
-          obj.truncatedContentId = limitResult.contentId;
+          marked.truncatedContentId = limitResult.contentId;
         }
       }
     }

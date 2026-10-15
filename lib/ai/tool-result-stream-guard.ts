@@ -109,11 +109,22 @@ function extractPrimaryText(result: unknown): { text: string; stderr?: string } 
     if (textItems.length > 0) return { text: textItems.join("\n") };
   }
 
-  for (const field of ["content", "text", "result", "results", "output", "summary", "markdown"] as const) {
+  for (const field of ["content", "text", "result", "results", "output", "markdown"] as const) {
     const value = obj[field];
     if (typeof value === "string") return { text: value };
   }
 
+  // Nested payloads (designWorkspace readSource and similar): { data: { code } }
+  if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) {
+    const data = obj.data as Record<string, unknown>;
+    for (const field of ["code", "content", "text"] as const) {
+      if (typeof data[field] === "string") return { text: data[field] as string };
+    }
+  }
+
+  // `summary` is a short derived digest, not the payload — using it as primary
+  // text would persist the digest as "full content" and leave the real payload
+  // in place. Fall through to full serialization instead.
   return { text: safeStringify(result) };
 }
 
@@ -166,12 +177,32 @@ function replacePrimaryText(result: unknown, stub: string): unknown {
     return obj;
   }
 
-  for (const field of ["content", "text", "result", "results", "output", "summary", "markdown"] as const) {
+  for (const field of ["content", "text", "result", "results", "output", "markdown"] as const) {
     if (typeof obj[field] === "string") {
       obj[field] = stub;
       obj.isTruncated = true;
       return obj;
     }
+  }
+
+  // Nested payloads (designWorkspace readSource and similar): { data: { code } }
+  if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) {
+    const data = { ...(obj.data as Record<string, unknown>) };
+    for (const field of ["code", "content", "text"] as const) {
+      if (typeof data[field] === "string") {
+        data[field] = stub;
+        obj.data = data;
+        obj.isTruncated = true;
+        return obj;
+      }
+    }
+  }
+
+  // Last resort before wholesale attach: a derived summary digest.
+  if (typeof obj.summary === "string") {
+    obj.summary = stub;
+    obj.isTruncated = true;
+    return obj;
   }
 
   // No known text field — attach the stub as `output`.
