@@ -87,10 +87,16 @@ export const messages = sqliteTable(
     orderingIndex: integer("ordering_index"),
     createdAt: text("created_at").default(sql`(datetime('now'))`).notNull(),
     metadata: text("metadata", { mode: "json" }).default("{}").notNull(),
+    // Set on every insert/update so pollers can fetch only changed rows.
+    // NULL on rows written before the column existed.
+    updatedAt: text("updated_at")
+      .$defaultFn(() => new Date().toISOString())
+      .$onUpdateFn(() => new Date().toISOString()),
   },
   (table) => ({
     // NEW: Index for fast ordered retrieval
     idxMessagesSessionOrdering: index("idx_messages_session_ordering").on(table.sessionId, table.orderingIndex),
+    idxMessagesSessionUpdated: index("idx_messages_session_updated").on(table.sessionId, table.updatedAt),
   })
 );
 

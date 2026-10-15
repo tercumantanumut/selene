@@ -87,6 +87,37 @@ export function readTerminalLog(logId: string): string | null {
     return null;
 }
 
+/** Same retention as the truncated-content store (`lib/ai/truncated-content-store`). */
+const TERMINAL_LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Delete terminal logs older than `maxAgeMs`. One file is written per command,
+ * so without pruning the directory grows by tens of thousands of files.
+ * @returns Number of files removed
+ */
+export async function pruneTerminalLogs(
+    maxAgeMs = TERMINAL_LOG_MAX_AGE_MS,
+    now = Date.now()
+): Promise<number> {
+    const logsDir = getLogsDir();
+    let removed = 0;
+    const entries = await fs.promises.readdir(logsDir);
+    for (const name of entries) {
+        if (!name.endsWith(".log")) continue;
+        const logPath = path.join(logsDir, name);
+        try {
+            const stats = await fs.promises.stat(logPath);
+            if (now - stats.mtimeMs > maxAgeMs) {
+                await fs.promises.unlink(logPath);
+                removed++;
+            }
+        } catch {
+            // Raced with a writer or another prune; skip it.
+        }
+    }
+    return removed;
+}
+
 /**
  * Strip ANSI escape codes from terminal output
  * Removes color codes, cursor movements, and other terminal control sequences

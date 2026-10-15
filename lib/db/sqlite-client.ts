@@ -35,7 +35,8 @@ const globalForDb = globalThis as unknown as {
 };
 
 // v7: adds delegation_completions (durable delegation completion store)
-const SCHEMA_VERSION = 7;
+// v8: adds messages.updated_at (incremental message polling)
+const SCHEMA_VERSION = 8;
 
 function createConnection(): { sqlite: Database.Database; db: BetterSQLite3Database<typeof schema> } {
   const dbPath = getDbPath();

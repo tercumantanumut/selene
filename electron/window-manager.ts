@@ -435,6 +435,23 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
     mainWindow?.webContents.send("window:visibility-changed", true);
   });
 
+  // Forward minimize/hide to the renderer. backgroundThrottling is off (see
+  // webPreferences), so document.hidden never flips; pollers use this signal
+  // to stop refreshing a window nobody can see. Blur alone is not enough: the
+  // window may still be visible on screen.
+  mainWindow.on("minimize", () => {
+    mainWindow?.webContents.send("window:hidden-changed", true);
+  });
+  mainWindow.on("hide", () => {
+    mainWindow?.webContents.send("window:hidden-changed", true);
+  });
+  mainWindow.on("restore", () => {
+    mainWindow?.webContents.send("window:hidden-changed", false);
+  });
+  mainWindow.on("show", () => {
+    mainWindow?.webContents.send("window:hidden-changed", false);
+  });
+
   // Forward fullscreen state to renderer (used by browser-mode tab bar to
   // hide/show macOS traffic-light padding dynamically)
   mainWindow.on("enter-full-screen", () => {

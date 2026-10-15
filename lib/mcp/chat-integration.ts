@@ -75,6 +75,15 @@ export async function loadMCPToolsForCharacter(
         }
     }
 
+    // Servers switched off in settings stay off here too, matching the connect
+    // route and startup auto-connect. Dropping them from the config also lets
+    // syncWithConfigSafely below stop any that are still running.
+    combinedConfig = Object.fromEntries(
+        Object.entries(combinedConfig).filter(
+            ([, config]) => (config as { enabled?: boolean }).enabled !== false
+        )
+    ) as typeof combinedConfig;
+
     // Get enabled servers and tools for this agent
     const enabledServers = metadata?.enabledMcpServers;
     const enabledTools = metadata?.enabledMcpTools;

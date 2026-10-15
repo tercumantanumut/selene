@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth/local-auth";
-import { getSessionWithMessages, updateMessage, getOrCreateLocalUser } from "@/lib/db/queries";
+import {
+  getSessionMessagesSince,
+  getSessionWithMessages,
+  updateMessage,
+  getOrCreateLocalUser,
+} from "@/lib/db/queries";
 import type { DBToolCallPart } from "@/lib/messages/converter";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { listAgentRunsBySession } from "@/lib/observability/queries";
@@ -66,9 +71,38 @@ export function sealDanglingToolCallsInContent(
   return changed ? { content: nextParts, changed: true } : { content, changed: false };
 }
 
+// The next cursor trails the server clock so a row written while a response
+// is in flight is still returned by the following poll. Re-sending the few
+// rows updated in this window is cheap and the client merges them by id.
+const CURSOR_OVERLAP_MS = 2000;
+
+type SessionMessageRow = NonNullable<
+  Awaited<ReturnType<typeof getSessionWithMessages>>
+>["messages"][number];
+
+async function sealDanglingToolCalls(rows: SessionMessageRow[]): Promise<SessionMessageRow[]> {
+  return Promise.all(
+    rows.map(async (message) => {
+      if (message.role !== "assistant") return message;
+      const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+      if (metadata.isStreaming === true) return message;
+
+      const repaired = sealDanglingToolCallsInContent(message.content);
+      if (!repaired.changed) return message;
+
+      await updateMessage(message.id, { content: repaired.content as any });
+      return { ...message, content: repaired.content };
+    })
+  );
+}
+
 /**
- * GET - Fetch all messages for a session
- * Used to refresh messages after background processing completes
+ * GET - Fetch messages for a session
+ * Used to refresh messages after background processing completes.
+ *
+ * With `?since=<cursor>` only rows updated at or after the cursor are returned,
+ * together with `ids` (every message id, in order) so the client can apply
+ * inserts, deletes and reordering. Every response carries the next `cursor`.
  */
 export async function GET(req: Request, { params }: RouteParams) {
   try {
@@ -76,6 +110,22 @@ export async function GET(req: Request, { params }: RouteParams) {
     const settings = loadSettings();
     const dbUser = await getOrCreateLocalUser(userId, settings.localUserEmail);
     const { id: sessionId } = await params;
+    const since = new URL(req.url).searchParams.get("since");
+    const cursor = new Date(Date.now() - CURSOR_OVERLAP_MS).toISOString();
+
+    if (since) {
+      const delta = await getSessionMessagesSince(sessionId, since);
+      if (!delta || delta.session.userId !== dbUser.id) {
+        return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      }
+
+      return NextResponse.json({
+        messages: await sealDanglingToolCalls(delta.messages),
+        ids: delta.ids,
+        cursor,
+        incremental: true,
+      });
+    }
 
     const sessionWithMessages = await getSessionWithMessages(sessionId);
 
@@ -83,22 +133,9 @@ export async function GET(req: Request, { params }: RouteParams) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
-    const repairedMessages = await Promise.all(
-      sessionWithMessages.messages.map(async (message) => {
-        if (message.role !== "assistant") return message;
-        const metadata = (message.metadata ?? {}) as Record<string, unknown>;
-        if (metadata.isStreaming === true) return message;
-
-        const repaired = sealDanglingToolCallsInContent(message.content);
-        if (!repaired.changed) return message;
-
-        await updateMessage(message.id, { content: repaired.content as any });
-        return { ...message, content: repaired.content };
-      })
-    );
-
     return NextResponse.json({
-      messages: repairedMessages,
+      messages: await sealDanglingToolCalls(sessionWithMessages.messages),
+      cursor,
     });
   } catch (error) {
     console.error("Fetch session messages error:", error);

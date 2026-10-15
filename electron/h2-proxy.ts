@@ -1,6 +1,6 @@
 import * as http from "node:http";
 import * as http2 from "node:http2";
-import { debugLog, debugError } from "./debug-logger";
+import { debugLog, debugError, debugVerbose } from "./debug-logger";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,7 +74,7 @@ export function startH2Proxy(opts: H2ProxyOptions): http2.Http2SecureServer {
   if (typeof server.requestTimeout === "number") server.requestTimeout = 0;
 
   server.on("request", (req: http2.Http2ServerRequest, res: http2.Http2ServerResponse) => {
-    debugLog(`[H2Proxy] → ${req.method} ${req.url} (HTTP/${req.httpVersion})`);
+    debugVerbose(`[H2Proxy] → ${req.method} ${req.url} (HTTP/${req.httpVersion})`);
 
     // Build upstream headers: strip HTTP/2 pseudo-headers, override host.
     const upstreamHeaders: http.OutgoingHttpHeaders = {};

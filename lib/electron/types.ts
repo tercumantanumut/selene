@@ -17,6 +17,8 @@ interface ElectronWindowAPI {
   isFullScreen: () => Promise<boolean>;
   setZoomFactor: (zoomFactor: number, allWindows?: boolean) => Promise<number>;
   onFullscreenChanged: (callback: (isFullScreen: boolean) => void) => () => void;
+  /** Minimized or hidden (not merely unfocused). Absent in older preload builds. */
+  onHiddenChanged?: (callback: (isHidden: boolean) => void) => () => void;
 }
 
 interface ElectronAppAPI {

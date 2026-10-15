@@ -154,6 +154,22 @@ export function initCoreTablesWith(sqlite: Database.Database): void {
     // Column already exists
   }
 
+  // Migration: Add updated_at to messages for incremental polling
+  try {
+    sqlite.exec(`ALTER TABLE messages ADD COLUMN updated_at TEXT`);
+    console.log("[SQLite Migration] Added updated_at column to messages");
+  } catch {
+    // Column already exists
+  }
+  try {
+    sqlite.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_session_updated
+        ON messages (session_id, updated_at)
+    `);
+  } catch (error) {
+    console.warn("[SQLite Migration] Failed to create messages updated_at index:", error);
+  }
+
   // Migration: Add last_ordering_index column to sessions for atomic index allocation
   try {
     sqlite.exec(`ALTER TABLE sessions ADD COLUMN last_ordering_index INTEGER DEFAULT 0`);

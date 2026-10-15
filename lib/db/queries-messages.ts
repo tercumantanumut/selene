@@ -208,18 +208,43 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
+/**
+ * Cheap change marker for a session's messages: row count plus the latest
+ * `updated_at`. Both come from the (session_id, updated_at) index, so this
+ * never reads message content.
+ */
+export async function getSessionMessagesFingerprint(sessionId: string): Promise<string> {
+  const [row] = await db
+    .select({
+      count: sql<number>`count(*)`,
+      lastUpdatedAt: sql<string | null>`max(${messages.updatedAt})`,
+    })
+    .from(messages)
+    .where(eq(messages.sessionId, sessionId));
+  return `${row?.count ?? 0}:${row?.lastUpdatedAt ?? ""}`;
+}
+
 export async function updateMessage(
   messageId: string,
   data: Partial<Pick<NewMessage, "content" | "metadata" | "model" | "tokenCount">>
 ) {
-  const existing = await db.query.messages.findFirst({
-    where: eq(messages.id, messageId),
-  });
+  // Select only what the bookkeeping below needs. Streaming syncs call this
+  // several times a second, and reading back `content` would parse the whole
+  // (possibly megabyte-sized) message twice per write.
+  const [existing] = await db
+    .select({ role: messages.role, metadata: messages.metadata, tokenCount: messages.tokenCount })
+    .from(messages)
+    .where(eq(messages.id, messageId));
   const [updated] = await db
     .update(messages)
     .set(data)
     .where(eq(messages.id, messageId))
-    .returning();
+    .returning({
+      id: messages.id,
+      sessionId: messages.sessionId,
+      tokenCount: messages.tokenCount,
+      updatedAt: messages.updatedAt,
+    });
 
   if (updated) {
     const previousTokenCount = existing?.tokenCount ?? 0;

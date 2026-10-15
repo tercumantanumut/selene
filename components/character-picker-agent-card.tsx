@@ -152,7 +152,7 @@ export function AgentCardInWorkflow({
                     noiseIntensity={0.9}
                     noisePatternAlpha={45}
                     noisePatternSize={60}
-                    noisePatternRefreshInterval={7}
+                    noisePatternRefreshInterval={0}
                     className="rounded-full"
                   />
                 </AvatarFallback>
@@ -166,7 +166,7 @@ export function AgentCardInWorkflow({
                   noiseIntensity={0.9}
                   noisePatternAlpha={45}
                   noisePatternSize={60}
-                  noisePatternRefreshInterval={7}
+                  noisePatternRefreshInterval={0}
                   className="rounded-full"
                 />
                 <span className="relative z-10 flex h-full w-full items-center justify-center" />

@@ -718,6 +718,31 @@ export interface StubEphemeralToolResultsOptions {
   ephemeralLookup?: EphemeralLookup;
 }
 
+/**
+ * Drop `argsText` from tool calls whose `args` are already set. `argsText` is
+ * the raw streamed JSON used to build `args`; once parsed, persisting it stores
+ * every tool input twice (for Bash-heavy threads ~20% of the row). Calls still
+ * streaming, or whose args never parsed, keep it. Returns new part objects
+ * only where something was removed; the input is not mutated.
+ */
+export function stripRedundantArgsText(parts: DBContentPart[]): DBContentPart[] {
+  let changed = false;
+  const result = parts.map((part) => {
+    if (
+      part.type !== "tool-call" ||
+      part.args === undefined ||
+      part.state === "input-streaming" ||
+      typeof part.argsText !== "string"
+    ) {
+      return part;
+    }
+    changed = true;
+    const { argsText: _argsText, ...rest } = part;
+    return rest as DBContentPart;
+  });
+  return changed ? result : parts;
+}
+
 export function stubEphemeralToolResults(
   parts: DBContentPart[],
   optionsOrLookup?: StubEphemeralToolResultsOptions | EphemeralLookup,

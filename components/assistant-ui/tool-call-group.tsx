@@ -192,7 +192,6 @@ export const ToolCallGroup: FC<ToolCallGroupProps> = ({
   const t = useTranslations("assistantUi.tools");
   const tStatus = useTranslations("assistantUi.toolStatus");
   const sessionId = useChatSessionId();
-  const liveStatuses = useLiveToolStatuses(sessionId);
   const { effectiveDisplayMode } = useToolDisplayPreferences();
   const isDetailedMode = effectiveDisplayMode === "detailed";
   const messageParts = useAssistantState((state) => state.message.parts);
@@ -212,6 +211,12 @@ export const ToolCallGroup: FC<ToolCallGroupProps> = ({
       .slice(startIndex, endIndex + 1)
       .filter((part): part is ToolCallPart => part?.type === "tool-call");
   }, [messageParts, startIndex, endIndex]);
+
+  const toolCallIds = useMemo(
+    () => toolParts.map((part) => part.toolCallId).filter((id): id is string => Boolean(id)),
+    [toolParts]
+  );
+  const liveStatuses = useLiveToolStatuses(sessionId, toolCallIds);
 
   const isAllChromium = useMemo(() => {
     return toolParts.length > 0 && toolParts.every((part) => getCanonicalToolName(part.toolName) === "chromiumWorkspace");

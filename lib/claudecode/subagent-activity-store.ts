@@ -133,67 +133,146 @@ function eventFromRow(row: EventRow): ClaudeCodeSubagentEvent {
   };
 }
 
-function persistActivity(activity: ClaudeCodeSubagentActivity) {
+// ---------------------------------------------------------------------------
+// Write-behind persistence
+//
+// Nested SDK messages arrive per streamed delta, so writing each one directly
+// meant two synchronous SQLite statements per token per running sub-agent.
+// Writes are queued and flushed together: activity upserts coalesce to the
+// latest state per id, events are appended, and each flush is one transaction.
+// Reads in this module flush first, so they always see queued rows.
+// ---------------------------------------------------------------------------
+
+const FLUSH_INTERVAL_MS = 250;
+const pendingActivities = new Map<string, ClaudeCodeSubagentActivity>();
+let pendingEvents: ClaudeCodeSubagentEvent[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+type SqliteHandle = NonNullable<ReturnType<typeof getDb>>;
+type PreparedStatement = ReturnType<SqliteHandle["prepare"]>;
+const statementsByDb = new WeakMap<SqliteHandle, {
+  upsertActivity: PreparedStatement;
+  insertEvent: PreparedStatement;
+  trimEvents: PreparedStatement;
+}>();
+
+function getStatements(sqlite: SqliteHandle) {
+  let statements = statementsByDb.get(sqlite);
+  if (!statements) {
+    statements = {
+      upsertActivity: sqlite.prepare(`
+        INSERT INTO claudecode_subagent_activities (
+          id, user_id, session_id, run_id, character_id, parent_tool_use_id, task_id,
+          subagent_name, subagent_type, description, status, latest_summary, latest_tool_name,
+          stream_availability, source, started_at, updated_at, completed_at
+        ) VALUES (
+          @id, @userId, @sessionId, @runId, @characterId, @parentToolUseId, @taskId,
+          @subagentName, @subagentType, @description, @status, @latestSummary, @latestToolName,
+          @streamAvailability, @source, @startedAt, @updatedAt, @completedAt
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          run_id = excluded.run_id,
+          character_id = excluded.character_id,
+          task_id = excluded.task_id,
+          subagent_name = excluded.subagent_name,
+          subagent_type = excluded.subagent_type,
+          description = excluded.description,
+          status = excluded.status,
+          latest_summary = excluded.latest_summary,
+          latest_tool_name = excluded.latest_tool_name,
+          stream_availability = excluded.stream_availability,
+          updated_at = excluded.updated_at,
+          completed_at = excluded.completed_at
+      `),
+      insertEvent: sqlite.prepare(`
+        INSERT OR IGNORE INTO claudecode_subagent_events (
+          id, activity_id, type, status, summary, tool_name, task_id, parent_tool_use_id, timestamp
+        ) VALUES (
+          @id, @activityId, @type, @status, @summary, @toolName, @taskId, @parentToolUseId, @timestamp
+        )
+      `),
+      // Finished activities keep the same history depth as live ones.
+      trimEvents: sqlite.prepare(`
+        DELETE FROM claudecode_subagent_events
+        WHERE activity_id = @activityId
+          AND id NOT IN (
+            SELECT id FROM claudecode_subagent_events
+            WHERE activity_id = @activityId
+            ORDER BY timestamp DESC
+            LIMIT @limit
+          )
+      `),
+    };
+    statementsByDb.set(sqlite, statements);
+  }
+  return statements;
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(flushPendingSubagentWrites, FLUSH_INTERVAL_MS);
+  flushTimer.unref?.();
+}
+
+/** Write queued activity and event rows. Exported for shutdown hooks and tests. */
+export function flushPendingSubagentWrites() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (pendingActivities.size === 0 && pendingEvents.length === 0) return;
+
+  const activitiesToWrite = [...pendingActivities.values()];
+  const eventsToWrite = pendingEvents;
+  pendingActivities.clear();
+  pendingEvents = [];
+
   const sqlite = getDb();
   if (!sqlite) return;
   try {
-    sqlite.prepare(`
-      INSERT INTO claudecode_subagent_activities (
-        id, user_id, session_id, run_id, character_id, parent_tool_use_id, task_id,
-        subagent_name, subagent_type, description, status, latest_summary, latest_tool_name,
-        stream_availability, source, started_at, updated_at, completed_at
-      ) VALUES (
-        @id, @userId, @sessionId, @runId, @characterId, @parentToolUseId, @taskId,
-        @subagentName, @subagentType, @description, @status, @latestSummary, @latestToolName,
-        @streamAvailability, @source, @startedAt, @updatedAt, @completedAt
-      )
-      ON CONFLICT(id) DO UPDATE SET
-        run_id = excluded.run_id,
-        character_id = excluded.character_id,
-        task_id = excluded.task_id,
-        subagent_name = excluded.subagent_name,
-        subagent_type = excluded.subagent_type,
-        description = excluded.description,
-        status = excluded.status,
-        latest_summary = excluded.latest_summary,
-        latest_tool_name = excluded.latest_tool_name,
-        stream_availability = excluded.stream_availability,
-        updated_at = excluded.updated_at,
-        completed_at = excluded.completed_at
-    `).run({
-      ...activity,
-      runId: activity.runId ?? null,
-      characterId: activity.characterId ?? null,
-      taskId: activity.taskId ?? null,
-      subagentType: activity.subagentType ?? null,
-      description: activity.description ?? null,
-      latestToolName: activity.latestToolName ?? null,
-      completedAt: activity.completedAt ?? null,
-    });
+    const statements = getStatements(sqlite);
+    sqlite.transaction(() => {
+      for (const activity of activitiesToWrite) {
+        statements.upsertActivity.run({
+          ...activity,
+          runId: activity.runId ?? null,
+          characterId: activity.characterId ?? null,
+          taskId: activity.taskId ?? null,
+          subagentType: activity.subagentType ?? null,
+          description: activity.description ?? null,
+          latestToolName: activity.latestToolName ?? null,
+          completedAt: activity.completedAt ?? null,
+        });
+      }
+      for (const event of eventsToWrite) {
+        statements.insertEvent.run({
+          ...event,
+          toolName: event.toolName ?? null,
+          taskId: event.taskId ?? null,
+          parentToolUseId: event.parentToolUseId ?? null,
+        });
+      }
+      for (const activity of activitiesToWrite) {
+        if (activity.completedAt) {
+          statements.trimEvents.run({ activityId: activity.id, limit: MAX_EVENTS_PER_ACTIVITY });
+        }
+      }
+    })();
   } catch (error) {
-    console.debug("[ClaudeCode] Failed to persist native sub-agent activity:", error);
+    console.debug("[ClaudeCode] Failed to persist native sub-agent history:", error);
   }
 }
 
+function persistActivity(activity: ClaudeCodeSubagentActivity) {
+  if (!dbEnabled()) return;
+  pendingActivities.set(activity.id, activity);
+  scheduleFlush();
+}
+
 function persistEvent(event: ClaudeCodeSubagentEvent) {
-  const sqlite = getDb();
-  if (!sqlite) return;
-  try {
-    sqlite.prepare(`
-      INSERT OR IGNORE INTO claudecode_subagent_events (
-        id, activity_id, type, status, summary, tool_name, task_id, parent_tool_use_id, timestamp
-      ) VALUES (
-        @id, @activityId, @type, @status, @summary, @toolName, @taskId, @parentToolUseId, @timestamp
-      )
-    `).run({
-      ...event,
-      toolName: event.toolName ?? null,
-      taskId: event.taskId ?? null,
-      parentToolUseId: event.parentToolUseId ?? null,
-    });
-  } catch (error) {
-    console.debug("[ClaudeCode] Failed to persist native sub-agent event:", error);
-  }
+  if (!dbEnabled()) return;
+  pendingEvents.push(event);
+  scheduleFlush();
 }
 
 function now() {
@@ -411,6 +490,7 @@ export function recordClaudeCodeSubagentFinished(input: RecordActivityInput & { 
 
 export function getClaudeCodeSubagentSnapshot(input: { userId: string; sessionId?: string }): ClaudeCodeSubagentSnapshot {
   cleanupExpired();
+  flushPendingSubagentWrites();
   const sqlite = getDb();
   if (sqlite) {
     try {
@@ -421,11 +501,14 @@ export function getClaudeCodeSubagentSnapshot(input: { userId: string; sessionId
       ).all(...(input.sessionId ? [input.userId, input.sessionId] : [input.userId])) as ActivityRow[];
       const persistedActivities = rows.map(activityFromRow);
       const persistedEvents: Record<string, ClaudeCodeSubagentEvent[]> = {};
+      // Newest events only, matching the in-memory cap.
       const eventQuery = sqlite.prepare(
-        "SELECT * FROM claudecode_subagent_events WHERE activity_id = ? ORDER BY timestamp ASC",
+        "SELECT * FROM claudecode_subagent_events WHERE activity_id = ? ORDER BY timestamp DESC LIMIT ?",
       );
       for (const activity of persistedActivities) {
-        persistedEvents[activity.id] = (eventQuery.all(activity.id) as EventRow[]).map(eventFromRow);
+        persistedEvents[activity.id] = (eventQuery.all(activity.id, MAX_EVENTS_PER_ACTIVITY) as EventRow[])
+          .reverse()
+          .map(eventFromRow);
         activities.set(activity.id, activity);
         activityByParentToolUseId.set(activity.parentToolUseId, activity.id);
         if (activity.taskId) activityByTaskId.set(activity.taskId, activity.id);
@@ -461,6 +544,10 @@ export function clearClaudeCodeSubagentActivityForTests() {
   activityByTaskId.clear();
   for (const timer of streamFallbackTimers.values()) clearTimeout(timer);
   streamFallbackTimers.clear();
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  pendingActivities.clear();
+  pendingEvents = [];
   getDb()?.exec(`
     DELETE FROM claudecode_subagent_events;
     DELETE FROM claudecode_subagent_activities;

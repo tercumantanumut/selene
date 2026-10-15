@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { getCanonicalToolName, humanizeToolName } from "@/components/assistant-ui/tool-name-utils";
+import { describe, expect, it, vi } from "vitest";
+import {
+  getCanonicalToolName,
+  humanizeToolName,
+  loadToolNameCache,
+} from "@/components/assistant-ui/tool-name-utils";
+
+const resilientFetchMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/utils/resilient-fetch", () => ({
+  resilientFetch: resilientFetchMock,
+}));
 
 describe("getCanonicalToolName", () => {
   it("strips MCP server prefix from tool names", () => {
@@ -48,3 +57,20 @@ describe("humanizeToolName", () => {
   });
 });
 
+
+describe("loadToolNameCache", () => {
+  it("issues a single fetch for concurrent callers", async () => {
+    resilientFetchMock.mockResolvedValue({
+      data: { tools: [{ id: "readFile", displayName: "Read File" }] },
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => loadToolNameCache()),
+    );
+
+    expect(resilientFetchMock).toHaveBeenCalledTimes(1);
+    for (const map of results) {
+      expect(map).toEqual({ readFile: "Read File" });
+    }
+  });
+});

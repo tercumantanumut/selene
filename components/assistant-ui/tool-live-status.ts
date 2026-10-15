@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useRef, useSyncExternalStore } from "react";
 import type { TaskEvent, TaskProgressEvent } from "@/lib/background-tasks/types";
 import { getCanonicalToolName } from "./tool-name-utils";
 
@@ -657,62 +657,144 @@ export function getFallbackToolPhase(result: unknown, isRunning: boolean): LiveT
   return "completed";
 }
 
-export function useLiveToolStatuses(sessionId: string | undefined) {
-  const [statusByToolCallId, setStatusByToolCallId] = useState<Record<string, LiveToolStatus>>({});
+// ---------------------------------------------------------------------------
+// Shared live-status store
+//
+// A long thread mounts one AssistantMessage per turn and one ToolCallGroup per
+// tool group. Each used to add its own window listener and build statuses
+// itself, so every progress event ran hundreds of times and re-rendered every
+// subscriber. One listener now feeds a per-session map, and each component
+// subscribes only to the tool calls it shows.
+// ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    if (!sessionId || typeof window === "undefined") return;
+type LiveStatusMap = Record<string, LiveToolStatus>;
 
-    const handleProgress = (event: Event) => {
-      const detail = (event as CustomEvent<TaskEvent>).detail;
-      if (!detail || detail.eventType !== "task:progress" || detail.sessionId !== sessionId) return;
+interface LiveStatusSessionEntry {
+  statuses: LiveStatusMap;
+  listeners: Set<() => void>;
+}
 
-      const status = buildLiveStatusFromProgress(detail);
-      if (!status || !status.toolCallId) return;
-      if (detail.progressContentProjectionOnly && detail.progressContentLimited && status.phase !== "completed" && status.phase !== "error") {
-        return;
-      }
+const liveStatusSessions = new Map<string, LiveStatusSessionEntry>();
+let removeWindowProgressListener: (() => void) | null = null;
 
-      setStatusByToolCallId((previous) => {
-        const existing = previous[status.toolCallId!];
+function mergeLiveStatus(existing: LiveToolStatus | undefined, status: LiveToolStatus): LiveToolStatus | null {
+  // For Agent tool calls: carry startedAt across updates, compute elapsedMs on completion.
+  let enriched = status;
+  if (status.canonicalToolName === "Agent") {
+    const now = Date.now();
+    if (status.phase === "preparing" || status.phase === "running") {
+      enriched = { ...status, startedAt: existing?.startedAt ?? now };
+    } else {
+      const startedAt = existing?.startedAt;
+      enriched = {
+        ...status,
+        startedAt,
+        elapsedMs: startedAt != null ? now - startedAt : undefined,
+      };
+    }
+  }
 
-        // For Agent tool calls: carry startedAt across updates, compute elapsedMs on completion.
-        let enriched = status;
-        if (status.canonicalToolName === "Agent") {
-          const now = Date.now();
-          if (status.phase === "preparing" || status.phase === "running") {
-            enriched = { ...status, startedAt: existing?.startedAt ?? now };
-          } else {
-            const startedAt = existing?.startedAt;
-            enriched = {
-              ...status,
-              startedAt,
-              elapsedMs: startedAt != null ? now - startedAt : undefined,
-            };
-          }
-        }
+  if (
+    existing &&
+    existing.phase === enriched.phase &&
+    existing.label === enriched.label &&
+    existing.detail === enriched.detail &&
+    existing.argsPreview === enriched.argsPreview &&
+    existing.outputPreview === enriched.outputPreview &&
+    existing.elapsedMs === enriched.elapsedMs
+  ) {
+    return null;
+  }
+  return enriched;
+}
 
-        if (
-          existing &&
-          existing.phase === enriched.phase &&
-          existing.label === enriched.label &&
-          existing.detail === enriched.detail &&
-          existing.argsPreview === enriched.argsPreview &&
-          existing.outputPreview === enriched.outputPreview &&
-          existing.elapsedMs === enriched.elapsedMs
-        ) {
-          return previous;
-        }
-        return {
-          ...previous,
-          [enriched.toolCallId!]: enriched,
-        };
-      });
-    };
+function handleWindowProgress(event: Event): void {
+  const detail = (event as CustomEvent<TaskEvent>).detail;
+  if (!detail || detail.eventType !== "task:progress" || !detail.sessionId) return;
+  const entry = liveStatusSessions.get(detail.sessionId);
+  if (!entry) return;
 
-    window.addEventListener("background-task-progress", handleProgress as EventListener);
-    return () => window.removeEventListener("background-task-progress", handleProgress as EventListener);
-  }, [sessionId]);
+  const status = buildLiveStatusFromProgress(detail);
+  if (!status || !status.toolCallId) return;
+  if (detail.progressContentProjectionOnly && detail.progressContentLimited && status.phase !== "completed" && status.phase !== "error") {
+    return;
+  }
 
-  return useMemo(() => statusByToolCallId, [statusByToolCallId]);
+  const merged = mergeLiveStatus(entry.statuses[status.toolCallId], status);
+  if (!merged) return;
+  entry.statuses = { ...entry.statuses, [status.toolCallId]: merged };
+  for (const listener of entry.listeners) listener();
+}
+
+function subscribeLiveStatuses(sessionId: string, listener: () => void): () => void {
+  let entry = liveStatusSessions.get(sessionId);
+  if (!entry) {
+    entry = { statuses: {}, listeners: new Set() };
+    liveStatusSessions.set(sessionId, entry);
+  }
+  entry.listeners.add(listener);
+
+  if (!removeWindowProgressListener && typeof window !== "undefined") {
+    window.addEventListener("background-task-progress", handleWindowProgress);
+    removeWindowProgressListener = () =>
+      window.removeEventListener("background-task-progress", handleWindowProgress);
+  }
+
+  return () => {
+    const current = liveStatusSessions.get(sessionId);
+    if (!current) return;
+    current.listeners.delete(listener);
+    if (current.listeners.size === 0) {
+      liveStatusSessions.delete(sessionId);
+    }
+    if (liveStatusSessions.size === 0 && removeWindowProgressListener) {
+      removeWindowProgressListener();
+      removeWindowProgressListener = null;
+    }
+  };
+}
+
+const EMPTY_LIVE_STATUSES: LiveStatusMap = {};
+
+/**
+ * Live statuses for `toolCallIds` in a session. The returned object keeps its
+ * identity until one of those tool calls gets a new status, so unrelated
+ * progress events do not re-render the caller.
+ */
+export function useLiveToolStatuses(
+  sessionId: string | undefined,
+  toolCallIds: readonly string[]
+): LiveStatusMap {
+  const selectionRef = useRef<LiveStatusMap>(EMPTY_LIVE_STATUSES);
+
+  const subscribe = useCallback(
+    (listener: () => void) => (sessionId ? subscribeLiveStatuses(sessionId, listener) : () => {}),
+    [sessionId]
+  );
+
+  const getSnapshot = useCallback((): LiveStatusMap => {
+    const statuses = sessionId ? liveStatusSessions.get(sessionId)?.statuses : undefined;
+    const previous = selectionRef.current;
+    if (!statuses) {
+      selectionRef.current = EMPTY_LIVE_STATUSES;
+      return EMPTY_LIVE_STATUSES;
+    }
+
+    let changed = false;
+    let count = 0;
+    const next: LiveStatusMap = {};
+    for (const id of toolCallIds) {
+      const status = statuses[id];
+      if (!status) continue;
+      next[id] = status;
+      count++;
+      if (previous[id] !== status) changed = true;
+    }
+    if (!changed && count === Object.keys(previous).length) return previous;
+
+    selectionRef.current = count === 0 ? EMPTY_LIVE_STATUSES : next;
+    return selectionRef.current;
+  }, [sessionId, toolCallIds]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_LIVE_STATUSES);
 }

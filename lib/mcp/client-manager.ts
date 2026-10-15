@@ -16,6 +16,7 @@ import { onFolderChange } from "@/lib/vectordb/folder-events";
 import { taskRegistry } from "@/lib/background-tasks/registry";
 import { hasFilesystemPathArg, resolveMCPConfig } from "./mcp-config-resolver";
 import { createMCPOAuthProvider, getMCPOAuthStatus } from "./oauth-provider";
+import { GHOST_OS_SERVER_NAME } from "@/lib/ghost-os/config";
 
 // Re-export resolveMCPConfig so existing callers importing from client-manager still work
 export { resolveMCPConfig } from "./mcp-config-resolver";
@@ -79,6 +80,17 @@ class MCPClientManager {
     /** Default timeout for tool calls in milliseconds (5 minutes) */
     private readonly toolCallTimeoutMs: number = 300000;
 
+    /**
+     * Idle stdio servers are stopped (each `npx` server is an npm + node pair,
+     * ~95 MB) and revived on the next tool call or chat request.
+     */
+    private readonly idleShutdownMs: number = 15 * 60 * 1000;
+    private lastUsedAt: Map<string, number> = new Map();
+    private inFlightCalls: Map<string, number> = new Map();
+    /** Config and context of servers stopped for idleness, used to revive them. */
+    private idleSuspended: Map<string, { config: ResolvedMCPServer; characterId?: string }> = new Map();
+    private idleSweepTimer: NodeJS.Timeout | null = null;
+
     /** Track reload state per character */
     private reloadState: Map<string, {
         isReloading: boolean;
@@ -112,6 +124,31 @@ class MCPClientManager {
             // because SYNCED_FOLDERS_ARRAY and SYNCED_FOLDERS change on any folder update.
             await this.reconnectForCharacter(characterId);
         });
+
+        this.idleSweepTimer = setInterval(() => {
+            void this.suspendIdleServers();
+        }, 60 * 1000);
+        this.idleSweepTimer.unref?.();
+    }
+
+    /** Stop stdio servers that have not been used for `idleShutdownMs`. */
+    private async suspendIdleServers(): Promise<void> {
+        const now = Date.now();
+        for (const serverName of this.getConnectedServers()) {
+            const config = this.serverConfigs.get(serverName);
+            if (!config || config.type !== "stdio") continue;
+            // Ghost OS keeps desktop-automation state across calls.
+            if (serverName === GHOST_OS_SERVER_NAME) continue;
+            if ((this.inFlightCalls.get(serverName) ?? 0) > 0) continue;
+            if (this.connectingServers.has(serverName)) continue;
+            const lastUsed = this.lastUsedAt.get(serverName) ?? now;
+            if (now - lastUsed < this.idleShutdownMs) continue;
+
+            const characterId = this.serverCharacterContext.get(serverName);
+            console.log(`[MCP] Stopping idle server ${serverName} (unused for ${Math.round((now - lastUsed) / 60000)}m)`);
+            await this.disconnect(serverName);
+            this.idleSuspended.set(serverName, { config, characterId });
+        }
     }
 
     static getInstance(): MCPClientManager {
@@ -331,8 +368,17 @@ class MCPClientManager {
         // Skip if already connected with same context
         if (this.isConnected(serverName)) {
             const existingContext = this.serverCharacterContext.get(serverName);
+            // A different character only matters if it resolves to a different
+            // command/env/args (e.g. other synced folders). Delegations switch
+            // character on every hop, and respawning identical servers each
+            // time costs a full npx start per server.
+            const sameResolvedConfig =
+                JSON.stringify(this.serverConfigs.get(serverName)) === JSON.stringify(config);
+            if (existingContext !== characterId && sameResolvedConfig) {
+                this.serverCharacterContext.set(serverName, characterId);
+            }
             // If connected with same character context (or both undefined), skip reconnection
-            if (existingContext === characterId) {
+            if (existingContext === characterId || sameResolvedConfig) {
                 console.log(`[MCP] Server ${serverName} already connected with same context, skipping`);
                 return this.status.get(serverName) || {
                     serverName,
@@ -591,6 +637,7 @@ class MCPClientManager {
             // re-spawn this server without re-resolving the whole character
             // config (the UI's Reconnect button calls us with just a name).
             this.serverConfigs.set(serverName, config);
+            this.lastUsedAt.set(serverName, Date.now());
 
             const status: MCPServerStatus = {
                 serverName,
@@ -657,6 +704,8 @@ class MCPClientManager {
         this.tools.delete(serverName);
         this.status.delete(serverName);
         this.serverConfigs.delete(serverName);
+        this.lastUsedAt.delete(serverName);
+        this.idleSuspended.delete(serverName);
 
         if (wasConnected) {
             this.emitLifecycle({ type: "disconnected", serverName });
@@ -849,10 +898,19 @@ class MCPClientManager {
         toolName: string,
         args: Record<string, unknown>
     ): Promise<unknown> {
-        const client = this.clients.get(serverName);
+        let client = this.clients.get(serverName);
+        const suspended = client ? undefined : this.idleSuspended.get(serverName);
+        if (suspended) {
+            console.log(`[MCP] Reviving idle server ${serverName} for ${toolName}`);
+            await this.connect(serverName, suspended.config, suspended.characterId);
+            client = this.clients.get(serverName);
+        }
         if (!client) {
             throw new Error(`MCP server "${serverName}" is not connected`);
         }
+
+        this.lastUsedAt.set(serverName, Date.now());
+        this.inFlightCalls.set(serverName, (this.inFlightCalls.get(serverName) ?? 0) + 1);
 
         console.log(`[MCP] Executing ${serverName}:${toolName} with args:`, args);
 
@@ -915,6 +973,8 @@ class MCPClientManager {
             if (timeoutId !== undefined) {
                 clearTimeout(timeoutId);
             }
+            this.inFlightCalls.set(serverName, Math.max(0, (this.inFlightCalls.get(serverName) ?? 1) - 1));
+            this.lastUsedAt.set(serverName, Date.now());
         }
     }
 

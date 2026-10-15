@@ -27,7 +27,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { ContextWindowManager } from "@/lib/context-window";
-import { getSession } from "@/lib/db/queries";
+import { getSession, getSessionMessagesFingerprint } from "@/lib/db/queries";
 import { requireAuth } from "@/lib/auth/local-auth";
 import { getSessionModelIdForSession, getSessionProviderForSession } from "@/lib/ai/session-model-resolver";
 import type { LLMProvider } from "@/lib/ai/provider-types";
@@ -35,6 +35,26 @@ import type { LLMProvider } from "@/lib/ai/provider-types";
 type RouteParams = {
   params: Promise<{ id: string }>;
 };
+
+// The UI polls this every few seconds during a run, and computing it parses
+// and re-serializes every non-compacted message. Reuse the last result until
+// the session's messages, summary or model change. The TTL bounds staleness
+// for inputs outside the key (e.g. context-window settings).
+const STATUS_CACHE_MAX_ENTRIES = 50;
+const STATUS_CACHE_TTL_MS = 60_000;
+const statusCache = new Map<
+  string,
+  { key: string; body: Record<string, unknown>; storedAt: number }
+>();
+
+function rememberStatus(sessionId: string, key: string, body: Record<string, unknown>): void {
+  statusCache.delete(sessionId);
+  statusCache.set(sessionId, { key, body, storedAt: Date.now() });
+  if (statusCache.size > STATUS_CACHE_MAX_ENTRIES) {
+    const oldest = statusCache.keys().next().value;
+    if (oldest !== undefined) statusCache.delete(oldest);
+  }
+}
 
 export async function GET(
   request: NextRequest,
@@ -54,6 +74,18 @@ export async function GET(
     const modelId = await getSessionModelIdForSession(sessionMetadata);
     const provider: LLMProvider = await getSessionProviderForSession(sessionMetadata);
 
+    const cacheKey = [
+      await getSessionMessagesFingerprint(sessionId),
+      session.updatedAt,
+      session.summary?.length ?? 0,
+      modelId,
+      provider,
+    ].join("|");
+    const cached = statusCache.get(sessionId);
+    if (cached?.key === cacheKey && Date.now() - cached.storedAt < STATUS_CACHE_TTL_MS) {
+      return NextResponse.json(cached.body);
+    }
+
     // Estimate system prompt length (approximate)
     const estimatedSystemPromptLength = 5000;
 
@@ -66,7 +98,7 @@ export async function GET(
       { includeProviderReportedUsageFloor: true }
     );
 
-    return NextResponse.json({
+    const body = {
       percentage: status.usagePercentage * 100,
       status: status.status,
       currentTokens: status.currentTokens,
@@ -82,7 +114,9 @@ export async function GET(
         id: modelId,
         provider,
       },
-    });
+    };
+    rememberStatus(sessionId, cacheKey, body);
+    return NextResponse.json(body);
   } catch (error) {
     console.error("[Context Status API] Error:", error);
     return NextResponse.json(

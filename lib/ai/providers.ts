@@ -479,6 +479,8 @@ export function resolveProviderWithFallback(
  * The primary validation should happen at the API boundary (settings PUT,
  * session model-config PUT) via model-validation.ts.
  */
+const reportedIncompatibleModels = new Set<string>();
+
 export function resolveModelForProvider(
   model: string | null | undefined,
   provider: LLMProvider,
@@ -488,9 +490,14 @@ export function resolveModelForProvider(
   if (!model) return null;
   if (isModelCompatibleWithProvider(model, provider)) return model;
 
-  console.warn(
-    `[PROVIDERS] ${provider} selected but ${fieldName} "${model}" is incompatible, using ${fallback}`
-  );
+  // Resolution runs on every context-status poll; report each mismatch once.
+  const warningKey = `${provider}|${fieldName}|${model}|${fallback}`;
+  if (!reportedIncompatibleModels.has(warningKey)) {
+    reportedIncompatibleModels.add(warningKey);
+    console.warn(
+      `[PROVIDERS] ${provider} selected but ${fieldName} "${model}" is incompatible, using ${fallback}`
+    );
+  }
   return fallback;
 }
 

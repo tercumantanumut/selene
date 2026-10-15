@@ -396,18 +396,18 @@ const UserFileContent: FC<{ type: "file"; data: string; mimeType: string; filena
 export const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 flex-col items-end gap-2 pl-8"
+      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 flex-col items-end gap-2 pl-8 [content-visibility:auto] [contain-intrinsic-size:auto_120px]"
     >
       <div className="flex items-start gap-3">
         <UserActionBar />
         <div className="flex min-w-0 max-w-[80rem] flex-col gap-1">
           <div className="flex flex-wrap gap-2 justify-end empty:hidden">
             <MessagePrimitive.Attachments
-              components={{ Attachment: UserAttachment }}
+              components={USER_ATTACHMENT_COMPONENTS}
             />
           </div>
           <div className="rounded-2xl rounded-tr-sm bg-terminal-dark px-4 py-2.5 text-terminal-cream font-mono text-sm [overflow-wrap:anywhere]">
-            <MessagePrimitive.Content components={{ Text: UserMarkdownText, File: UserFileContent }} />
+            <MessagePrimitive.Content components={USER_CONTENT_COMPONENTS} />
           </div>
         </div>
         <Avatar className="size-8 shadow-sm">
@@ -438,7 +438,7 @@ export const SystemMessage: FC = () => {
     >
       <div className="flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-mono text-red-700 shadow-sm">
         <CircleStopIcon className="size-3" />
-        <MessagePrimitive.Content components={{ Text: MarkdownText }} />
+        <MessagePrimitive.Content components={SYSTEM_CONTENT_COMPONENTS} />
       </div>
     </MessagePrimitive.Root>
   );
@@ -499,13 +499,41 @@ export const EditComposer: FC = () => {
   );
 };
 
+// Stable component maps for MessagePrimitive. assistant-ui memoizes each part
+// by comparing `components.tools` by reference, so an inline object made every
+// part of a message re-render whenever the message itself re-rendered.
+const ASSISTANT_CONTENT_COMPONENTS = {
+  Text: MarkdownText,
+  Reasoning: ReasoningPart,
+  ToolGroup: ToolCallGroup,
+  tools: {
+    by_name: TOOL_BY_NAME_MAP,
+    Fallback: ToolFallback,
+  },
+  // Defensive no-op for the mid-stream live-prompt injection frame.
+  // The transport-level chunk-intercept already swallows these
+  // before they reach the reducer (see BufferedAssistantChatTransport
+  // in components/chat-provider.tsx), and sanitizeMessagesForInit
+  // filters any that slipped into persisted rows. This third layer
+  // renders nothing if one still shows up at runtime — the
+  // injected message is always rendered as a separate user
+  // UIMessage via setMessages, never as a part inside another row.
+  data: {
+    by_name: {
+      "injected-user-message": InjectedUserMessagePartNoop,
+    },
+  },
+};
+const USER_CONTENT_COMPONENTS = { Text: UserMarkdownText, File: UserFileContent };
+const USER_ATTACHMENT_COMPONENTS = { Attachment: UserAttachment };
+const SYSTEM_CONTENT_COMPONENTS = { Text: MarkdownText };
+
 export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = false }) => {
   const { character } = useCharacter();
   const displayChar = character || DEFAULT_CHARACTER;
   const lastVisibleActivityAtRef = useRef<number | null>(null);
   const lastActivityKeyRef = useRef<string>("");
   const sessionId = useChatSessionId();
-  const liveStatuses = useLiveToolStatuses(sessionId);
   const [isIdleThinking, setIsIdleThinking] = useState(false);
 
   // Clear stale tool-group expansion state on session/thread change
@@ -537,6 +565,15 @@ export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = fa
     () => isMessageInitiallyThinking(message?.status, message?.content),
     [message?.status, message?.content]
   );
+
+  const toolCallIds = useMemo(() => {
+    const content = message?.content;
+    if (!Array.isArray(content)) return [];
+    return content.flatMap((part) =>
+      part.type === "tool-call" && typeof part.toolCallId === "string" ? [part.toolCallId] : []
+    );
+  }, [message?.content]);
+  const liveStatuses = useLiveToolStatuses(sessionId, toolCallIds);
 
   const visibleActivitySignature = useMemo(
     () => getVisibleActivitySignature(message?.content, liveStatuses),
@@ -603,7 +640,7 @@ export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = fa
 
   return (
     <MessagePrimitive.Root
-      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 gap-3 pr-8"
+      className="relative mb-6 flex w-full max-w-[80rem] min-w-0 gap-3 pr-8 [content-visibility:auto] [contain-intrinsic-size:auto_120px]"
     >
       <Avatar className="size-8 shrink-0 shadow-sm">
         {displayChar.avatarUrl || displayChar.primaryImageUrl ? (
@@ -620,7 +657,7 @@ export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = fa
             noiseIntensity={0.9}
             noisePatternAlpha={45}
             noisePatternSize={60}
-            noisePatternRefreshInterval={7}
+            noisePatternRefreshInterval={0}
             className="rounded-full"
           />
         </AvatarFallback>
@@ -637,30 +674,7 @@ export const AssistantMessage: FC<{ ttsEnabled?: boolean }> = ({ ttsEnabled = fa
               Thinking...
             </TextShimmer>
           )}
-          <MessagePrimitive.Content
-            components={{
-              Text: MarkdownText,
-              Reasoning: ReasoningPart,
-              ToolGroup: ToolCallGroup,
-              tools: {
-                by_name: TOOL_BY_NAME_MAP,
-                Fallback: ToolFallback,
-              },
-              // Defensive no-op for the mid-stream live-prompt injection frame.
-              // The transport-level chunk-intercept already swallows these
-              // before they reach the reducer (see BufferedAssistantChatTransport
-              // in components/chat-provider.tsx), and sanitizeMessagesForInit
-              // filters any that slipped into persisted rows. This third layer
-              // renders nothing if one still shows up at runtime — the
-              // injected message is always rendered as a separate user
-              // UIMessage via setMessages, never as a part inside another row.
-              data: {
-                by_name: {
-                  "injected-user-message": InjectedUserMessagePartNoop,
-                },
-              },
-            }}
-          />
+          <MessagePrimitive.Content components={ASSISTANT_CONTENT_COMPONENTS} />
         </div>
 
         {/* YouTube video preview for any YouTube URLs in the message */}

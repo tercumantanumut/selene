@@ -30,6 +30,7 @@ function Noise({
         if (!ctx) return;
 
         let frame = 0;
+        let hasPattern = false;
         const patternCanvas = document.createElement("canvas");
         patternCanvas.width = patternSize;
         patternCanvas.height = patternSize;
@@ -55,6 +56,8 @@ function Noise({
             canvas.width = newCssWidth * dpr;
             canvas.height = newCssHeight * dpr;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            // Resizing clears the canvas; repaint so static grain survives.
+            if (hasPattern) drawGrain();
         };
 
         const updatePattern = () => {
@@ -66,6 +69,7 @@ function Noise({
                 patternData.data[i + 3] = patternAlpha;
             }
             patternCtx.putImageData(patternData, 0, 0);
+            hasPattern = true;
         };
 
         const drawGrain = () => {
@@ -93,8 +97,11 @@ function Noise({
             ctx.restore();
         };
 
-        let animationFrameId: number;
+        let animationFrameId = 0;
+        let isVisible = true;
         const loop = () => {
+            animationFrameId = 0;
+            if (!isVisible) return;
             if (
                 canvasCssSizeRef.current.width > 0 &&
                 canvasCssSizeRef.current.height > 0
@@ -110,7 +117,20 @@ function Noise({
 
         window.addEventListener("resize", resize);
         resize();
+
+        // Animated grain only runs while the canvas is on screen; a long
+        // thread can mount dozens of these and each loop ticks at 60 Hz.
+        let observer: IntersectionObserver | null = null;
         if (patternRefreshInterval > 0) {
+            if (typeof IntersectionObserver !== "undefined") {
+                observer = new IntersectionObserver((entries) => {
+                    isVisible = entries.some((entry) => entry.isIntersecting);
+                    if (isVisible && !animationFrameId) {
+                        animationFrameId = window.requestAnimationFrame(loop);
+                    }
+                });
+                observer.observe(canvas);
+            }
             loop();
         } else {
             updatePattern();
@@ -119,6 +139,7 @@ function Noise({
 
         return () => {
             window.removeEventListener("resize", resize);
+            observer?.disconnect();
             if (animationFrameId) {
                 window.cancelAnimationFrame(animationFrameId);
             }

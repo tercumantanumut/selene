@@ -1,7 +1,7 @@
 import { db } from "./sqlite-client";
 import { sessions, agentRuns, messages } from "./sqlite-schema";
 import type { NewSession, Session } from "./sqlite-schema";
-import { eq, desc, asc, and, lt, sql, inArray, type SQL } from "drizzle-orm";
+import { eq, desc, asc, and, gte, lt, sql, inArray, type SQL } from "drizzle-orm";
 
 type SessionMetadataShape = {
   characterId?: string;
@@ -68,6 +68,41 @@ export async function getSessionWithMessages(id: string) {
   });
 
   return { session, messages: msgs };
+}
+
+/**
+ * Incremental variant of getSessionWithMessages for pollers.
+ *
+ * Returns the ordered ids of every message (so callers can detect inserts,
+ * deletes and reordering) plus full rows only for messages updated at or after
+ * `since`. Rows written before `updated_at` existed have NULL and are treated
+ * as unchanged.
+ */
+export async function getSessionMessagesSince(id: string, since: string) {
+  const session = await db.query.sessions.findFirst({
+    where: eq(sessions.id, id),
+  });
+
+  if (!session) return null;
+
+  const ordering = [
+    asc(sql`case when ${messages.orderingIndex} is null then 1 else 0 end`),
+    asc(messages.orderingIndex),
+    asc(messages.createdAt),
+  ];
+
+  const idRows = await db
+    .select({ id: messages.id })
+    .from(messages)
+    .where(eq(messages.sessionId, id))
+    .orderBy(...ordering);
+
+  const changed = await db.query.messages.findMany({
+    where: and(eq(messages.sessionId, id), gte(messages.updatedAt, since)),
+    orderBy: ordering,
+  });
+
+  return { session, ids: idRows.map((row) => row.id), messages: changed };
 }
 
 export async function listSessions(userId?: string, limit = 100) {

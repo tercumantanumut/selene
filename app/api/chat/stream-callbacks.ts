@@ -32,6 +32,7 @@ import {
   buildCanonicalAssistantContentFromSteps,
   mergeCanonicalAssistantContent,
   countCanonicalTruncationMarkers,
+  stripRedundantArgsText,
   stubEphemeralToolResults,
 } from "./canonical-content";
 import { estimateMessageTokens } from "@/lib/utils";
@@ -262,9 +263,9 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
     // turns (e.g. Ghost OS screenshots, large AX trees). Passing sessionId
     // lets the stub preserve the full primary text in the TruncatedContentStore
     // so the next turn can call retrieveFullContent({ contentId }) on replay.
-    const content = stubEphemeralToolResults(mergedContent, {
+    const content = stripRedundantArgsText(stubEphemeralToolResults(mergedContent, {
       sessionId: ctx.sessionId,
-    });
+    }));
     const canonicalTruncationCount = countCanonicalTruncationMarkers(content);
     if (canonicalTruncationCount > 0) {
       console.error(
@@ -588,9 +589,9 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
       // See note at the normal-completion write site — stubbing ephemeral
       // tool-results here keeps interrupted-turn DB rows small too. Pass
       // sessionId so the stub can mint a retrievable contentId.
-      const content = stubEphemeralToolResults(mergedContent, {
+      const content = stripRedundantArgsText(stubEphemeralToolResults(mergedContent, {
         sessionId: ctx.sessionId,
-      });
+      }));
       const canonicalTruncationCount =
         countCanonicalTruncationMarkers(content);
       if (canonicalTruncationCount > 0) {
