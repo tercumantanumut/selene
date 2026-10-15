@@ -21,7 +21,7 @@ const telemetrySchema = z.object({
   ]),
   characterId: z.string().optional(),
   skillId: z.string().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export async function POST(req: NextRequest) {

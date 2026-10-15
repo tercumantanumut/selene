@@ -61,7 +61,7 @@ export const listSkillsQuerySchema = z.object({
 });
 
 export const runSkillSchema = z.object({
-  parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().default({}),
+  parameters: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().default({}),
   schedule: z
     .object({
       name: z.string().min(1).max(120),
@@ -83,7 +83,7 @@ export const scheduleSkillSchema = z.object({
   scheduledAt: z.string().optional(),
   timezone: z.string().optional(),
   deliveryMethod: z.enum(["session", "channel", "email", "slack", "webhook"]).optional(),
-  deliveryConfig: z.record(z.unknown()).optional(),
+  deliveryConfig: z.record(z.string(), z.unknown()).optional(),
   createNewSessionPerRun: z.boolean().optional(),
-  promptVariables: z.record(z.string()).optional(),
+  promptVariables: z.record(z.string(), z.string()).optional(),
 });

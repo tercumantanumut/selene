@@ -48,16 +48,16 @@ const hookEventTypeSchema = z.enum([
 ]);
 
 export const pluginHooksConfigSchema = z.object({
-  hooks: z.record(hookEventTypeSchema, z.array(hookEntrySchema)).optional().default({}),
+  hooks: z.partialRecord(hookEventTypeSchema, z.array(hookEntrySchema)).optional().default({}),
   description: z.string().optional(),
 }).passthrough();
 
 const pluginMCPServerEntrySchema = z.object({
   command: z.string().max(4096).optional(),
   args: z.array(z.string().max(4096)).optional(),
-  env: z.record(z.string()).optional(),
+  env: z.record(z.string(), z.string()).optional(),
   url: z.string().url().optional(),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   type: z.enum(["http", "sse", "stdio"]).optional(),
 });
 
@@ -85,8 +85,8 @@ export const pluginManifestSchema = z.object({
   skills: z.union([z.string(), z.array(z.string())]).optional(),
   agents: z.union([z.string(), z.array(z.string())]).optional(),
   hooks: z.union([z.string(), pluginHooksConfigSchema]).optional(),
-  mcpServers: z.union([z.string(), z.record(pluginMCPServerEntrySchema)]).optional(),
-  lspServers: z.union([z.string(), z.record(pluginLSPServerEntrySchema)]).optional(),
+  mcpServers: z.union([z.string(), z.record(z.string(), pluginMCPServerEntrySchema)]).optional(),
+  lspServers: z.union([z.string(), z.record(z.string(), pluginLSPServerEntrySchema)]).optional(),
 }).passthrough();
 
 // =============================================================================
@@ -144,8 +144,8 @@ const marketplacePluginEntrySchema = z.object({
   commands: z.union([z.string(), z.array(z.string())]).optional(),
   agents: z.union([z.string(), z.array(z.string())]).optional(),
   hooks: z.union([z.string(), pluginHooksConfigSchema]).optional(),
-  mcpServers: z.union([z.string(), z.record(pluginMCPServerEntrySchema)]).optional(),
-  lspServers: z.union([z.string(), z.record(pluginLSPServerEntrySchema)]).optional(),
+  mcpServers: z.union([z.string(), z.record(z.string(), pluginMCPServerEntrySchema)]).optional(),
+  lspServers: z.union([z.string(), z.record(z.string(), pluginLSPServerEntrySchema)]).optional(),
 });
 
 export const marketplaceManifestSchema = z.object({
@@ -183,14 +183,14 @@ export const RESERVED_MARKETPLACE_NAMES = new Set([
 export const preToolUseHookInputSchema = z.object({
   hook_type: z.literal("PreToolUse"),
   tool_name: z.string().min(1),
-  tool_input: z.record(z.unknown()),
+  tool_input: z.record(z.string(), z.unknown()),
   session_id: z.string().optional(),
 });
 
 export const postToolUseHookInputSchema = z.object({
   hook_type: z.literal("PostToolUse"),
   tool_name: z.string().min(1),
-  tool_input: z.record(z.unknown()),
+  tool_input: z.record(z.string(), z.unknown()),
   tool_output: z.unknown().optional(),
   session_id: z.string().optional(),
 });
@@ -198,7 +198,7 @@ export const postToolUseHookInputSchema = z.object({
 export const postToolUseFailureHookInputSchema = z.object({
   hook_type: z.literal("PostToolUseFailure"),
   tool_name: z.string().min(1),
-  tool_input: z.record(z.unknown()),
+  tool_input: z.record(z.string(), z.unknown()),
   error: z.string(),
   session_id: z.string().optional(),
 });

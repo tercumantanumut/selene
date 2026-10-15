@@ -284,6 +284,21 @@ if (fs.existsSync(tailwindConfigSrc)) {
  * Copy a list of node_modules packages from rootDir into the standalone build.
  * Each entry: { name, src, dest } where src/dest are relative to node_modules.
  */
+function resolveAgentSdkPlatformPackageName() {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const platform = process.platform === 'win32' ? 'win32' : process.platform;
+    const baseName = `claude-agent-sdk-${platform}-${arch}`;
+    const candidates = platform === 'linux' ? [baseName, `${baseName}-musl`] : [baseName];
+
+    for (const candidate of candidates) {
+        if (fs.existsSync(path.join(rootDir, 'node_modules', '@anthropic-ai', candidate))) {
+            return candidate;
+        }
+    }
+
+    throw new Error(`Missing Claude Agent SDK platform package. Checked: ${candidates.join(', ')}`);
+}
+
 function copyNodeDependencies(deps) {
     for (const dep of deps) {
         console.log(`Copying ${dep.name} folder...`);
@@ -311,11 +326,17 @@ copyNodeDependencies([
 
 // 6. Copy lazy runtime dependencies that are intentionally kept out of
 // electron-dist/main.js but loaded from standalone/node_modules when needed.
+const agentSdkPlatformPackageName = resolveAgentSdkPlatformPackageName();
 copyNodeDependencies([
     { name: 'gpt-tokenizer', src: 'gpt-tokenizer', dest: 'gpt-tokenizer' },
     { name: '@huggingface/hub', src: '@huggingface/hub', dest: '@huggingface/hub' },
     { name: '@askalf/dario', src: '@askalf/dario', dest: '@askalf/dario' },
     { name: '@anthropic-ai/claude-agent-sdk', src: '@anthropic-ai/claude-agent-sdk', dest: '@anthropic-ai/claude-agent-sdk' },
+    {
+        name: `@anthropic-ai/${agentSdkPlatformPackageName}`,
+        src: `@anthropic-ai/${agentSdkPlatformPackageName}`,
+        dest: `@anthropic-ai/${agentSdkPlatformPackageName}`,
+    },
 ]);
 
 // 7. Copy Puppeteer and bundled Chromium for local web scraping
@@ -516,16 +537,34 @@ if (fs.existsSync(applyPatchLauncherSrc) && fs.existsSync(applyPatchRuntimeSrc))
     console.warn('  Warning: apply_patch shim sources missing, skipping apply_patch bundling');
 }
 
-// 12b. Ensure the bundled ripgrep binary remains executable in packaged builds.
-console.log('Ensuring bundled ripgrep binary is executable...');
+// 12b. Copy the ripgrep postinstall binary that Next.js tracing does not retain.
+console.log('Bundling ripgrep binary...');
+const ripgrepBinaryName = process.platform === 'win32' ? 'rg.exe' : 'rg';
+const ripgrepSource = path.join(rootDir, 'node_modules', '@vscode', 'ripgrep', 'bin', ripgrepBinaryName);
 const ripgrepBinDir = path.join(standaloneDir, 'node_modules', '@vscode', 'ripgrep', 'bin');
-const ripgrepBinary = path.join(ripgrepBinDir, process.platform === 'win32' ? 'rg.exe' : 'rg');
-if (fs.existsSync(ripgrepBinary)) {
-    ensureExecutable(ripgrepBinary);
-    console.log(`  Bundled ripgrep binary ready at ${ripgrepBinary}`);
-} else {
-    console.warn(`  Warning: bundled ripgrep binary missing at ${ripgrepBinary}`);
+const ripgrepBinary = path.join(ripgrepBinDir, ripgrepBinaryName);
+if (!fs.existsSync(ripgrepSource)) {
+    throw new Error(`Required ripgrep source binary is missing at ${ripgrepSource}. Run npm rebuild @vscode/ripgrep.`);
 }
+ensureDir(ripgrepBinDir);
+fs.copyFileSync(ripgrepSource, ripgrepBinary);
+ensureExecutable(ripgrepBinary);
+console.log(`  Bundled ripgrep binary ready at ${ripgrepBinary}`);
+
+// 12c. Ensure the Agent SDK platform executable survives packaging.
+const agentSdkExecutableName = process.platform === 'win32' ? 'claude.exe' : 'claude';
+const agentSdkExecutable = path.join(
+    standaloneDir,
+    'node_modules',
+    '@anthropic-ai',
+    agentSdkPlatformPackageName,
+    agentSdkExecutableName,
+);
+if (!fs.existsSync(agentSdkExecutable)) {
+    throw new Error(`Required Claude Agent SDK executable is missing at ${agentSdkExecutable}`);
+}
+ensureExecutable(agentSdkExecutable);
+console.log(`  Bundled Claude Code executable ready at ${agentSdkExecutable}`);
 
 // 13. Bundle ffmpeg static binary for audio conversion (whisper.cpp preprocessing)
 console.log('Bundling ffmpeg static binary...');

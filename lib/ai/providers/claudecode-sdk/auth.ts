@@ -324,13 +324,12 @@ async function readClaudeAgentSdkAuthStatusOnce(
 }
 
 /**
- * CLI fallback: runs `node cli.js auth status` and parses the output.
+ * CLI fallback: runs the bundled Claude Code executable with `auth status`.
  * Used when the SDK query approach fails (e.g. spawn issues on Windows).
  */
 async function readAuthStatusViaCli(
   timeoutMs: number,
 ): Promise<ClaudeAgentSdkAuthStatus | null> {
-  const nodeBinary = getNodeBinary();
   const cliPath = getCliPath();
   const { env } = getSdkExecutableConfig();
 
@@ -341,11 +340,10 @@ async function readAuthStatusViaCli(
     }, timeoutMs);
 
     const child = execFile(
-      nodeBinary,
-      [cliPath, "auth", "status"],
+      cliPath,
+      ["auth", "status"],
       {
         env: env as NodeJS.ProcessEnv,
-        shell: process.platform === "win32",
         windowsHide: true,
         timeout: timeoutMs,
       },

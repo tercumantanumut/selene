@@ -14,7 +14,7 @@ import { getChannelManager } from "@/lib/channels/manager";
 
 const updateSchema = z.object({
   displayName: z.string().trim().min(1).max(100).optional().nullable(),
-  config: z.record(z.any()).optional(),
+  config: z.record(z.string(), z.any()).optional(),
 });
 
 async function getAuthorizedConnection(req: Request, connectionId: string) {

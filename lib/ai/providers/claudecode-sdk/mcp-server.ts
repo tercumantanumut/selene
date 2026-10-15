@@ -116,7 +116,7 @@ function jsonSchemaToZodShape(
         zodType = z.array(z.unknown());
         break;
       case "object":
-        zodType = z.record(z.unknown());
+        zodType = z.record(z.string(), z.unknown());
         break;
       default:
         zodType = z.unknown();
