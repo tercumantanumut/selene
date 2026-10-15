@@ -1470,6 +1470,25 @@ export const ChatProvider: FC<ChatProviderProps> = ({
             }
           }
           const response = await fetch(input, mergedInit);
+          // Delegation auto-resume no-op: the server's atomic guard returns
+          // 204 when another run already owns delivery or the completion
+          // store was drained by a concurrent consumer. The AI SDK throws on
+          // an empty body, so synthesize a valid empty UI-message stream —
+          // the turn ends cleanly with no message appended and no error UI.
+          if (
+            response.status === 204 &&
+            typeof input === "string" &&
+            input === "/api/chat" &&
+            new Headers(mergedInit?.headers).get("X-Delegation-Auto-Resume") === "true"
+          ) {
+            return new Response("data: [DONE]\n\n", {
+              status: 200,
+              headers: {
+                "Content-Type": "text/event-stream",
+                "x-vercel-ai-ui-message-stream": "v1",
+              },
+            });
+          }
           if (!response.ok) {
             setTransportError(await parseTransportErrorResponse(response));
           }
@@ -1799,6 +1818,23 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     try {
       do {
         delegationAutoResumeQueuedRef.current = false;
+        // Re-verify pending before every submit. Double triggers (e.g.
+        // visibilitychange + SSE reconnect firing ~1s apart after
+        // wake-from-sleep) both land here; another consumer (a prior resume
+        // run's step-0 drain or the server fallback) may have already drained
+        // the store — submitting then would run a contentless model turn.
+        // Fail-open on fetch errors: the server's atomic 204 guard backstops.
+        if (sessionId) {
+          const pendingCheck = await fetch(
+            `/api/sessions/${encodeURIComponent(sessionId)}/delegation-completions`,
+            { method: "GET" },
+          )
+            .then((r) => (r.ok ? (r.json() as Promise<{ hasPending?: boolean }>) : null))
+            .catch(() => null);
+          if (pendingCheck && pendingCheck.hasPending === false) {
+            break;
+          }
+        }
         const submitted = await submitRetryMessage("delegation-completion", undefined, {
           "X-Delegation-Auto-Resume": "true",
           "X-Task-Source": "delegation-auto-resume",
@@ -1810,7 +1846,7 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     } finally {
       delegationAutoResumeInFlightRef.current = false;
     }
-  }, [submitRetryMessage]);
+  }, [submitRetryMessage, sessionId]);
 
   // Latest-ref for the SSE/poll effect below. `useChat` returns a fresh helpers
   // object on every render, which cascades through `submitRetryMessage` →
@@ -1834,31 +1870,69 @@ export const ChatProvider: FC<ChatProviderProps> = ({
     };
 
     let cancelled = false;
-    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-completions`, { method: "GET" })
-      .then((response) => response.ok ? response.json() as Promise<{ hasPending?: boolean }> : null)
-      .then((data) => {
-        if (!cancelled && data?.hasPending) {
-          handleDelegationCompleted();
-        }
-      })
-      .catch(() => {});
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectDelayMs = 1_000;
 
-    if (typeof EventSource === "undefined") {
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-events`);
-    eventSource.addEventListener("delegation-completed", handleDelegationCompleted);
-    eventSource.onerror = () => {
-      eventSource.close();
+    // Catch-up check for completions that arrived while disconnected
+    // (laptop sleep, dropped SSE, server restart). Runs on mount, on every
+    // SSE reconnect, and when the tab becomes visible again.
+    const checkPendingCompletions = () => {
+      void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-completions`, { method: "GET" })
+        .then((response) => response.ok ? response.json() as Promise<{ hasPending?: boolean }> : null)
+        .then((data) => {
+          if (!cancelled && data?.hasPending) {
+            handleDelegationCompleted();
+          }
+        })
+        .catch(() => {});
     };
+
+    const connect = () => {
+      if (cancelled || typeof EventSource === "undefined") return;
+      eventSource = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/delegation-events`);
+      eventSource.addEventListener("delegation-completed", handleDelegationCompleted);
+      eventSource.onopen = () => {
+        reconnectDelayMs = 1_000;
+      };
+      // Transient errors (network blip, sleep/wake, dev-server restart) must
+      // NOT permanently kill the subscription — reconnect with backoff and
+      // re-check pending completions missed while disconnected.
+      eventSource.onerror = () => {
+        eventSource?.close();
+        eventSource = null;
+        if (cancelled || reconnectTimer != null) return;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          checkPendingCompletions();
+          connect();
+        }, reconnectDelayMs);
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
+      };
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        checkPendingCompletions();
+      }
+    };
+
+    checkPendingCompletions();
+    connect();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       cancelled = true;
-      eventSource.removeEventListener("delegation-completed", handleDelegationCompleted);
-      eventSource.close();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (reconnectTimer != null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (eventSource) {
+        eventSource.removeEventListener("delegation-completed", handleDelegationCompleted);
+        eventSource.close();
+        eventSource = null;
+      }
     };
   }, [sessionId]);
 

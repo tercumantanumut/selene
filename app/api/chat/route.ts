@@ -46,6 +46,7 @@ import {
 } from "@/lib/background-tasks/live-prompt-helpers";
 import {
   drainDelegationCompletions,
+  hasPendingDelegationCompletions,
 } from "@/lib/ai/tools/delegation-completion-store";
 import { markDelegationResultDelivered } from "@/lib/ai/tools/delegation-delivery-registry";
 import { createHeartbeatStream } from "@/lib/utils/heartbeat-stream";
@@ -175,6 +176,7 @@ export async function POST(req: Request) {
   let chatTaskRegistered = false;
   let configuredProvider: string | undefined;
   let activeSessionId: string | undefined;
+  let activeCharacterId: string | null = null;
   let sessionId = "";
   let runId = "";
   let latestUserPromptText = "";
@@ -287,6 +289,7 @@ export async function POST(req: Request) {
     const providedSessionId = headerSessionId || bodySessionId;
 
     const characterId = req.headers.get("X-Character-Id");
+    activeCharacterId = characterId;
     const userTimezoneHeader = req.headers.get("X-User-Timezone")?.trim() || null;
     const taskSource = req.headers.get("X-Task-Source")?.toLowerCase();
     const isChannelSource = taskSource === "channel";
@@ -365,6 +368,31 @@ export async function POST(req: Request) {
     // otherwise land before the queue is registered and come back as 409
     // `no_active_run`. The reservation is rekeyed to the real agentRun.id
     // below via `promoteLivePromptQueueToRunId`.
+    // ── Delegation auto-resume atomic guard ─────────────────────────────────
+    // Must run synchronously, immediately before the reservation (no awaits in
+    // between), so the check-and-reserve pair is atomic w.r.t. the event loop.
+    // Two races end here as clean no-ops instead of empty/duplicate model runs:
+    //   1. A queue already exists → another run is active (user message,
+    //      frontend resume, or a prior fallback). Reserving would CLOBBER its
+    //      queue (reserveLivePromptQueueBySession drops "stale" entries).
+    //      Its step-0 drain / post-run re-check owns delivery.
+    //   2. Nothing pending → a concurrent consumer (frontend resume vs server
+    //      fallback, or double catch-up triggers after wake-from-sleep)
+    //      already drained the store. Running would produce a contentless turn.
+    // Callers tolerate 204: the server fallback treats ok+empty-body as done,
+    // and the client transport converts it to an empty UI-message stream.
+    if (isDelegationAutoResume) {
+      const activeQueueKey = getLivePromptQueueKeyBySession(sessionId);
+      const hasPending = hasPendingDelegationCompletions(sessionId);
+      if (activeQueueKey || !hasPending) {
+        console.debug(
+          `[CHAT API] Delegation auto-resume no-op for ${sessionId}: ` +
+          (activeQueueKey ? `run already active (queue=${activeQueueKey})` : "no pending completions"),
+        );
+        return new Response(null, { status: 204 });
+      }
+    }
+
     activeSessionId = sessionId;
     reserveLivePromptQueueBySession(sessionId);
 
@@ -504,6 +532,7 @@ export async function POST(req: Request) {
     // ── Create agent run ───────────────────────────────────────────────────────
     const resolvedCharacterId =
       characterId || ((sessionMetadata?.characterId as string | undefined) ?? undefined);
+    activeCharacterId = resolvedCharacterId ?? null;
 
     agentRun = await createAgentRun({
       sessionId,
@@ -1033,7 +1062,7 @@ export async function POST(req: Request) {
           const runStatus = shouldCancel ? "cancelled" : "failed";
           removeChatAbortController(agentRun.id);
           if (activeSessionId) {
-            await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
+            await handleUndrainedQueueMessages(agentRun.id, activeSessionId, activeCharacterId);
             removeLivePromptQueue(agentRun.id, activeSessionId);
           }
           await completeAgentRun(agentRun.id, runStatus, shouldCancel
@@ -2150,7 +2179,7 @@ export async function POST(req: Request) {
     if (activeSessionId) {
       try {
         if (agentRun?.id) {
-          await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
+          await handleUndrainedQueueMessages(agentRun.id, activeSessionId, activeCharacterId);
           removeLivePromptQueue(agentRun.id, activeSessionId);
         } else {
           const pendingKey = getLivePromptQueueKeyBySession(activeSessionId);
@@ -2158,7 +2187,7 @@ export async function POST(req: Request) {
             // handleUndrainedQueueMessages only uses its first arg as a map
             // lookup key — passing the pending placeholder key is safe and
             // drains any entries that raced in during reservation warmup.
-            await handleUndrainedQueueMessages(pendingKey, activeSessionId);
+            await handleUndrainedQueueMessages(pendingKey, activeSessionId, activeCharacterId);
           }
           clearLivePromptQueueBySession(activeSessionId);
         }

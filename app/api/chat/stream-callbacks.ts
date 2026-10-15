@@ -20,6 +20,8 @@ import { taskRegistry } from "@/lib/background-tasks/registry";
 import { removeChatAbortController } from "@/lib/background-tasks/chat-abort-registry";
 import { removeLivePromptQueue, drainLivePromptQueue } from "@/lib/background-tasks/live-prompt-queue-registry";
 import { signalUndrainedMessages } from "@/lib/background-tasks/undrained-signal";
+import { emitDelegationCompleted } from "@/lib/background-tasks/delegation-completion-signal";
+import { scheduleDelegationAutoResume } from "@/lib/background-tasks/delegation-auto-resume";
 import { nextOrderingIndex } from "@/lib/session/message-ordering";
 import { addDelegationCompletion } from "@/lib/ai/tools/delegation-completion-store";
 import { runStopHooks } from "@/lib/plugins/hook-integration";
@@ -66,6 +68,7 @@ import type { ContextInjectionTrackingMetadata } from "./context-injection";
 export async function handleUndrainedQueueMessages(
   runId: string,
   sessionId: string,
+  characterId?: string | null,
 ): Promise<void> {
   const undrained = drainLivePromptQueue(runId);
   if (undrained.length === 0) return;
@@ -85,11 +88,22 @@ export async function handleUndrainedQueueMessages(
       delegateName: entry.metadata?.delegateName || "Sub-agent",
       sessionId: "",
       initiatorSessionId: sessionId,
-      characterId: "",
+      characterId: characterId ?? "",
       completedAt: Date.now(),
       status: entry.metadata?.status,
       resultContent: entry.content,
     });
+  }
+
+  // These completions were appended to a live queue while the run was active,
+  // so `notifyInitiatorSessionOfCompletion` returned early WITHOUT emitting the
+  // SSE signal or scheduling the server fallback — the run was expected to
+  // drain them. It didn't (it ended/failed first), so trigger both here.
+  // Otherwise delivery would silently depend on an attached client again
+  // (mount-time catch-up), which is exactly the overnight-stall bug.
+  if (delegationEntries.length > 0) {
+    emitDelegationCompleted(sessionId);
+    scheduleDelegationAutoResume(sessionId, characterId ?? "");
   }
 
   // Persist non-delegation entries as user rows so they don't vanish after
@@ -207,7 +221,7 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
     }
 
     if (ctx.agentRun?.id) {
-      await handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId);
+      await handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId, ctx.characterId);
       removeChatAbortController(ctx.agentRun.id);
       removeLivePromptQueue(ctx.agentRun.id, ctx.sessionId);
     }
@@ -535,7 +549,7 @@ export function createOnAbortCallback(ctx: StreamCallbackContext) {
     }
 
     if (ctx.agentRun?.id) {
-      await handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId);
+      await handleUndrainedQueueMessages(ctx.agentRun.id, ctx.sessionId, ctx.characterId);
       removeChatAbortController(ctx.agentRun.id);
       removeLivePromptQueue(ctx.agentRun.id, ctx.sessionId);
     }
