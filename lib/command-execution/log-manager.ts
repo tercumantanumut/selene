@@ -101,6 +101,8 @@ export async function pruneTerminalLogs(
 ): Promise<number> {
     const logsDir = getLogsDir();
     let removed = 0;
+    let failed = 0;
+    let firstError: unknown;
     const entries = await fs.promises.readdir(logsDir);
     for (const name of entries) {
         if (!name.endsWith(".log")) continue;
@@ -111,9 +113,15 @@ export async function pruneTerminalLogs(
                 await fs.promises.unlink(logPath);
                 removed++;
             }
-        } catch {
-            // Raced with a writer or another prune; skip it.
+        } catch (error) {
+            // ENOENT: raced with another prune; the file is already gone.
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+            failed++;
+            firstError ??= error;
         }
+    }
+    if (failed > 0) {
+        console.error(`[TerminalLogManager] Failed to prune ${failed} terminal log(s):`, firstError);
     }
     return removed;
 }

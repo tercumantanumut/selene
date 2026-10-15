@@ -122,6 +122,7 @@ class MCPClientManager {
 
             // Reconnect on any change (added, removed, or primary_changed) 
             // because SYNCED_FOLDERS_ARRAY and SYNCED_FOLDERS change on any folder update.
+            await this.refreshSuspendedConfigs(characterId);
             await this.reconnectForCharacter(characterId);
         });
 
@@ -392,8 +393,12 @@ class MCPClientManager {
             }
         }
         
-        // Disconnect existing connection if any
+        // Disconnect existing connection if any. Keep an idle-suspension record
+        // through the restart so a failed revival can be retried on the next
+        // tool call; it is cleared once the connection succeeds.
+        const suspended = this.idleSuspended.get(serverName);
         await this.disconnect(serverName);
+        if (suspended) this.idleSuspended.set(serverName, suspended);
 
         // Wait a brief moment for OS to reclaim resources (ports/files)
         // This helps with servers like Linear that bind local ports
@@ -638,6 +643,7 @@ class MCPClientManager {
             // config (the UI's Reconnect button calls us with just a name).
             this.serverConfigs.set(serverName, config);
             this.lastUsedAt.set(serverName, Date.now());
+            this.idleSuspended.delete(serverName);
 
             const status: MCPServerStatus = {
                 serverName,
@@ -758,6 +764,56 @@ class MCPClientManager {
         return this.connect(serverName, config, characterId);
     }
 
+    /** Global + agent MCP config for a character, or null if it does not exist. */
+    private async loadCharacterMcpConfig(characterId: string): Promise<{
+        combinedConfig: Record<string, any>;
+        env: Record<string, string>;
+    } | null> {
+        // Dynamic imports to avoid circular dependencies
+        const { loadSettings } = await import("@/lib/settings/settings-manager");
+        const { getCharacter } = await import("@/lib/characters");
+
+        const settings = loadSettings();
+        const character = await getCharacter(characterId);
+        if (!character) return null;
+
+        const metadata = character.metadata as any;
+        const globalConfig = settings.mcpServers?.mcpServers || {};
+        const agentConfig = metadata?.mcpServers?.mcpServers || {};
+        return {
+            combinedConfig: { ...globalConfig, ...agentConfig },
+            env: settings.mcpEnvironment || {},
+        };
+    }
+
+    /**
+     * Re-resolve the saved config of this character's idle-suspended servers
+     * (synced-folder args may have changed) without spawning them. Servers
+     * that were removed or disabled lose their record so they cannot revive.
+     */
+    private async refreshSuspendedConfigs(characterId: string): Promise<void> {
+        const names = [...this.idleSuspended]
+            .filter(([, record]) => record.characterId === characterId)
+            .map(([name]) => name);
+        if (names.length === 0) return;
+
+        const loaded = await this.loadCharacterMcpConfig(characterId);
+        for (const serverName of names) {
+            const config = loaded?.combinedConfig[serverName];
+            if (!loaded || !config || config.enabled === false) {
+                this.idleSuspended.delete(serverName);
+                continue;
+            }
+            try {
+                const resolved = await resolveMCPConfig(serverName, config, loaded.env, characterId);
+                this.idleSuspended.set(serverName, { config: resolved, characterId });
+            } catch (error) {
+                console.error(`[MCP] Failed to refresh suspended config for ${serverName}:`, error);
+                this.idleSuspended.delete(serverName);
+            }
+        }
+    }
+
     /**
      * Reconnect all MCP servers for a specific character
      */
@@ -794,23 +850,12 @@ class MCPClientManager {
 
         console.log(`[MCP] Reconnecting ${serverNames.length} servers for character ${characterId} due to folder change...`);
 
-        // Dynamic imports to avoid circular dependencies
-        const { loadSettings } = await import("@/lib/settings/settings-manager");
-        const { getCharacter } = await import("@/lib/characters");
-
-        const settings = loadSettings();
-        const character = await getCharacter(characterId);
-
-        if (!character) {
+        const loaded = await this.loadCharacterMcpConfig(characterId);
+        if (!loaded) {
             console.warn(`[MCP] Character ${characterId} not found for reconnection`);
             return;
         }
-
-        const metadata = character.metadata as any;
-        const globalConfig = settings.mcpServers?.mcpServers || {};
-        const agentConfig = metadata?.mcpServers?.mcpServers || {};
-        const combinedConfig = { ...globalConfig, ...agentConfig };
-        const env = settings.mcpEnvironment || {};
+        const { combinedConfig, env } = loaded;
 
         for (const serverName of serverNames) {
             try {
@@ -1095,6 +1140,7 @@ class MCPClientManager {
         this.status.clear();
         this.transports.clear();
         this.serverConfigs.clear();
+        this.idleSuspended.clear();
 
         console.log("[MCP] All servers disconnected and state cleared");
     }
@@ -1114,6 +1160,15 @@ class MCPClientManager {
             if (!configuredServers.has(serverName)) {
                 console.log(`[MCP] Server "${serverName}" is no longer in config, disconnecting`);
                 await this.disconnect(serverName);
+                disconnectedServers.push(serverName);
+            }
+        }
+
+        // Idle-suspended servers are not connected, but would revive on the
+        // next tool call. Drop the saved config of any that left the config.
+        for (const serverName of [...this.idleSuspended.keys()]) {
+            if (!configuredServers.has(serverName)) {
+                this.idleSuspended.delete(serverName);
                 disconnectedServers.push(serverName);
             }
         }

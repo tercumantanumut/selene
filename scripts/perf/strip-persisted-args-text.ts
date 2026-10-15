@@ -52,7 +52,9 @@ const select = db.prepare(
    ORDER BY rowid LIMIT 500`,
 );
 const rowidOf = db.prepare(`SELECT rowid FROM messages WHERE id = ?`);
-const update = db.prepare(`UPDATE messages SET content = ? WHERE id = ?`);
+// Raw writes bypass Drizzle's $onUpdateFn; stamp updated_at so incremental
+// message polling picks up the rewritten rows.
+const update = db.prepare(`UPDATE messages SET content = ?, updated_at = ? WHERE id = ?`);
 
 let lastRowid = 0;
 let rowsChanged = 0;
@@ -81,7 +83,8 @@ for (;;) {
 
   if (apply && writes.length > 0) {
     db.transaction(() => {
-      for (const write of writes) update.run(write.content, write.id);
+      const updatedAt = new Date().toISOString();
+      for (const write of writes) update.run(write.content, updatedAt, write.id);
     })();
   }
 

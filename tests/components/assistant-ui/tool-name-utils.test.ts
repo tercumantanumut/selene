@@ -73,4 +73,38 @@ describe("loadToolNameCache", () => {
       expect(map).toEqual({ readFile: "Read File" });
     }
   });
+
+  it("retries after a failed load instead of caching an empty map", async () => {
+    vi.resetModules();
+    resilientFetchMock.mockReset();
+    const { loadToolNameCache: freshLoad } = await import("@/components/assistant-ui/tool-name-utils");
+
+    resilientFetchMock.mockResolvedValueOnce({ data: null, error: "HTTP 500", timedOut: false });
+    expect(await freshLoad()).toEqual({});
+
+    resilientFetchMock.mockResolvedValueOnce({
+      data: { tools: [{ id: "readFile", displayName: "Read File" }] },
+      error: null,
+      timedOut: false,
+    });
+    expect(await freshLoad()).toEqual({ readFile: "Read File" });
+    expect(await freshLoad()).toEqual({ readFile: "Read File" });
+    expect(resilientFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries after the loader throws", async () => {
+    vi.resetModules();
+    resilientFetchMock.mockReset();
+    const { loadToolNameCache: freshLoad } = await import("@/components/assistant-ui/tool-name-utils");
+
+    resilientFetchMock.mockRejectedValueOnce(new Error("boom"));
+    expect(await freshLoad()).toEqual({});
+
+    resilientFetchMock.mockResolvedValueOnce({
+      data: { tools: [{ id: "grep", displayName: "Grep" }] },
+      error: null,
+      timedOut: false,
+    });
+    expect(await freshLoad()).toEqual({ grep: "Grep" });
+  });
 });

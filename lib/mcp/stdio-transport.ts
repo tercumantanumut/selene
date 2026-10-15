@@ -575,6 +575,38 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
     }
 }
 
+/** True unless the process group is provably gone (only ESRCH proves that). */
+function isProcessGroupAlive(pgid: number): boolean {
+    try {
+        process.kill(-pgid, 0);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+}
+
+/**
+ * SIGTERM a POSIX process group whose leader already exited, then SIGKILL it
+ * if any member (e.g. the node server under `npm exec`) outlives `graceMs`.
+ */
+async function terminateProcessGroup(pgid: number, graceMs: number): Promise<void> {
+    try {
+        process.kill(-pgid, "SIGTERM");
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    }
+    const deadline = Date.now() + graceMs;
+    while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100).unref());
+        if (!isProcessGroupAlive(pgid)) return;
+    }
+    try {
+        process.kill(-pgid, "SIGKILL");
+    } catch {
+        // ESRCH (exited meanwhile) or EPERM; nothing more we can do.
+    }
+}
+
 export class StdioClientTransport implements Transport {
     private _process?: ChildProcess;
     private _readBuffer = new ReadBuffer();
@@ -853,10 +885,10 @@ export class StdioClientTransport implements Transport {
             }
             if (processToClose.exitCode === null) {
                 killProcessTree(processToClose, "SIGKILL");
-            } else if (process.platform !== "win32") {
-                // The group leader exited on stdin EOF; make sure no grandchild
+            } else if (process.platform !== "win32" && processToClose.pid) {
+                // The group leader exited on its own; make sure no grandchild
                 // (e.g. the node server under `npm exec`) outlives it.
-                killProcessTree(processToClose, "SIGTERM");
+                await terminateProcessGroup(processToClose.pid, 2000);
             }
         }
         this._readBuffer.clear();

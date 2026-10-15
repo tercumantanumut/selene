@@ -677,6 +677,12 @@ interface LiveStatusSessionEntry {
 const liveStatusSessions = new Map<string, LiveStatusSessionEntry>();
 let removeWindowProgressListener: (() => void) | null = null;
 
+function sameSteps(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((step, i) => step === b[i]);
+}
+
 function mergeLiveStatus(existing: LiveToolStatus | undefined, status: LiveToolStatus): LiveToolStatus | null {
   // For Agent tool calls: carry startedAt across updates, compute elapsedMs on completion.
   let enriched = status;
@@ -701,7 +707,9 @@ function mergeLiveStatus(existing: LiveToolStatus | undefined, status: LiveToolS
     existing.detail === enriched.detail &&
     existing.argsPreview === enriched.argsPreview &&
     existing.outputPreview === enriched.outputPreview &&
-    existing.elapsedMs === enriched.elapsedMs
+    existing.elapsedMs === enriched.elapsedMs &&
+    existing.stepCount === enriched.stepCount &&
+    sameSteps(existing.steps, enriched.steps)
   ) {
     return null;
   }

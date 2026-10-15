@@ -46,11 +46,12 @@ export async function loadToolNameCache(): Promise<Record<string, string>> {
   _toolNameCachePromise = (async () => {
     // Dynamic import to avoid pulling resilientFetch into test bundles
     const { resilientFetch } = await import("@/lib/utils/resilient-fetch");
-    const { data } = await resilientFetch<{
+    const { data, error } = await resilientFetch<{
       tools?: Array<{ id: string; displayName: string }>;
     }>("/api/tools?includeDisabled=true&includeAlwaysLoad=true");
+    if (error || !data) throw new Error(error ?? "Empty /api/tools response");
     const map: Record<string, string> = {};
-    (data?.tools || []).forEach((tool) => {
+    (data.tools || []).forEach((tool) => {
       if (tool.id && tool.displayName) {
         map[tool.id] = tool.displayName;
       }
@@ -58,8 +59,10 @@ export async function loadToolNameCache(): Promise<Record<string, string>> {
     _toolNameCache = map;
     return map;
   })().catch(() => {
-    _toolNameCache = {};
-    return _toolNameCache;
+    // Leave the cache empty so the next caller retries; callers fall back to
+    // humanized names for this render.
+    _toolNameCachePromise = null;
+    return {};
   });
 
   return _toolNameCachePromise;
