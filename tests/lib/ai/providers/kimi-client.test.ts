@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { KIMI_MODEL_IDS } from "@/lib/auth/kimi-models";
-import { normalizeKimiChatCompletionBody } from "@/lib/ai/providers/kimi-client";
+import { getKimiApiBaseUrl, normalizeKimiChatCompletionBody } from "@/lib/ai/providers/kimi-client";
 
 describe("kimi client request normalization", () => {
-  it("includes the current Kimi K2.7 code models", () => {
+  it("includes K3 and the current Kimi K2.7 code models", () => {
+    expect(KIMI_MODEL_IDS).toContain("k3");
     expect(KIMI_MODEL_IDS).toContain("kimi-k2.7-code");
     expect(KIMI_MODEL_IDS).toContain("kimi-k2.7-code-highspeed");
+  });
+
+  it("routes K3 API-key requests to the Kimi Code endpoint", () => {
+    expect(getKimiApiBaseUrl("k3", false)).toBe("https://api.kimi.com/coding/v1");
+  });
+
+  it("does not disable K3's upstream always-on thinking", () => {
+    const normalized = normalizeKimiChatCompletionBody({
+      model: "k3",
+      messages: [],
+      thinking: { type: "disabled" },
+      temperature: 0.2,
+    });
+
+    expect(normalized).toMatchObject({
+      model: "k3",
+      temperature: 1.0,
+    });
+    expect(normalized).not.toHaveProperty("thinking");
   });
 
   it("keeps tool requests at Kimi's fixed 0.6 temperature", () => {

@@ -62,7 +62,7 @@ function authErrorResponse(error: unknown): NextResponse | null {
  * Returns a 400 NextResponse for a failed zod safeParse result, or null if it passed.
  */
 export function validationErrorResponse(
-  result: z.SafeParseReturnType<unknown, unknown>
+  result: z.ZodSafeParseResult<unknown>
 ): NextResponse | null {
   if (!result.success) {
     return NextResponse.json(

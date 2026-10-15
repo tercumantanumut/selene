@@ -29,11 +29,14 @@ const ANTIGRAVITY_EXACT_MODELS = new Set([
   "gpt-oss-120b-medium",
 ]);
 
+// K3 is a bare API ID, unlike the prefix-based legacy Kimi IDs.
+const KIMI_EXACT_MODELS = new Set(["k3"]);
+
 // Prefix-based matching for providers with unambiguous model naming
 const MODEL_PREFIXES: Record<LLMProvider, string[]> = {
   anthropic: ["claude-"],
-  claudecode: ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"],
-  codex: ["gpt-5", "codex"],
+  claudecode: ["claude-opus-", "claude-sonnet-", "claude-haiku-", "claude-fable-"],
+  codex: ["gpt-5", "gpt-6", "codex"],
   kimi: ["kimi-", "moonshot-"],
   minimax: ["minimax-"],
   blackboxai: ["blackbox-", "blackboxai/"], // used by openrouter exclusion check
@@ -57,9 +60,9 @@ const MODEL_PREFIXES: Record<LLMProvider, string[]> = {
  * Rules:
  * - Antigravity: exact match only (short IDs overlap with Anthropic prefix)
  * - Anthropic: claude-* prefix, but NOT Antigravity exact models
- * - Claude Code: claude-opus-4*, claude-sonnet-4*, claude-haiku-4* (also accepts Anthropic claude-* models)
- * - Codex: gpt-5*, codex*
- * - Kimi: kimi-*, moonshot-*
+ * - Claude Code: current Claude families, plus generic Anthropic claude-* model IDs
+ * - Codex: gpt-5*, gpt-6*, codex*
+ * - Kimi: k3, kimi-*, moonshot-*
  * - BlackBox AI: accepts any non-empty model ID so newly released models can be used before the catalog is updated
  * - Ollama: accepts any model
  * - OpenRouter: accepts anything with "/" or non-provider-specific bare IDs
@@ -90,7 +93,7 @@ export function isModelCompatibleWithProvider(
     );
   }
 
-  // Codex: gpt-5*, codex*
+  // Codex: gpt-5*, gpt-6*, codex*
   if (provider === "codex") {
     return (
       MODEL_PREFIXES.codex.some((p) => lowerModel.startsWith(p)) ||
@@ -98,9 +101,12 @@ export function isModelCompatibleWithProvider(
     );
   }
 
-  // Kimi: kimi-*, moonshot-*
+  // Kimi: K3's bare API ID, kimi-*, moonshot-*
   if (provider === "kimi") {
-    return MODEL_PREFIXES.kimi.some((p) => lowerModel.startsWith(p));
+    return (
+      KIMI_EXACT_MODELS.has(lowerModel) ||
+      MODEL_PREFIXES.kimi.some((p) => lowerModel.startsWith(p))
+    );
   }
 
   // MiniMax: minimax-*

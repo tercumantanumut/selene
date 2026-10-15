@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
-import { ToolRegistry, registerAllTools } from "@/lib/ai/tool-registry";
-import type { ToolCategory } from "@/lib/ai/tool-registry/types";
+import {
+  ToolRegistry,
+  registerAllTools,
+  deriveDefaultToolLoadingPolicy,
+  isRequiredTool,
+} from "@/lib/ai/tool-registry";
+import type { ToolCategory, ToolDefaultLoadingPolicy } from "@/lib/ai/tool-registry/types";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { HIDDEN_CHARACTER_TOOL_IDS } from "@/lib/characters/tool-catalog";
 
@@ -31,6 +36,12 @@ interface ConfigurableTool {
   category: ToolCategory;
   /** Whether this tool is enabled (based on env vars) */
   isEnabled: boolean;
+  /** System default loading policy for this tool */
+  defaultLoadingPolicy: ToolDefaultLoadingPolicy;
+  /** Required/bootstrap tools are locked active and cannot be deferred */
+  isRequired: boolean;
+  /** Whether the agent UI may choose always-loaded vs deferred */
+  supportsLoadingPreference: boolean;
 }
 
 /**
@@ -68,7 +79,7 @@ export async function GET(request: Request) {
             displayName: registeredTool.metadata.displayName,
             category: registeredTool.metadata.category,
             description: registeredTool.metadata.shortDescription,
-            isDeferred: registeredTool.metadata.loading.deferLoading ?? false,
+            isDeferred: deriveDefaultToolLoadingPolicy(registeredTool.metadata) === "deferred",
           };
         })
       : registry.getAvailableToolsList();
@@ -81,7 +92,7 @@ export async function GET(request: Request) {
     ]);
 
     for (const tool of allTools) {
-      if (NON_CONFIGURABLE_TOOL_IDS.has(tool.name)) continue;
+      if (NON_CONFIGURABLE_TOOL_IDS.has(tool.name) && !includeAlwaysLoad) continue;
       if (HIDDEN_CHARACTER_TOOL_IDS.has(tool.name)) continue;
 
       // Get full tool metadata to check alwaysLoad
@@ -89,9 +100,12 @@ export async function GET(request: Request) {
       if (!registeredTool) continue;
 
       const { metadata } = registeredTool;
+      const defaultLoadingPolicy = deriveDefaultToolLoadingPolicy(metadata);
+      const required = isRequiredTool(tool.name, metadata);
 
-      // Skip always-load tools (these are always available), unless requested or custom-comfyui
-      if (metadata.loading.alwaysLoad && !includeAlwaysLoad && metadata.category !== "custom-comfyui") continue;
+      // Skip always-load tools unless requested or custom-comfyui. Required tools
+      // are included when includeAlwaysLoad=true so the UI can show them as locked.
+      if (defaultLoadingPolicy !== "deferred" && !includeAlwaysLoad && metadata.category !== "custom-comfyui") continue;
 
       // Check if tool is enabled via environment variables
       const isEnabled = registry.isToolEnabled(tool.name);
@@ -105,6 +119,9 @@ export async function GET(request: Request) {
         description: tool.description,
         category: tool.category,
         isEnabled,
+        defaultLoadingPolicy,
+        isRequired: required,
+        supportsLoadingPreference: isEnabled && !required,
       });
     }
 

@@ -49,6 +49,8 @@ function getReasoningConfig(
 } {
   const normalizedName = modelName?.toLowerCase() ?? "";
 
+  const isGpt6Astra =
+    normalizedName.includes("gpt-6-astra") || normalizedName.includes("gpt 6 astra");
   const isGpt56Sol =
     normalizedName.includes("gpt-5.6-sol") || normalizedName.includes("gpt 5.6 sol");
   const isGpt56Terra =
@@ -89,6 +91,7 @@ function getReasoningConfig(
     !isCodexMini;
 
   const supportsXhigh =
+    isGpt6Astra ||
     isGpt56 ||
     isGpt54 ||
     isGpt53General ||
@@ -96,12 +99,13 @@ function getReasoningConfig(
     isGpt52General ||
     isGpt52Codex ||
     isCodexMax;
-  const supportsMax = isGpt56;
-  const supportsUltra = isGpt56Sol || isGpt56Terra;
+  const supportsMax = isGpt6Astra || isGpt56;
+  const supportsUltra = isGpt6Astra || isGpt56Sol || isGpt56Terra;
   const supportsNone = isGpt52General || isGpt51General;
 
   let defaultEffort: ReasoningEffort = "medium";
-  if (isGpt56Sol) {
+  if (isGpt6Astra || isGpt56Sol) {
+    // Upstream openai/codex models.json: default_reasoning_level "low" for both.
     defaultEffort = "low";
   } else if (isGpt56 || isGpt54 || isCodexMini || prefersMediumDefault) {
     defaultEffort = "medium";

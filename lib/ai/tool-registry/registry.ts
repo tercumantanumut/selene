@@ -24,7 +24,13 @@ import type {
   ToolContext,
   ToolSearchResult,
   ToolCategory,
+  ToolLoadPlan,
 } from "./types";
+import {
+  deriveDefaultToolLoadingPolicy,
+  expandEnabledToolsWithCompanions,
+  resolveToolLoadingPolicy,
+} from "./loading-policy";
 /**
  * Global registry storage to persist across Next.js hot reloads in dev mode
  * Without this, each hot reload would create a new empty registry
@@ -273,51 +279,59 @@ class ToolRegistry {
   }
 
   /**
-   * Create tool instances based on context and loading configuration
-   *
-   * @param context - Tool creation context (session, character info, etc.)
-   * @returns Record of tool name to tool instance
+   * Resolve the complete per-tool loading plan for this request.
+   * Authorization (enabledTools/env/session) is resolved separately from
+   * initial-loading policy so user-selected "always" preferences never grant
+   * access to a tool that is not enabled for the agent.
    */
-  getTools(context: ToolContext): Record<string, Tool> {
-    const tools: Record<string, Tool> = {};
-    const { sessionId, includeTools, includeDeferredTools, agentEnabledTools } = context;
+  getToolLoadPlan(context: ToolContext): ToolLoadPlan {
+    const allAuthorizedTools: Record<string, Tool> = {};
+    const initialActiveToolIds = new Set<string>();
+    const deferredToolIds = new Set<string>();
+    const disabledToolIds = new Set<string>();
+    const resolutions: ToolLoadPlan["resolutions"] = new Map();
+    const { sessionId } = context;
+    const includeTools = new Set(context.includeTools ?? []);
+    const agentEnabledTools = expandEnabledToolsWithCompanions(
+      context.agentEnabledTools,
+      (toolId) => this.tools.get(toolId)?.metadata
+    );
 
     for (const [name, registeredTool] of this.tools) {
       const { metadata, factory } = registeredTool;
+      const resolution = resolveToolLoadingPolicy({
+        toolId: name,
+        metadata,
+        isAvailable: this.isToolEnabled(name),
+        agentEnabledTools,
+        toolLoadingPreferences: context.toolLoadingPreferences,
+        toolLoadingMode: context.toolLoadingMode ?? "deferred",
+        includeTools,
+      });
 
-      // Check if tool is enabled (via env vars)
-      if (!this.isToolEnabled(name)) continue;
+      resolutions.set(name, resolution);
 
-      // CRITICAL: Agent-specific tool filtering
-      // If agentEnabledTools is provided, ONLY load:
-      // 1. Core utility tools (alwaysLoad: true) - searchTools
-      // 2. Tools explicitly in the agentEnabledTools set
-      if (agentEnabledTools) {
-        const isAlwaysLoad = metadata.loading.alwaysLoad === true;
-        const isAgentEnabled = agentEnabledTools.has(name);
-
-        if (!isAlwaysLoad && !isAgentEnabled) {
-          continue; // Skip tools not enabled for this agent
-        }
-      }
-
-      // Check loading configuration (for deferred loading)
-      const shouldLoad =
-        metadata.loading.alwaysLoad ||
-        includeTools?.includes(name) ||
-        (!metadata.loading.deferLoading || includeDeferredTools);
-
-      if (!shouldLoad) continue;
-
-      // Validate session requirement
-      if (metadata.requiresSession && !sessionId) {
-        console.warn(`[ToolRegistry] Tool "${name}" requires session but none provided`);
+      if (resolution.policy === "disabled") {
+        disabledToolIds.add(name);
         continue;
       }
 
-      // Create tool instance
+      if (metadata.requiresSession && !sessionId) {
+        console.warn(`[ToolRegistry] Tool "${name}" requires session but none provided`);
+        disabledToolIds.add(name);
+        resolutions.set(name, {
+          ...resolution,
+          policy: "disabled",
+          initiallyActive: false,
+          discoverable: false,
+          authorized: false,
+          reason: "unavailable",
+        });
+        continue;
+      }
+
       try {
-        tools[name] = factory({
+        allAuthorizedTools[name] = factory({
           sessionId,
           userId: context.userId,
           characterId: context.characterId,
@@ -328,10 +342,50 @@ class ToolRegistry {
         });
       } catch (error) {
         console.error(`[ToolRegistry] Failed to create tool "${name}":`, error);
+        disabledToolIds.add(name);
+        resolutions.set(name, {
+          ...resolution,
+          policy: "disabled",
+          initiallyActive: false,
+          discoverable: false,
+          authorized: false,
+          reason: "unavailable",
+        });
+        continue;
+      }
+
+      if (resolution.initiallyActive) {
+        initialActiveToolIds.add(name);
+      } else if (resolution.policy === "deferred") {
+        deferredToolIds.add(name);
       }
     }
 
-    return tools;
+    return {
+      allAuthorizedTools,
+      initialActiveToolIds,
+      deferredToolIds,
+      disabledToolIds,
+      resolutions,
+    };
+  }
+
+  /**
+   * Create tool instances based on context and loading configuration.
+   * Compatibility wrapper for older call sites: includeDeferredTools=true returns
+   * all authorized tools, otherwise only the resolved initial-active tools.
+   */
+  getTools(context: ToolContext): Record<string, Tool> {
+    const plan = this.getToolLoadPlan(context);
+    if (context.includeDeferredTools) {
+      return plan.allAuthorizedTools;
+    }
+
+    return Object.fromEntries(
+      Object.entries(plan.allAuthorizedTools).filter(([name]) =>
+        plan.initialActiveToolIds.has(name)
+      )
+    );
   }
 
   /**
@@ -360,7 +414,7 @@ class ToolRegistry {
         displayName: tool.metadata.displayName,
         category: tool.metadata.category,
         description: tool.metadata.shortDescription,
-        isDeferred: tool.metadata.loading.deferLoading ?? false,
+        isDeferred: deriveDefaultToolLoadingPolicy(tool.metadata) === "deferred",
       });
     }
 
@@ -386,7 +440,7 @@ class ToolRegistry {
       displayName: tool.metadata.displayName,
       category: tool.metadata.category,
       description: tool.metadata.shortDescription,
-      isDeferred: tool.metadata.loading.deferLoading ?? false,
+      isDeferred: deriveDefaultToolLoadingPolicy(tool.metadata) === "deferred",
       fullInstructions: tool.metadata.fullInstructions,
     };
   }

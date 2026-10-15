@@ -30,6 +30,13 @@ export interface SdkToolResultBridge {
     toolCallId: string,
     options?: { timeoutMs?: number | null; abortSignal?: AbortSignal },
   ) => Promise<SdkToolResultRecord | undefined>;
+  /**
+   * Mark a tool-call ID as never-resolving (its SDK stream ended without a
+   * result): pending waiters resolve with undefined and later waits for that
+   * ID return immediately. No-op when a result is already buffered.
+   */
+  cancel?: (toolCallId: string) => void;
+  /** Sticky: resolve all pending waiters and refuse to park new ones. Buffered results are kept. */
   dispose?: () => void;
 }
 
@@ -92,10 +99,15 @@ export interface SeleneMcpContext {
 
   /**
    * MCP tool IDs (in getMCPToolId format, e.g. "mcp_server_tool") that are
-   * alwaysLoad (active immediately without searchTools). Populated from
-   * mcpToolPreferences in character metadata.
+   * active immediately without searchTools. Populated from resolved policy.
    */
   alwaysLoadMcpToolIds?: string[];
+
+  /** Resolved initial-active tool IDs from the normal chat runtime. */
+  initialActiveToolIds?: string[];
+
+  /** Resolved disabled/unauthorized tool IDs from the normal chat runtime. */
+  disabledToolIds?: string[];
 
   /**
    * Callback fired when an MCP tool produces rich output (image URL, video URL, etc.).

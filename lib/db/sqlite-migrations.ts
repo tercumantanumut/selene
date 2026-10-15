@@ -9,6 +9,7 @@ import { initDesignGalleryTablesWith } from "./migrations/design-gallery-tables"
 import { initDesignSnapshotsTableWith } from "./migrations/design-snapshots-table";
 import { initSessionLastActiveComponentWith } from "./migrations/session-last-active-component";
 import { initClaudeCodeSubagentTablesWith } from "./migrations/claudecode-subagent-tables";
+import { initDelegationCompletionsTableWith } from "./migrations/delegation-completions-table";
 import { runDataMigrations } from "./migrations/data-migrations";
 
 const globalForSqliteMigrations = globalThis as typeof globalThis & {
@@ -35,6 +36,9 @@ export function initializeTables(sqlite: Database.Database): void {
   // Idempotent: guarded by PRAGMA table_info on `sessions`.
   initSessionLastActiveComponentWith(sqlite);
   initClaudeCodeSubagentTablesWith(sqlite);
+  // delegation_completions FKs into sessions(id) (ON DELETE CASCADE) — MUST
+  // run after initCoreTablesWith. Idempotent.
+  initDelegationCompletionsTableWith(sqlite);
 
   if (!globalForSqliteMigrations.didLogSqliteTableInit) {
     console.log("[SQLite] All tables initialized (including plugin and workflow systems)");

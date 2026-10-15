@@ -1,5 +1,7 @@
 import { BrowserWindow, screen } from "electron";
 import { debugLog, debugError } from "./debug-logger";
+import { getSetting } from "@/lib/settings/settings-manager";
+import { uiScaleToZoomFactor } from "@/lib/ui/ui-scale";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -103,6 +105,8 @@ function createOverlayWindow(opts: ShowOverlayOptions): BrowserWindow {
       sandbox: true,
     },
   });
+
+  win.webContents.setZoomFactor(uiScaleToZoomFactor(getSetting("uiScale")));
 
   // On macOS, the panel window type already floats above fullscreen apps and
   // appears across Spaces. Avoid setVisibleOnAllWorkspaces() here: Electron's

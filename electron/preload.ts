@@ -30,6 +30,9 @@ const electronAPI = {
     isFullScreen: (): Promise<boolean> => {
       return ipcRenderer.invoke("window:isFullScreen");
     },
+    setZoomFactor: (zoomFactor: number, allWindows = false): Promise<number> => {
+      return ipcRenderer.invoke("window:setZoomFactor", zoomFactor, allWindows);
+    },
     onFullscreenChanged: (callback: (isFullScreen: boolean) => void): (() => void) => {
       const handler = (_event: Electron.IpcRendererEvent, isFullScreen: boolean) => callback(isFullScreen);
       ipcRenderer.on("window:fullscreen-changed", handler);

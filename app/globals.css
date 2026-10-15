@@ -64,6 +64,17 @@
     --ring: 18 49% 54%;
     /* terracotta for focus */
     --radius: 0.5rem;
+
+    /* Compact density and elevation tokens. Keep controls readable while
+       giving shared surfaces a tighter, layered visual rhythm. */
+    --ui-space-1: 0.25rem;
+    --ui-space-2: 0.5rem;
+    --ui-space-3: 0.75rem;
+    --ui-space-4: 1rem;
+    --ui-space-5: 1.25rem;
+    --surface-border: hsl(var(--border) / 0.72);
+    --surface-shadow: 0 1px 2px hsl(0 0% 0% / 0.12), 0 8px 20px hsl(0 0% 0% / 0.07);
+    --surface-shadow-raised: 0 2px 5px hsl(0 0% 0% / 0.16), 0 16px 36px hsl(0 0% 0% / 0.12);
     --chart-1: 18 49% 54%;
     /* terracotta */
     --chart-2: 41 100% 50%;
@@ -109,6 +120,9 @@
     --chart-3: 0 0% 65%;
     --chart-4: 34 63% 70%;
     --chart-5: 0 0% 50%;
+    --surface-border: hsl(var(--border) / 0.9);
+    --surface-shadow: 0 1px 2px hsl(0 0% 0% / 0.28), 0 10px 24px hsl(0 0% 0% / 0.2);
+    --surface-shadow-raised: 0 3px 8px hsl(0 0% 0% / 0.34), 0 20px 44px hsl(0 0% 0% / 0.28);
   }
 
   /* ===== Theme Presets ===== */
@@ -538,13 +552,44 @@
 }
 
 @layer base {
+  html {
+    --ui-scale-factor: 1;
+    zoom: var(--ui-scale-factor);
+  }
+
   * {
     @apply border-transparent;
   }
 
   body {
     @apply bg-background text-foreground;
+    font-size: 0.9375rem;
+    line-height: 1.5;
   }
+
+  /* Preserve a comfortably legible scale on narrow touch viewports. */
+  @media (max-width: 640px) {
+    body {
+      font-size: 1rem;
+    }
+  }
+
+  :where(h1, h2, h3) {
+    letter-spacing: -0.02em;
+  }
+}
+
+/* ===== Compact depth system =====
+   Tokens are consumed by shared primitives so density and elevation remain
+   consistent without screen-specific overrides. */
+.surface-elevated {
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
+}
+
+.surface-floating {
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow-raised);
 }
 
 /* assistant-ui custom styles */

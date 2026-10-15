@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { ToolRegistry } from "@/lib/ai/tool-registry/registry";
-import { createToolSearchTool } from "@/lib/ai/tool-registry/search-tool";
+import {
+  authorizeRuntimeLoadedTools,
+  createToolSearchTool,
+} from "@/lib/ai/tool-registry/search-tool";
 
 function registerBaseTool(name: string) {
   ToolRegistry.getInstance().register(
@@ -117,6 +120,109 @@ describe("createToolSearchTool", () => {
     expect(result.results.map((tool: { name: string }) => tool.name)).toEqual([
       "sendMessageToChannel",
     ]);
+  });
+
+  it("discovers deferred MCP tools by native exact name and namespace", async () => {
+    const registry = ToolRegistry.getInstance();
+    registerBaseTool("searchTools");
+
+    registry.register(
+      "mcp_supabase_execute_sql",
+      {
+        displayName: "Execute Sql",
+        category: "mcp",
+        keywords: ["execute_sql", "supabase", "mcp", "external", "database", "sql"],
+        shortDescription: "Execute SQL against the Supabase project",
+        loading: { deferLoading: true, defaultPolicy: "deferred" },
+        requiresSession: false,
+      },
+      () => ({} as any)
+    );
+
+    const discoveredTools = new Set<string>();
+    const searchTool = createToolSearchTool({
+      initialActiveTools: new Set(["searchTools"]),
+      discoveredTools,
+      enabledTools: new Set(["mcp_supabase_execute_sql"]),
+    }) as any;
+
+    const byToolName = await searchTool.execute({
+      query: "select:execute_sql",
+      category: "mcp",
+      limit: 5,
+    });
+
+    expect(byToolName.status).toBe("success");
+    expect(byToolName.results.map((tool: { name: string }) => tool.name)).toEqual([
+      "mcp_supabase_execute_sql",
+    ]);
+    expect(discoveredTools.has("mcp_supabase_execute_sql")).toBe(true);
+
+    const byNamespace = await searchTool.execute({
+      query: "select:supabase:execute_sql",
+      category: "mcp",
+      limit: 5,
+    });
+
+    expect(byNamespace.status).toBe("success");
+    expect(byNamespace.results.map((tool: { name: string }) => tool.name)).toEqual([
+      "mcp_supabase_execute_sql",
+    ]);
+  });
+
+  it("does not let stale pre-load disabled policy block runtime-loaded MCP tools", async () => {
+    const registry = ToolRegistry.getInstance();
+    registerBaseTool("searchTools");
+
+    registry.register(
+      "mcp_supabase_list_tables",
+      {
+        displayName: "List Tables",
+        category: "mcp",
+        keywords: ["list_tables", "supabase", "mcp", "external", "database", "tables"],
+        shortDescription: "List Supabase database tables",
+        loading: { deferLoading: true, defaultPolicy: "deferred" },
+        requiresSession: false,
+      },
+      () => ({} as any)
+    );
+
+    const context = {
+      initialActiveTools: new Set(["searchTools"]),
+      discoveredTools: new Set<string>(),
+      enabledTools: new Set(["searchTools"]),
+      disabledTools: new Set(["mcp_supabase_list_tables"]),
+      resolvedPolicies: new Map([
+        [
+          "mcp_supabase_list_tables",
+          {
+            policy: "disabled" as const,
+            initiallyActive: false,
+            discoverable: false,
+            authorized: false,
+            reason: "not-enabled" as const,
+          },
+        ],
+      ]),
+    };
+    const searchTool = createToolSearchTool(context) as any;
+
+    // Mirrors the chat builder after loadMCPToolsForCharacter reports the
+    // connector's deferred tool as callable for this agent.
+    authorizeRuntimeLoadedTools(context, ["mcp_supabase_list_tables"]);
+
+    const result = await searchTool.execute({
+      query: "list_tables",
+      category: "mcp",
+      limit: 5,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.results.map((tool: { name: string }) => tool.name)).toEqual([
+      "mcp_supabase_list_tables",
+    ]);
+    expect(context.discoveredTools.has("mcp_supabase_list_tables")).toBe(true);
+    expect(result.results[0].isAvailable).toBe(true);
   });
 
   it("emits Anthropic tool references for deferred matches", async () => {

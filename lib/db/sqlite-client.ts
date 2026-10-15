@@ -34,7 +34,8 @@ const globalForDb = globalThis as unknown as {
   didLogSqliteOpen?: boolean;
 };
 
-const SCHEMA_VERSION = 5;
+// v7: adds delegation_completions (durable delegation completion store)
+const SCHEMA_VERSION = 7;
 
 function createConnection(): { sqlite: Database.Database; db: BetterSQLite3Database<typeof schema> } {
   const dbPath = getDbPath();

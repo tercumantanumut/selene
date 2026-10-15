@@ -15,6 +15,7 @@ interface ElectronWindowAPI {
   close: () => void;
   isMaximized: () => Promise<boolean>;
   isFullScreen: () => Promise<boolean>;
+  setZoomFactor: (zoomFactor: number, allWindows?: boolean) => Promise<number>;
   onFullscreenChanged: (callback: (isFullScreen: boolean) => void) => () => void;
 }
 

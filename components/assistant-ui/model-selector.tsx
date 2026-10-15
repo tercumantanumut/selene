@@ -45,12 +45,13 @@ const PROVIDER_NAMES: Record<string, string> = {
 
 const MANUAL_MODEL_PROVIDERS = new Set(["openrouter", "blackboxai", "ollama", "vllm"]);
 
-function formatModelName(modelId: string): string {
+export function formatModelName(modelId: string): string {
   const stripped = modelId.includes("/") ? modelId.split("/").pop()! : modelId;
 
   const simplePatterns: [RegExp, string][] = [
     [/^kimi-k(\d[\d.]*)/i, "Kimi K$1"],
-    [/^claude-opus-(\d[\d.-]*)/i, "Opus $1"],
+    [/^claude-opus-(\d+)-(\d+)/i, "Opus $1.$2"],
+    [/^claude-opus-(\d+)/i, "Opus $1"],
     [/^claude-sonnet-(\d+)-(\d+)/i, "Sonnet $1.$2"],
     [/^claude-haiku-(\d+)-(\d+)/i, "Haiku $1.$2"],
     [/^claude-(\d[\d.]*)/i, "Claude $1"],

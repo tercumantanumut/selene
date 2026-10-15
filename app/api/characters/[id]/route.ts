@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import { detachAgentFromWorkflows } from "@/lib/agents/workflows";
 import { validateAgentModelConfig } from "@/lib/ai/model-validation";
+import { ToolRegistry, registerAllTools, isRequiredTool } from "@/lib/ai/tool-registry";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -62,6 +63,30 @@ const updateSchema = z.object({
   metadata: agentMetadataSchema.optional(),
 });
 
+function validateToolLoadingPreferences(
+  preferences: Record<string, "always" | "deferred"> | undefined
+): string[] {
+  if (!preferences) return [];
+
+  registerAllTools();
+  const registry = ToolRegistry.getInstance();
+  const errors: string[] = [];
+
+  for (const [toolId, preference] of Object.entries(preferences)) {
+    const registered = registry.get(toolId);
+    if (!registered) {
+      errors.push(`Unknown tool loading preference: ${toolId}`);
+      continue;
+    }
+
+    if (preference === "deferred" && isRequiredTool(toolId, registered.metadata)) {
+      errors.push(`${registered.metadata.displayName} (${toolId}) is required for agent operation and cannot be deferred.`);
+    }
+  }
+
+  return errors;
+}
+
 // PATCH - Update a character
 export async function PATCH(req: Request, { params }: RouteParams) {
   try {
@@ -101,6 +126,17 @@ export async function PATCH(req: Request, { params }: RouteParams) {
           { status: 400 },
         );
       }
+    }
+
+    const toolPreferenceErrors = validateToolLoadingPreferences(metadata?.toolLoadingPreferences);
+    if (toolPreferenceErrors.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Invalid tool loading preferences",
+          details: toolPreferenceErrors,
+        },
+        { status: 422 },
+      );
     }
 
     // Update in parallel

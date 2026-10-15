@@ -18,6 +18,10 @@ const path = require('path');
 const args = process.argv.slice(2);
 const platformArg = args.find(arg => arg.startsWith('--platform='));
 const platform = platformArg ? platformArg.split('=')[1] : process.platform;
+const runtimePlatform = platform === 'mac' ? 'darwin' : platform === 'win' ? 'win32' : platform;
+const runtimeArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const agentSdkPlatformPackageName = `claude-agent-sdk-${runtimePlatform}-${runtimeArch}`;
+const agentSdkExecutableName = runtimePlatform === 'win32' ? 'claude.exe' : 'claude';
 
 // Determine app path based on platform
 const distDir = path.join(process.cwd(), 'dist-electron');
@@ -105,7 +109,8 @@ const requiredPaths = [
     ? 'standalone/node_modules/@vscode/ripgrep/bin/rg.exe'
     : 'standalone/node_modules/@vscode/ripgrep/bin/rg',
   'standalone/node_modules/@askalf/dario/dist/cli.js',
-  'standalone/node_modules/@anthropic-ai/claude-agent-sdk/cli.js',
+  'standalone/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs',
+  `standalone/node_modules/@anthropic-ai/${agentSdkPlatformPackageName}/${agentSdkExecutableName}`,
 ];
 
 // RTK bundle is optional at runtime (experimental), but warn if absent in package.

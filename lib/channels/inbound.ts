@@ -48,6 +48,25 @@ import {
   clearPendingQuestionBySession,
   findPendingQuestionByToolUseId,
 } from "./interactive-questions";
+import {
+  handleSessionsListCommand,
+  handleSwitchCommand,
+  handleDeleteCommand,
+  handleCurrentCommand,
+  handleHelpCommand,
+  handleCancelCommand,
+} from "./session-commands";
+import { ensureOutboxWorkerStarted } from "./outbox";
+import {
+  parseChannelCommand,
+  isStopCommand,
+  isNewSessionCommand,
+  type ChannelCommand,
+} from "./command-parser";
+
+// Start the durable delivery worker as soon as the channel pipeline is
+// loaded so pending outbox entries from a previous process are recovered.
+ensureOutboxWorkerStarted();
 
 const conversationQueues = new Map<string, Promise<void>>();
 
@@ -542,6 +561,21 @@ async function processInboundMessage(message: ChannelInboundMessage): Promise<vo
       error: error instanceof Error ? error.message : "Unknown error",
       durationMs: Date.now() - new Date(startedAt).getTime(),
     });
+    // Best-effort failure notice so the user isn't left waiting after a
+    // long-running execution that ultimately failed. Final-response delivery
+    // itself is handled durably by the channel outbox; this covers runs that
+    // error out before producing a final message.
+    try {
+      const manager = getChannelManager();
+      const reason = error instanceof Error ? error.message : "Unknown error";
+      await manager.sendMessage(message.connectionId, {
+        peerId: message.peerId,
+        threadId: message.threadId,
+        text: `⚠️ The run failed before completing: ${reason.slice(0, 300)}`,
+      });
+    } catch (noticeError) {
+      console.warn("[Channels] Failed to send run-failure notice:", noticeError);
+    }
     throw error;
   }
 }
@@ -669,16 +703,6 @@ function startChannelTypingKeepalive(params: {
       clearTimeout(timer);
     }
   };
-}
-
-function isStopCommand(text: string): boolean {
-  if (!text) return false;
-  return /^(?:\/|!)stop(?:@[\w_]+)?$/i.test(text.trim());
-}
-
-function isNewSessionCommand(text: string): boolean {
-  if (!text) return false;
-  return /^(?:\/|!)new(?:@[\w_]+)?$/i.test(text.trim());
 }
 
 async function sendNewSessionConfirmation(message: ChannelInboundMessage): Promise<void> {
@@ -847,20 +871,6 @@ async function invokeChatApi(params: {
 // Channel Slash Commands
 // ============================================================================
 
-interface ChannelCommand {
-  name: string;
-  args: string;
-}
-
-function parseChannelCommand(text: string): ChannelCommand | null {
-  if (!text) return null;
-  const trimmed = text.trim();
-  // Match /command or !command (with optional @botname suffix)
-  const match = trimmed.match(/^[/!](status|tts|compact|stop)(?:@[\w_]+)?(?:\s+(.*))?$/i);
-  if (!match) return null;
-  return { name: match[1].toLowerCase(), args: (match[2] || "").trim() };
-}
-
 async function handleChannelCommand(
   command: ChannelCommand,
   message: ChannelInboundMessage
@@ -868,7 +878,45 @@ async function handleChannelCommand(
   const manager = getChannelManager();
 
   let responseText: string;
+  let responseButtons: Array<Array<{ label: string; command: string }>> | undefined;
   switch (command.name) {
+    case "sessions": {
+      const response = await handleSessionsListCommand(message);
+      responseText = response.text;
+      responseButtons = response.commandButtons;
+      break;
+    }
+
+    case "switch": {
+      const response = await handleSwitchCommand(message, command.args);
+      responseText = response.text;
+      responseButtons = response.commandButtons;
+      break;
+    }
+
+    case "delete": {
+      const response = await handleDeleteCommand(message, command.args);
+      responseText = response.text;
+      responseButtons = response.commandButtons;
+      break;
+    }
+
+    case "current": {
+      const response = await handleCurrentCommand(message);
+      responseText = response.text;
+      break;
+    }
+
+    case "help": {
+      responseText = handleHelpCommand().text;
+      break;
+    }
+
+    case "cancel": {
+      responseText = (await handleCancelCommand(message)).text;
+      break;
+    }
+
     case "status": {
       const conversation = await findChannelConversation({
         connectionId: message.connectionId,
@@ -954,6 +1002,7 @@ async function handleChannelCommand(
       peerId: message.peerId,
       threadId: message.threadId,
       text: responseText,
+      commandButtons: responseButtons,
     });
   } catch (error) {
     console.warn("[Channels] Failed to send command response:", error);

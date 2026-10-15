@@ -28,6 +28,7 @@ export function useToolEditor(
   const [toolEditorOpen, setToolEditorOpen] = useState(false);
   const [editingCharacter, setEditingCharacter] = useState<CharacterSummary | null>(null);
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  const [toolLoadingPreferences, setToolLoadingPreferences] = useState<Record<string, "always" | "deferred">>({});
   const [isSaving, setIsSaving] = useState(false);
   const [toolSearchQuery, setToolSearchQuery] = useState("");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
@@ -78,7 +79,15 @@ export function useToolEditor(
     const loadTools = async () => {
       try {
         const { data, error } = await resilientFetch<{
-          tools?: Array<{ id: string; displayName: string; description: string; category: string }>;
+          tools?: Array<{
+            id: string;
+            displayName: string;
+            description: string;
+            category: string;
+            defaultLoadingPolicy?: "required" | "always" | "deferred";
+            isRequired?: boolean;
+            supportsLoadingPreference?: boolean;
+          }>;
         }>("/api/tools?includeDisabled=true&includeAlwaysLoad=true");
         if (error || !data) throw new Error(error || "Failed to load tools");
         if (cancelled) return;
@@ -183,6 +192,13 @@ export function useToolEditor(
         return prev.filter((id) => !categoryToolIds.includes(id));
       }
     });
+    if (!select) {
+      setToolLoadingPreferences((prev) => {
+        const next = { ...prev };
+        for (const id of categoryToolIds) delete next[id];
+        return next;
+      });
+    }
   };
 
   const getSelectedCountInCategory = (category: string) => {
@@ -191,14 +207,27 @@ export function useToolEditor(
   };
 
   const toggleTool = (toolId: string) => {
-    setSelectedTools((prev) =>
-      prev.includes(toolId) ? prev.filter((t) => t !== toolId) : [...prev, toolId]
-    );
+    setSelectedTools((prev) => {
+      if (prev.includes(toolId)) {
+        setToolLoadingPreferences((prefs) => {
+          const next = { ...prefs };
+          delete next[toolId];
+          return next;
+        });
+        return prev.filter((t) => t !== toolId);
+      }
+      return [...prev, toolId];
+    });
+  };
+
+  const setToolLoadingPreference = (toolId: string, preference: "always" | "deferred") => {
+    setToolLoadingPreferences((prev) => ({ ...prev, [toolId]: preference }));
   };
 
   const openToolEditor = (character: CharacterSummary) => {
     setEditingCharacter(character);
     setSelectedTools(character.metadata?.enabledTools || []);
+    setToolLoadingPreferences(character.metadata?.toolLoadingPreferences || {});
     setToolSearchQuery("");
     setCollapsedCategories(new Set());
     setToolEditorOpen(true);
@@ -208,8 +237,15 @@ export function useToolEditor(
     if (!editingCharacter) return;
     setIsSaving(true);
     try {
+      const selectedSet = new Set(selectedTools);
+      const prunedLoadingPreferences = Object.fromEntries(
+        Object.entries(toolLoadingPreferences).filter(([toolId]) => selectedSet.has(toolId))
+      );
       const { error } = await resilientPatch(`/api/characters/${editingCharacter.id}`, {
-        metadata: { enabledTools: selectedTools },
+        metadata: {
+          enabledTools: selectedTools,
+          toolLoadingPreferences: prunedLoadingPreferences,
+        },
       });
       if (!error) {
         setToolEditorOpen(false);
@@ -232,6 +268,7 @@ export function useToolEditor(
     editingCharacter,
     setEditingCharacter,
     selectedTools,
+    toolLoadingPreferences,
     isSaving,
     setIsSaving,
     toolSearchQuery,
@@ -244,6 +281,7 @@ export function useToolEditor(
     openToolEditor,
     saveTools,
     toggleTool,
+    setToolLoadingPreference,
     toggleCategory,
     toggleAllInCategory,
     getSelectedCountInCategory,

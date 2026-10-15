@@ -33,6 +33,7 @@ function workflowToMetadata(workflow: CustomComfyUIWorkflow): ToolMetadata {
     loading: {
       deferLoading: workflow.loadingMode !== "always",
       alwaysLoad: workflow.loadingMode === "always",
+      defaultPolicy: workflow.loadingMode === "always" ? "always" : "deferred",
     },
     requiresSession: false,
   };

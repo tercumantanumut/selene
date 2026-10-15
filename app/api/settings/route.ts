@@ -4,6 +4,7 @@ import { invalidateProviderCache } from "@/lib/ai/providers";
 import { invalidateClaudeCodeAuthCache } from "@/lib/auth/claudecode-auth";
 import { validateModelConfiguration } from "@/lib/config/embedding-models";
 import { locales, type Locale } from "@/i18n/config";
+import { isValidUiScale, MIN_UI_SCALE, MAX_UI_SCALE } from "@/lib/ui/ui-scale";
 
 /**
  * GET /api/settings
@@ -59,6 +60,15 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    if (body.uiScale !== undefined && !isValidUiScale(body.uiScale)) {
+      return NextResponse.json(
+        {
+          error: `Unsupported uiScale. Expected an integer from ${MIN_UI_SCALE} to ${MAX_UI_SCALE}.`,
+        },
+        { status: 400 },
+      );
+    }
+
     // Detect provider change early so we can clear stale model fields
     const newProvider = body.llmProvider ?? currentSettings.llmProvider;
     const providerIsChanging = newProvider !== currentSettings.llmProvider;
@@ -77,6 +87,7 @@ export async function PUT(request: NextRequest) {
       vllmBaseUrl: body.vllmBaseUrl !== undefined ? body.vllmBaseUrl : currentSettings.vllmBaseUrl,
       appLanguage: body.appLanguage !== undefined ? body.appLanguage : currentSettings.appLanguage,
       theme: body.theme ?? currentSettings.theme,
+      uiScale: body.uiScale !== undefined ? body.uiScale : currentSettings.uiScale,
       chatWorkspaceMode:
         body.chatWorkspaceMode === "browser-tabs" || body.chatWorkspaceMode === "sidebar"
           ? body.chatWorkspaceMode

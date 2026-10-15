@@ -11,7 +11,8 @@
  */
 
 import { generateText } from "ai";
-import { getUtilityModel } from "@/lib/ai/providers";
+import { getLanguageModelForProvider } from "@/lib/ai/providers";
+import { resolveSessionModelScopeForSession } from "@/lib/ai/session-model-resolver";
 import {
   getNonCompactedMessages,
   updateSessionSummary,
@@ -22,10 +23,31 @@ import { estimateMessageTokens } from "@/lib/utils";
 import type { Message } from "@/lib/db/schema";
 import { truncateOutput } from "@/lib/command-execution/log-manager";
 import { formatTokenCount } from "./token-tracker";
+import { getContextWindowConfig } from "./provider-limits";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export type CompactionSummaryMethod =
+  | "utility_model"
+  | "utility_model_failed"
+  | "deterministic_fallback"
+  | "skipped";
+
+export interface CompactionSummaryDiagnostics {
+  provider?: string;
+  modelId?: string;
+  sourceTokens: number;
+  boundedSourceTokens: number;
+  promptTokens?: number;
+  maxOutputTokens?: number;
+  inputLimitTokens?: number;
+  safetyTokens?: number;
+  sourceTruncated: boolean;
+  utilityDurationMs?: number;
+  fallbackReason?: string;
+}
 
 export interface CompactionResult {
   /** Whether compaction succeeded */
@@ -36,6 +58,10 @@ export interface CompactionResult {
   messagesCompacted: number;
   /** The generated summary */
   newSummary: string;
+  /** How the summary was produced, when known. */
+  summaryMethod?: CompactionSummaryMethod;
+  /** Bounded-input and utility-model diagnostics for observability. */
+  summaryDiagnostics?: CompactionSummaryDiagnostics;
   /** Error message if failed */
   error?: string;
   /** Breakdown of savings by strategy */
@@ -54,7 +80,7 @@ interface CompactionOptions {
   preserveRules: boolean;
   /** Tool names whose results should never be compacted */
   preserveToolResults: string[];
-  /** Minimum messages required before compaction (default: 10) */
+  /** Minimum live messages required before compaction (default: 1) */
   minMessagesForCompaction: number;
   /** Whether to run auto-pruning before summarization (default: true) */
   enableAutoPruning: boolean;
@@ -62,6 +88,8 @@ interface CompactionOptions {
   errorPurgeAge: number;
   /** Target number of tokens to free — used for adaptive keepRecentMessages */
   targetTokensToFree?: number;
+  /** Allow a bounded local fallback when the summarizer fails during required compaction. */
+  allowDeterministicFallback: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,10 +105,18 @@ const DEFAULT_OPTIONS: CompactionOptions = {
     "mcp_filesystem_write_file", 
     "mcp_filesystem_edit_file",
   ],
-  minMessagesForCompaction: 3, // Lowered from 10 to support sparse long-running sessions
+  minMessagesForCompaction: 1,
   enableAutoPruning: true,
   errorPurgeAge: 4,
+  allowDeterministicFallback: false,
 };
+
+const UTILITY_COMPACTION_SOURCE_TOKEN_TARGET = 10_000;
+const MIN_UTILITY_COMPACTION_SOURCE_TOKENS = 256;
+const UTILITY_COMPACTION_TIMEOUT_MS = 5 * 60_000;
+const MAX_FALLBACK_SUMMARY_CHARACTERS = 24_000;
+const COMPACTION_OMISSION_MARKER =
+  "\n\n[Middle context omitted to fit the utility-model input budget.]\n\n";
 
 /**
  * Enhanced compaction prompt that generates structured summaries.
@@ -121,6 +157,68 @@ function truncateSummaryText(text: string, maxCodePoints: number): string {
   return codePoints.slice(0, maxCodePoints).join("");
 }
 
+function takeCodePointsWithinCharacterBudget(
+  codePoints: string[],
+  maxCharacters: number,
+  fromEnd: boolean,
+): string {
+  const selected: string[] = [];
+  let characters = 0;
+
+  for (
+    let index = fromEnd ? codePoints.length - 1 : 0;
+    fromEnd ? index >= 0 : index < codePoints.length;
+    index += fromEnd ? -1 : 1
+  ) {
+    const codePoint = codePoints[index];
+    if (characters + codePoint.length > maxCharacters) break;
+    selected.push(codePoint);
+    characters += codePoint.length;
+  }
+
+  if (fromEnd) selected.reverse();
+  return selected.join("");
+}
+
+function boundCompactionText(
+  text: string,
+  maxCharacters: number,
+): { text: string; truncated: boolean } {
+  const sanitized = sanitizeUnicodeScalarValues(text);
+  if (sanitized.length <= maxCharacters) {
+    return { text: sanitized, truncated: false };
+  }
+
+  const codePoints = Array.from(sanitized);
+  const markerLength = COMPACTION_OMISSION_MARKER.length;
+  const available = Math.max(0, maxCharacters - markerLength);
+  const headBudget = Math.ceil(available * 0.65);
+  const tailBudget = Math.max(0, available - headBudget);
+  return {
+    text: [
+      takeCodePointsWithinCharacterBudget(codePoints, headBudget, false),
+      COMPACTION_OMISSION_MARKER,
+      takeCodePointsWithinCharacterBudget(codePoints, tailBudget, true),
+    ].join(""),
+    truncated: true,
+  };
+}
+
+function buildCompactionSource(previousSummary: string | null, conversationText: string): string {
+  const sections: string[] = [];
+  if (previousSummary?.trim()) {
+    sections.push(`**Previous summary to incorporate:**\n\n${previousSummary.trim()}`);
+  }
+  if (conversationText.trim()) {
+    sections.push(`**New messages to incorporate:**\n\n${conversationText.trim()}`);
+  }
+  return sections.join("\n\n");
+}
+
+function buildDeterministicFallbackSummary(source: string): string {
+  return boundCompactionText(source, MAX_FALLBACK_SUMMARY_CHARACTERS).text;
+}
+
 const ENHANCED_COMPACTION_PROMPT = `You are a conversation summarizer for an AI coding assistant. Create a structured summary that enables seamless continuation of the conversation.
 
 **REQUIRED SECTIONS:**
@@ -157,13 +255,56 @@ const ENHANCED_COMPACTION_PROMPT = `You are a conversation summarizer for an AI 
 - DO NOT lose user constraints or preferences
 - Keep the summary under 10000 tokens
 
-{previousSummary}
-
-**New messages to incorporate:**
+**Conversation context to summarize:**
 
 {conversationText}
 
 Generate the structured summary:`;
+
+interface UtilityCompactionBudget {
+  maxSourceTokens: number;
+  maxOutputTokens: number;
+  inputLimitTokens: number;
+  promptOverheadTokens: number;
+  safetyTokens: number;
+}
+
+function getUtilityCompactionBudget(
+  modelId: string,
+  provider: Parameters<typeof getContextWindowConfig>[1],
+  requestedOutputTokens: number,
+): UtilityCompactionBudget {
+  const config = getContextWindowConfig(modelId, provider);
+  const inputLimitTokens = config.maxInputTokens ?? config.maxTokens;
+  const promptOverheadTokens = estimateMessageTokens({
+    content: ENHANCED_COMPACTION_PROMPT.replace("{conversationText}", ""),
+  });
+  const safetyTokens = Math.max(512, Math.ceil(inputLimitTokens * 0.02));
+  const contextOutputCap = Math.max(512, Math.floor(inputLimitTokens * 0.25));
+  const maxOutputTokens = Math.max(
+    1,
+    Math.min(
+      requestedOutputTokens,
+      config.maxOutputTokens ?? requestedOutputTokens,
+      contextOutputCap,
+    ),
+  );
+  const availableSourceTokens = Math.max(
+    0,
+    inputLimitTokens - promptOverheadTokens - maxOutputTokens - safetyTokens,
+  );
+
+  return {
+    maxSourceTokens: Math.min(
+      UTILITY_COMPACTION_SOURCE_TOKEN_TARGET,
+      availableSourceTokens,
+    ),
+    maxOutputTokens,
+    inputLimitTokens,
+    promptOverheadTokens,
+    safetyTokens,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Auto-Pruning Strategies
@@ -391,92 +532,88 @@ export class CompactionService {
       };
     }
 
-    const messages = await getNonCompactedMessages(sessionId);
-    
-    // Check if we have enough messages for full compaction
-    if (messages.length < opts.minMessagesForCompaction) {
-      // FALLBACK STRATEGY: For sparse sessions, try auto-pruning only
-      console.log(
-        `[CompactionService] Insufficient messages for full compaction (${messages.length} < ${opts.minMessagesForCompaction}), ` +
-        `attempting auto-pruning only`
-      );
-      
-      if (opts.enableAutoPruning) {
-        const autoPrunedTokens = await this.autoPrune(sessionId, messages, opts);
-        if (autoPrunedTokens > 0) {
-          console.log(
-            `[CompactionService] Auto-pruning freed ${formatTokenCount(autoPrunedTokens)} tokens without summarization`
-          );
-          return {
-            success: true,
-            tokensFreed: autoPrunedTokens,
-            messagesCompacted: 0,
-            newSummary: session.summary || "",
-            breakdown: { autoPruned: autoPrunedTokens, summarized: 0 },
-          };
-        }
+    let messages = await getNonCompactedMessages(sessionId);
+
+    // Step 1: Run zero-cost pruning first, then refresh the live message set.
+    let autoPrunedTokens = 0;
+    if (opts.enableAutoPruning && messages.length > 0) {
+      autoPrunedTokens = await this.autoPrune(sessionId, messages, opts);
+      if (autoPrunedTokens > 0) {
+        messages = await getNonCompactedMessages(sessionId);
       }
-      
-      // If auto-pruning didn't help, return the error
+    }
+
+    const hasExistingSummary = Boolean(session.summary?.trim());
+    if (messages.length === 0 && !hasExistingSummary) {
+      console.log(
+        `[CompactionService] Utility-model summary skipped: no conversation history available`,
+      );
       return {
-        success: false,
-        tokensFreed: 0,
+        success: autoPrunedTokens > 0,
+        tokensFreed: autoPrunedTokens,
         messagesCompacted: 0,
         newSummary: "",
-        error: `Not enough messages to compact (${messages.length} < ${opts.minMessagesForCompaction})`,
+        summaryMethod: "skipped",
+        summaryDiagnostics: {
+          sourceTokens: 0,
+          boundedSourceTokens: 0,
+          sourceTruncated: false,
+        },
+        error: autoPrunedTokens > 0 ? undefined : "No conversation history available to compact",
+        breakdown: { autoPruned: autoPrunedTokens, summarized: 0 },
       };
     }
 
-    // Step 1: Run auto-pruning first
-    let autoPrunedTokens = 0;
-    if (opts.enableAutoPruning) {
-      autoPrunedTokens = await this.autoPrune(sessionId, messages, opts);
+    if (messages.length > 0 && messages.length < opts.minMessagesForCompaction && !hasExistingSummary) {
+      console.log(
+        `[CompactionService] Utility-model summary skipped: ` +
+        `${messages.length} messages below minimum ${opts.minMessagesForCompaction}`,
+      );
+      return {
+        success: autoPrunedTokens > 0,
+        tokensFreed: autoPrunedTokens,
+        messagesCompacted: 0,
+        newSummary: "",
+        summaryMethod: "skipped",
+        summaryDiagnostics: {
+          sourceTokens: 0,
+          boundedSourceTokens: 0,
+          sourceTruncated: false,
+        },
+        error: autoPrunedTokens > 0
+          ? undefined
+          : `Not enough messages to compact (${messages.length} < ${opts.minMessagesForCompaction})`,
+        breakdown: { autoPruned: autoPrunedTokens, summarized: 0 },
+      };
     }
 
-    // Step 2: Identify messages to compact (adaptive keepRecentMessages)
+    // Step 2: Identify messages to compact (adaptive keepRecentMessages).
     let keepRecent = opts.keepRecentMessages;
-    
-    // Identify messages to compact, while preserving specific tool results
-    let messagesToCompact: Message[] = [];
-    const recentThreshold = messages.length - keepRecent;
-    
-    for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i];
-        const isRecent = i >= recentThreshold;
-        const isPreservedTool = msg.role === "tool" && msg.toolName && opts.preserveToolResults.includes(msg.toolName);
-        
-        if (!isRecent && !isPreservedTool) {
-            messagesToCompact.push(msg);
-        }
-    }
-
-    // If targetTokensToFree is set, adaptively reduce keepRecent to free enough tokens
-    const computeCompactableTokens = (msgs: Message[]) => {
-      let total = 0;
-      for (const msg of msgs) {
-        total += msg.tokenCount ?? estimateMessageTokens({ content: msg.content });
-      }
-      return total;
+    const selectMessagesToCompact = (recentCount: number): Message[] => {
+      const recentThreshold = messages.length - recentCount;
+      return messages.filter((message, index) => {
+        const isRecent = index >= recentThreshold;
+        const isPreservedTool =
+          message.role === "tool" &&
+          Boolean(message.toolName) &&
+          opts.preserveToolResults.includes(message.toolName!);
+        return !isRecent && !isPreservedTool;
+      });
     };
+    const computeCompactableTokens = (selectedMessages: Message[]): number =>
+      selectedMessages.reduce(
+        (total, message) =>
+          total + (message.tokenCount ?? estimateMessageTokens({ content: message.content })),
+        0,
+      );
 
+    let messagesToCompact = selectMessagesToCompact(keepRecent);
     if (opts.targetTokensToFree && opts.targetTokensToFree > 0) {
       let compactableTokens = computeCompactableTokens(messagesToCompact);
 
-      // Reduce keepRecent until we can free enough tokens (allow going to 0)
       while (compactableTokens < opts.targetTokensToFree && keepRecent > 0) {
         keepRecent = Math.max(0, keepRecent - 2);
-        
-        // Re-calculate messages to compact with new threshold
-        const newRecentThreshold = messages.length - keepRecent;
-        messagesToCompact = [];
-        for (let i = 0; i < messages.length; i++) {
-            const msg = messages[i];
-            const isRecent = i >= newRecentThreshold;
-            const isPreservedTool = msg.role === "tool" && msg.toolName && opts.preserveToolResults.includes(msg.toolName);
-            if (!isRecent && !isPreservedTool) {
-                messagesToCompact.push(msg);
-            }
-        }
+        messagesToCompact = selectMessagesToCompact(keepRecent);
         compactableTokens = computeCompactableTokens(messagesToCompact);
       }
 
@@ -484,99 +621,295 @@ export class CompactionService {
         console.log(
           `[CompactionService] Adaptive keepRecent: ${opts.keepRecentMessages} → ${keepRecent} ` +
           `(need to free ${formatTokenCount(opts.targetTokensToFree)}, ` +
-          `compactable: ${formatTokenCount(compactableTokens)})`
+          `compactable: ${formatTokenCount(compactableTokens)})`,
         );
       }
     }
 
-    if (messagesToCompact.length === 0) {
+    if (messagesToCompact.length === 0 && !hasExistingSummary) {
+      console.log(
+        `[CompactionService] Utility-model summary skipped: ` +
+        `no messages remain after preserving recent context`,
+      );
       return {
-        success: false,
+        success: autoPrunedTokens > 0,
         tokensFreed: autoPrunedTokens,
         messagesCompacted: 0,
-        newSummary: session.summary || "",
-        error: "No messages available to compact after preserving recent messages",
+        newSummary: "",
+        summaryMethod: "skipped",
+        summaryDiagnostics: {
+          sourceTokens: 0,
+          boundedSourceTokens: 0,
+          sourceTruncated: false,
+        },
+        error: autoPrunedTokens > 0
+          ? undefined
+          : "No messages available to compact after preserving recent messages",
         breakdown: { autoPruned: autoPrunedTokens, summarized: 0 },
       };
     }
 
-    const lastMessageToCompact = messagesToCompact[messagesToCompact.length - 1];
+    const lastMessageToCompact = messagesToCompact.at(-1);
+    const summaryBoundaryId = lastMessageToCompact?.id ?? session.summaryUpToMessageId ?? null;
+    const tokensBeforeCompaction = computeCompactableTokens(messagesToCompact);
+    const previousSummaryTokens = session.summary
+      ? estimateMessageTokens({ content: session.summary })
+      : 0;
+    const representedTokensBefore = previousSummaryTokens + tokensBeforeCompaction;
 
-    // Step 3: Calculate tokens before compaction
-    let tokensBeforeCompaction = 0;
-    for (const msg of messagesToCompact) {
-      tokensBeforeCompaction += msg.tokenCount ?? estimateMessageTokens({ content: msg.content });
+    if (messagesToCompact.length > 0) {
+      console.log(
+        `[CompactionService] Compacting ${messagesToCompact.length} messages ` +
+        `(${formatTokenCount(tokensBeforeCompaction)} tokens)`,
+      );
+    } else {
+      console.log(
+        `[CompactionService] Recompacting existing summary ` +
+        `(${formatTokenCount(previousSummaryTokens)} tokens)`,
+      );
     }
 
-    console.log(
-      `[CompactionService] Compacting ${messagesToCompact.length} messages ` +
-      `(${formatTokenCount(tokensBeforeCompaction)} tokens)`
-    );
-
-    // Step 4: Format messages for summarization
+    // Step 3: Build the source once, then fit the maximum useful slice into the
+    // resolved utility model's safe input budget. A previous summary can itself
+    // become the only oversized context, so it remains part of the source.
     const conversationText = this.formatMessagesForSummary(messagesToCompact, opts.preserveRules);
+    const compactionSource = buildCompactionSource(session.summary ?? null, conversationText);
+    const sourceTokens = estimateMessageTokens({ content: compactionSource });
 
-    // Step 5: Build prompt
-    const previousSummarySection = session.summary
-      ? `**Previous summary to incorporate:**\n\n${session.summary}\n\n`
-      : "";
+    type PreparedSummary = {
+      newSummary: string;
+      summarizedTokensFreed: number;
+      summaryTokens: number;
+    };
 
-    const prompt = ENHANCED_COMPACTION_PROMPT
-      .replace("{previousSummary}", previousSummarySection)
-      .replace("{conversationText}", conversationText);
+    const prepareSummary = (candidateSummary: string): PreparedSummary => {
+      const newSummary = sanitizeUnicodeScalarValues(candidateSummary).trim();
+      if (!newSummary) {
+        throw new Error("Compaction produced an empty summary");
+      }
 
-    try {
-      // Step 6: Generate summary
-      const { text: newSummary } = await generateText({
-        model: getUtilityModel(),
-        prompt,
-        maxOutputTokens: opts.maxSummaryTokens,
-      });
+      const summaryTokens = estimateMessageTokens({ content: newSummary });
+      const summarizedTokensFreed = representedTokensBefore - summaryTokens;
+      if (summarizedTokensFreed <= 0) {
+        throw new Error("Compaction did not reduce the represented context");
+      }
 
-      // Step 7: Calculate tokens freed
-      const summaryTokens = Math.ceil(newSummary.length / 4);
-      const summarizedTokensFreed = tokensBeforeCompaction - summaryTokens;
-      const totalTokensFreed = summarizedTokensFreed + autoPrunedTokens;
+      return { newSummary, summarizedTokensFreed, summaryTokens };
+    };
 
-      console.log(
-        `[CompactionService] Summary generated: ${formatTokenCount(summaryTokens)} tokens ` +
-        `(freed ${formatTokenCount(summarizedTokensFreed)} from summarization)`
-      );
+    const persistPreparedSummary = async (
+      prepared: PreparedSummary,
+      summaryMethod: CompactionSummaryMethod,
+      summaryDiagnostics: CompactionSummaryDiagnostics,
+    ): Promise<CompactionResult> => {
+      await updateSessionSummary(sessionId, prepared.newSummary, summaryBoundaryId);
 
-      // Step 8: Update database
-      await updateSessionSummary(sessionId, newSummary, lastMessageToCompact.id);
-
-      // Mark exactly the messages that were summarized to avoid timestamp-boundary drift.
       const compactedIds = messagesToCompact.map((message) => message.id);
-      await markMessagesAsCompactedByIds(sessionId, compactedIds);
+      if (compactedIds.length > 0) {
+        await markMessagesAsCompactedByIds(sessionId, compactedIds);
+      }
 
+      const totalTokensFreed = prepared.summarizedTokensFreed + autoPrunedTokens;
       const duration = Date.now() - startTime;
       console.log(
         `[CompactionService] Compaction complete in ${duration}ms: ` +
         `${messagesToCompact.length} messages compacted, ` +
-        `${formatTokenCount(totalTokensFreed)} tokens freed`
+        `${formatTokenCount(totalTokensFreed)} tokens freed, method=${summaryMethod}`,
       );
 
       return {
         success: true,
         tokensFreed: totalTokensFreed,
         messagesCompacted: messagesToCompact.length,
-        newSummary,
+        newSummary: prepared.newSummary,
+        summaryMethod,
+        summaryDiagnostics,
         breakdown: {
           autoPruned: autoPrunedTokens,
-          summarized: summarizedTokensFreed,
+          summarized: prepared.summarizedTokensFreed,
         },
       };
-    } catch (error) {
-      console.error("[CompactionService] Failed to compact:", error);
-      return {
-        success: false,
-        tokensFreed: autoPrunedTokens,
-        messagesCompacted: 0,
-        newSummary: "",
-        error: error instanceof Error ? error.message : String(error),
-        breakdown: { autoPruned: autoPrunedTokens, summarized: 0 },
+    };
+
+    const failureResult = (
+      error: unknown,
+      summaryMethod: CompactionSummaryMethod,
+      summaryDiagnostics: CompactionSummaryDiagnostics,
+    ): CompactionResult => ({
+      success: false,
+      tokensFreed: autoPrunedTokens,
+      messagesCompacted: 0,
+      newSummary: session.summary || "",
+      summaryMethod,
+      summaryDiagnostics,
+      error: error instanceof Error ? error.message : String(error),
+      breakdown: { autoPruned: autoPrunedTokens, summarized: 0 },
+    });
+
+    const runDeterministicFallback = async (
+      reason: string,
+      utilityError: unknown,
+      diagnostics: CompactionSummaryDiagnostics,
+    ): Promise<CompactionResult> => {
+      const failedDiagnostics: CompactionSummaryDiagnostics = {
+        ...diagnostics,
+        fallbackReason: reason,
       };
+
+      if (!opts.allowDeterministicFallback || !compactionSource.trim()) {
+        return failureResult(
+          utilityError,
+          "utility_model_failed",
+          failedDiagnostics,
+        );
+      }
+
+      try {
+        const fallbackSummary = buildDeterministicFallbackSummary(compactionSource);
+        const prepared = prepareSummary(fallbackSummary);
+        console.warn(
+          `[CompactionService] Deterministic fallback used: reason=${reason}, ` +
+          `summary=${formatTokenCount(prepared.summaryTokens)} tokens`,
+        );
+        return await persistPreparedSummary(
+          prepared,
+          "deterministic_fallback",
+          failedDiagnostics,
+        );
+      } catch (fallbackError) {
+        console.error("[CompactionService] Deterministic fallback failed:", fallbackError);
+        return failureResult(
+          fallbackError,
+          "utility_model_failed",
+          failedDiagnostics,
+        );
+      }
+    };
+
+    const sessionMetadata =
+      session.metadata && typeof session.metadata === "object" && !Array.isArray(session.metadata)
+        ? (session.metadata as Record<string, unknown>)
+        : null;
+
+    let provider: Awaited<ReturnType<typeof resolveSessionModelScopeForSession>>["effectiveConfig"]["provider"];
+    let utilityModelId: string;
+    let prompt: string;
+    let maxOutputTokens: number;
+    let diagnostics: CompactionSummaryDiagnostics = {
+      sourceTokens,
+      boundedSourceTokens: 0,
+      sourceTruncated: false,
+    };
+
+    try {
+      const scope = await resolveSessionModelScopeForSession(sessionMetadata, {
+        characterId: session.characterId,
+      });
+      provider = scope.effectiveConfig.provider;
+      utilityModelId = scope.effectiveConfig.utilityModel;
+
+      const budget = getUtilityCompactionBudget(
+        utilityModelId,
+        provider,
+        opts.maxSummaryTokens,
+      );
+      if (budget.maxSourceTokens < MIN_UTILITY_COMPACTION_SOURCE_TOKENS) {
+        throw new Error(
+          `Utility model input budget is too small for compaction ` +
+          `(${budget.maxSourceTokens} source tokens available)`,
+        );
+      }
+
+      const boundedSource = boundCompactionText(
+        compactionSource,
+        Math.floor(budget.maxSourceTokens * 4),
+      );
+      prompt = ENHANCED_COMPACTION_PROMPT.replace(
+        "{conversationText}",
+        boundedSource.text,
+      );
+      maxOutputTokens = budget.maxOutputTokens;
+      diagnostics = {
+        provider,
+        modelId: utilityModelId,
+        sourceTokens,
+        boundedSourceTokens: estimateMessageTokens({ content: boundedSource.text }),
+        promptTokens: estimateMessageTokens({ content: prompt }),
+        maxOutputTokens,
+        inputLimitTokens: budget.inputLimitTokens,
+        safetyTokens: budget.safetyTokens,
+        sourceTruncated: boundedSource.truncated,
+      };
+
+      console.log(
+        `[CompactionService] Utility-model summary requested: ` +
+        `provider=${provider}, model=${utilityModelId}, ` +
+        `source=${formatTokenCount(sourceTokens)}, ` +
+        `bounded=${formatTokenCount(diagnostics.boundedSourceTokens)}, ` +
+        `prompt=${formatTokenCount(diagnostics.promptTokens ?? 0)}, ` +
+        `maxOutput=${formatTokenCount(maxOutputTokens)}, ` +
+        `inputLimit=${formatTokenCount(budget.inputLimitTokens)}, ` +
+        `truncated=${boundedSource.truncated}`,
+      );
+    } catch (error) {
+      console.error(
+        "[CompactionService] Utility-model summary could not be prepared:",
+        error,
+      );
+      return runDeterministicFallback("input_or_model_resolution_failed", error, diagnostics);
+    }
+
+    const utilityStartedAt = Date.now();
+    let utilityText: string;
+    try {
+      const utilityModel = getLanguageModelForProvider(provider, utilityModelId);
+      const { text } = await generateText({
+        model: utilityModel,
+        prompt,
+        maxOutputTokens,
+        abortSignal: AbortSignal.timeout(UTILITY_COMPACTION_TIMEOUT_MS),
+      });
+      utilityText = text;
+      diagnostics = {
+        ...diagnostics,
+        utilityDurationMs: Date.now() - utilityStartedAt,
+      };
+    } catch (error) {
+      diagnostics = {
+        ...diagnostics,
+        utilityDurationMs: Date.now() - utilityStartedAt,
+      };
+      console.error("[CompactionService] Utility-model summary failed:", error);
+      return runDeterministicFallback("utility_model_call_failed", error, diagnostics);
+    }
+
+    let preparedUtilitySummary: PreparedSummary;
+    try {
+      preparedUtilitySummary = prepareSummary(utilityText);
+    } catch (error) {
+      console.error("[CompactionService] Utility-model summary was unusable:", error);
+      return runDeterministicFallback("utility_model_output_invalid", error, diagnostics);
+    }
+
+    console.log(
+      `[CompactionService] Utility-model summary generated successfully: ` +
+      `${formatTokenCount(preparedUtilitySummary.summaryTokens)} tokens in ` +
+      `${diagnostics.utilityDurationMs ?? 0}ms`,
+    );
+
+    try {
+      return await persistPreparedSummary(
+        preparedUtilitySummary,
+        "utility_model",
+        diagnostics,
+      );
+    } catch (error) {
+      console.error(
+        `[CompactionService] Utility-model summary persistence failed; ` +
+        `deterministic fallback was not attempted:`,
+        error,
+      );
+      return failureResult(error, "utility_model", diagnostics);
     }
   }
 
@@ -660,11 +993,12 @@ export class CompactionService {
         content = truncateSummaryText(JSON.stringify(msg.content), 500);
       }
 
-      // Truncate very long messages (but we already did smart truncation for tool results)
-      if (Array.from(sanitizeUnicodeScalarValues(content)).length > 2000) {
-        content = truncateSummaryText(content, 2000) + "... [truncated]";
-      } else {
-        content = sanitizeUnicodeScalarValues(content);
+      // Preserve full user/assistant text until the model-aware global input
+      // budget is applied. Tool messages remain locally capped because raw tool
+      // payloads are usually redundant and can otherwise consume the whole slice.
+      content = sanitizeUnicodeScalarValues(content);
+      if (msg.role === "tool" && Array.from(content).length > 2_000) {
+        content = truncateSummaryText(content, 2_000) + "... [truncated]";
       }
 
       formatted.push(`${role}: ${content}`);

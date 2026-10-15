@@ -156,6 +156,7 @@ describe("POST /api/enhance-prompt session reuse", () => {
       sessionProvider: "codex",
       sessionUtilityModel: "gpt-5.3-codex-medium",
     });
+    expect(llmOptions.dbMessages).toEqual([]);
   });
 
   it("passes dbMessages in ascending orderingIndex order for a >10-message session", async () => {

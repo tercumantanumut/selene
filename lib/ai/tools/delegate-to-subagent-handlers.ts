@@ -40,6 +40,7 @@ import {
   buildDelegationDeliveryMetadata,
 } from "./delegation-delivery-registry";
 import { emitDelegationCompleted } from "@/lib/background-tasks/delegation-completion-signal";
+import { scheduleDelegationAutoResume } from "@/lib/background-tasks/delegation-auto-resume";
 
 // ---------------------------------------------------------------------------
 // Read-only accessor for external consumers (API routes, system prompt)
@@ -522,8 +523,14 @@ async function notifyInitiatorSessionOfCompletion(delegation: ActiveDelegation):
     deliveredAt: deliveryMetadata.deliveredAt,
   });
 
-  // Signal the SSE endpoint so the frontend can auto-resume the conversation.
+  // Signal the SSE endpoint so an attached frontend can auto-resume the
+  // conversation with live streaming UX.
   emitDelegationCompleted(delegation.initiatorSessionId);
+
+  // Server-side fallback: if no client picks up the completion within the
+  // grace window (browser asleep, connection dropped, user away), resume the
+  // initiator session directly so the result is delivered autonomously.
+  scheduleDelegationAutoResume(delegation.initiatorSessionId, delegation.delegatorId);
 }
 
 export function startBackgroundExecution(

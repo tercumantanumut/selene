@@ -46,12 +46,14 @@ import {
 } from "@/lib/background-tasks/live-prompt-helpers";
 import {
   drainDelegationCompletions,
+  hasPendingDelegationCompletions,
 } from "@/lib/ai/tools/delegation-completion-store";
 import { markDelegationResultDelivered } from "@/lib/ai/tools/delegation-delivery-registry";
 import { createHeartbeatStream } from "@/lib/utils/heartbeat-stream";
 import {
     classifyRecoverability,
-    getBackoffDelayMs,
+    getRetryDelayMs,
+    PROVIDER_RECOVERY_MAX_RETRIES,
     normalizeStreamError,
     shouldRetry,
     sleepWithAbort,
@@ -131,6 +133,7 @@ import { ollamaModelSupportsThinking } from "@/lib/ai/providers/ollama-capabilit
 import { detectEmotion } from "@/lib/emotion";
 import {
   isUiChunkCommittable,
+  isUiFinishErrorChunk,
   shouldAttemptPrecommitRecovery,
 } from "./ui-stream-recovery";
 
@@ -173,6 +176,7 @@ export async function POST(req: Request) {
   let chatTaskRegistered = false;
   let configuredProvider: string | undefined;
   let activeSessionId: string | undefined;
+  let activeCharacterId: string | null = null;
   let sessionId = "";
   let runId = "";
   let latestUserPromptText = "";
@@ -285,6 +289,7 @@ export async function POST(req: Request) {
     const providedSessionId = headerSessionId || bodySessionId;
 
     const characterId = req.headers.get("X-Character-Id");
+    activeCharacterId = characterId;
     const userTimezoneHeader = req.headers.get("X-User-Timezone")?.trim() || null;
     const taskSource = req.headers.get("X-Task-Source")?.toLowerCase();
     const isChannelSource = taskSource === "channel";
@@ -363,6 +368,31 @@ export async function POST(req: Request) {
     // otherwise land before the queue is registered and come back as 409
     // `no_active_run`. The reservation is rekeyed to the real agentRun.id
     // below via `promoteLivePromptQueueToRunId`.
+    // ── Delegation auto-resume atomic guard ─────────────────────────────────
+    // Must run synchronously, immediately before the reservation (no awaits in
+    // between), so the check-and-reserve pair is atomic w.r.t. the event loop.
+    // Two races end here as clean no-ops instead of empty/duplicate model runs:
+    //   1. A queue already exists → another run is active (user message,
+    //      frontend resume, or a prior fallback). Reserving would CLOBBER its
+    //      queue (reserveLivePromptQueueBySession drops "stale" entries).
+    //      Its step-0 drain / post-run re-check owns delivery.
+    //   2. Nothing pending → a concurrent consumer (frontend resume vs server
+    //      fallback, or double catch-up triggers after wake-from-sleep)
+    //      already drained the store. Running would produce a contentless turn.
+    // Callers tolerate 204: the server fallback treats ok+empty-body as done,
+    // and the client transport converts it to an empty UI-message stream.
+    if (isDelegationAutoResume) {
+      const activeQueueKey = getLivePromptQueueKeyBySession(sessionId);
+      const hasPending = hasPendingDelegationCompletions(sessionId);
+      if (activeQueueKey || !hasPending) {
+        console.debug(
+          `[CHAT API] Delegation auto-resume no-op for ${sessionId}: ` +
+          (activeQueueKey ? `run already active (queue=${activeQueueKey})` : "no pending completions"),
+        );
+        return new Response(null, { status: 204 });
+      }
+    }
+
     activeSessionId = sessionId;
     reserveLivePromptQueueBySession(sessionId);
 
@@ -502,6 +532,7 @@ export async function POST(req: Request) {
     // ── Create agent run ───────────────────────────────────────────────────────
     const resolvedCharacterId =
       characterId || ((sessionMetadata?.characterId as string | undefined) ?? undefined);
+    activeCharacterId = resolvedCharacterId ?? null;
 
     agentRun = await createAgentRun({
       sessionId,
@@ -786,6 +817,7 @@ export async function POST(req: Request) {
       enabledMcpServers,
       enabledMcpTools,
       alwaysLoadMcpToolIds,
+      disabledToolIds,
     } = toolsResult;
 
     const useDeferredLoading = toolLoadingMode !== "always";
@@ -855,6 +887,8 @@ export async function POST(req: Request) {
       enabledMcpServers,
       enabledMcpTools,
       alwaysLoadMcpToolIds,
+      initialActiveToolIds: initialActiveToolNames,
+      disabledToolIds,
       // Rich output callback: fires when an SDK MCP tool produces an image/video/etc.
       // Wires the result into Selene's streaming state so the UI renders media chips.
       // Capture non-null references in locals so the closure has definite types.
@@ -1028,7 +1062,7 @@ export async function POST(req: Request) {
           const runStatus = shouldCancel ? "cancelled" : "failed";
           removeChatAbortController(agentRun.id);
           if (activeSessionId) {
-            await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
+            await handleUndrainedQueueMessages(agentRun.id, activeSessionId, activeCharacterId);
             removeLivePromptQueue(agentRun.id, activeSessionId);
           }
           await completeAgentRun(agentRun.id, runStatus, shouldCancel
@@ -1283,7 +1317,13 @@ export async function POST(req: Request) {
               activeToolSet = new Set<string>(Object.keys(allToolsWithMCP));
             }
 
-            if (sessionHasTruncatedContent(sessionId) && !activeToolSet.has("retrieveFullContent")) {
+            for (const toolName of [...activeToolSet]) {
+              if (disabledToolIds.includes(toolName) || !allToolsWithMCP[toolName]) {
+                activeToolSet.delete(toolName);
+              }
+            }
+
+            if (sessionHasTruncatedContent(sessionId) && allToolsWithMCP.retrieveFullContent && !activeToolSet.has("retrieveFullContent")) {
               activeToolSet.add("retrieveFullContent");
             }
 
@@ -1730,7 +1770,7 @@ export async function POST(req: Request) {
       )
     );
 
-    const STREAM_RECOVERY_MAX_ATTEMPTS = 7;
+    const STREAM_RECOVERY_MAX_ATTEMPTS = PROVIDER_RECOVERY_MAX_RETRIES;
     let result: Awaited<ReturnType<typeof createStreamResult>>;
 
     const createStreamResultWithRecovery = async (startAttempt = 0) => {
@@ -1809,15 +1849,14 @@ export async function POST(req: Request) {
 
           const classification = classifyRecoverability({ provider, error, message: errorMessage });
           const retry = shouldRetry({ classification, attempt, maxAttempts: STREAM_RECOVERY_MAX_ATTEMPTS, aborted: streamAbortSignal.aborted });
+          const delay = retry ? getRetryDelayMs({ attempt, classification }) : 0;
 
           if (runId) {
-            const delay = retry ? getBackoffDelayMs(attempt) : 0;
             await appendRunEvent({ runId, eventType: "llm_request_failed", level: retry ? "info" : "warn", pipelineName: "chat", data: { attempt: attempt + 1, reason: classification.reason, recoverable: classification.recoverable, delayMs: delay, outcome: retry ? "retrying" : "exhausted" } });
           }
 
           if (!retry) throw error;
 
-          const delay = getBackoffDelayMs(attempt);
           console.debug("[CHAT API] Retrying stream creation", { attempt: attempt + 1, reason: classification.reason, delayMs: delay, provider });
           await sleepWithAbort(delay, streamAbortSignal);
         }
@@ -1843,7 +1882,7 @@ export async function POST(req: Request) {
       assistantMessageId = crypto.randomUUID();
     };
 
-    const buildUiMessageStream = () =>
+    const buildUiMessageStream = (onStreamError?: (error: unknown) => void) =>
       result!.toUIMessageStream({
         generateMessageId: () => assistantMessageId,
         messageMetadata: ({ part }) => {
@@ -1862,7 +1901,10 @@ export async function POST(req: Request) {
           }
           return undefined;
         },
-        onError: (error) => normalizeStreamError(error).message,
+        onError: (error) => {
+          onStreamError?.(error);
+          return normalizeStreamError(error).message;
+        },
       });
 
     let activeUiReader: ReadableStreamDefaultReader<UIMessageChunk> | null = null;
@@ -1872,6 +1914,7 @@ export async function POST(req: Request) {
         let clientCommitted = false;
         let bufferedChunks: UIMessageChunk[] = [];
         let visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
+        let lastUiStreamError: unknown;
 
         const emitChunk = (chunk: UIMessageChunk) => {
           if (closed) return;
@@ -1944,25 +1987,37 @@ export async function POST(req: Request) {
 
           if (!retry) return false;
 
-          const delay = getBackoffDelayMs(requestAttempt);
+          const delay = getRetryDelayMs({ attempt: requestAttempt, classification });
           if (runId) {
             await appendRunEvent({ runId, eventType: "llm_request_failed", level: "info", pipelineName: "chat", data: { attempt: requestAttempt + 1, reason: classification.reason, recoverable: classification.recoverable, delayMs: delay, outcome: "retrying_precommit" } });
           }
           console.warn("[CHAT API] Retrying recoverable pre-commit UI stream failure", { attempt: requestAttempt + 1, reason: classification.reason, delayMs: delay, provider });
+          await sleepWithAbort(delay, streamAbortSignal);
+          if (clientDisconnected || closed || streamAbortSignal.aborted) return false;
           resetStreamingStateForRetry();
           recreateThinkTagFilter();
           bufferedChunks = [];
           clientCommitted = false;
           visibleAssistantChunkSanitizer = createVisibleAssistantChunkSanitizer();
-          await sleepWithAbort(delay, streamAbortSignal);
-          ({ result, attempt: requestAttempt } = await createStreamResultWithRecovery(requestAttempt + 1));
+          lastUiStreamError = undefined;
+          const nextAttempt = requestAttempt + 1;
+          requestAttempt = nextAttempt;
+          try {
+            ({ result, attempt: requestAttempt } = await createStreamResultWithRecovery(nextAttempt));
+          } catch (recreateError) {
+            const recreateErrorMessage = normalizeStreamError(recreateError).message;
+            await finalizeAndEmitError(recreateErrorMessage, recreateError);
+            return false;
+          }
           return true;
         };
 
         const pump = async () => {
           while (!closed) {
             let shouldRestart = false;
-            activeUiReader = buildUiMessageStream().getReader();
+            activeUiReader = buildUiMessageStream((error) => {
+              lastUiStreamError = error;
+            }).getReader();
             try {
               while (!closed) {
                 const { done, value } = await activeUiReader.read();
@@ -1991,10 +2046,24 @@ export async function POST(req: Request) {
                 for (const sanitizedChunk of sanitizedChunks) {
                   if (sanitizedChunk.type === "error") {
                     shouldRestart = await preparePrecommitRetry(
-                      sanitizedChunk.errorText ?? "Unknown stream error"
+                      sanitizedChunk.errorText ?? "Unknown stream error",
+                      lastUiStreamError,
                     );
                     if (shouldRestart) break;
-                    await finalizeAndEmitError(sanitizedChunk.errorText ?? "Unknown stream error");
+                    if (!closed) {
+                      await finalizeAndEmitError(sanitizedChunk.errorText ?? "Unknown stream error", lastUiStreamError);
+                    }
+                    return;
+                  }
+
+                  if (isUiFinishErrorChunk(sanitizedChunk)) {
+                    const errorMessage = "Provider stream finished with finishReason=error before a UI error chunk";
+                    const sourceError = { provider, code: "server_error", message: errorMessage, finishReason: "error" };
+                    shouldRestart = await preparePrecommitRetry(errorMessage, sourceError);
+                    if (shouldRestart) break;
+                    if (!closed) {
+                      await finalizeAndEmitError(errorMessage, sourceError);
+                    }
                     return;
                   }
 
@@ -2020,7 +2089,9 @@ export async function POST(req: Request) {
               const errorMessage = normalizeStreamError(error).message;
               shouldRestart = await preparePrecommitRetry(errorMessage, error);
               if (!shouldRestart) {
-                await finalizeAndEmitError(errorMessage, error);
+                if (!closed) {
+                  await finalizeAndEmitError(errorMessage, error);
+                }
                 return;
               }
             } finally {
@@ -2108,7 +2179,7 @@ export async function POST(req: Request) {
     if (activeSessionId) {
       try {
         if (agentRun?.id) {
-          await handleUndrainedQueueMessages(agentRun.id, activeSessionId);
+          await handleUndrainedQueueMessages(agentRun.id, activeSessionId, activeCharacterId);
           removeLivePromptQueue(agentRun.id, activeSessionId);
         } else {
           const pendingKey = getLivePromptQueueKeyBySession(activeSessionId);
@@ -2116,7 +2187,7 @@ export async function POST(req: Request) {
             // handleUndrainedQueueMessages only uses its first arg as a map
             // lookup key — passing the pending placeholder key is safe and
             // drains any entries that raced in during reservation warmup.
-            await handleUndrainedQueueMessages(pendingKey, activeSessionId);
+            await handleUndrainedQueueMessages(pendingKey, activeSessionId, activeCharacterId);
           }
           clearLivePromptQueueBySession(activeSessionId);
         }

@@ -144,6 +144,63 @@ describe("ClaudeBashToolUI", () => {
     expect(container.textContent).not.toContain("(unknown command)");
   });
 
+  it("keeps no-newline markers and trailing separators from shifting diff line numbers", () => {
+    flushSync(() => {
+      root.render(
+        createElement(ClaudeBashToolUI, {
+          toolName: "Bash",
+          args: { command: "apply_patch" },
+          result: {
+            status: "success",
+            inlineDiff: {
+              files: [
+                {
+                  path: "foo.ts",
+                  operation: "modify",
+                  diff: [
+                    "--- foo.ts",
+                    "+++ foo.ts",
+                    "@@ -1,1 +1,1 @@",
+                    "-old",
+                    "\\ No newline at end of file",
+                    "+new",
+                    "\\ No newline at end of file",
+                    "",
+                  ].join("\n"),
+                },
+              ],
+              rawPatch: "",
+            },
+          },
+        })
+      );
+    });
+
+    const contentSpans = Array.from(
+      container.querySelectorAll<HTMLSpanElement>("span.flex-1")
+    );
+    const addedContent = contentSpans.find((span) => span.textContent === "new");
+    expect(addedContent).toBeDefined();
+
+    const addedRowSpans = addedContent
+      ? Array.from(addedContent.parentElement?.querySelectorAll("span") ?? [])
+      : [];
+    expect(addedRowSpans[0]?.textContent).toBe("");
+    expect(addedRowSpans[1]?.textContent).toBe("1");
+
+    const markerRows = contentSpans.filter(
+      (span) => span.textContent === "\\ No newline at end of file"
+    );
+    expect(markerRows).toHaveLength(2);
+    for (const marker of markerRows) {
+      const spans = Array.from(marker.parentElement?.querySelectorAll("span") ?? []);
+      expect(spans[0]?.textContent).toBe("");
+      expect(spans[1]?.textContent).toBe("");
+    }
+
+    expect(contentSpans.filter((span) => span.textContent === "")).toHaveLength(0);
+  });
+
   it("normalizes apply_patch heredoc labels for inline diff rendering", () => {
     flushSync(() => {
       root.render(

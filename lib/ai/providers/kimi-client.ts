@@ -17,7 +17,18 @@ import { getAppUrl } from "./openrouter-client";
 
 const KIMI_FIXED_TEMPERATURE = 0.6;
 const KIMI_THINKING_TEMPERATURE = 1.0;
+// K3 is always-thinking (max effort) upstream. Do not send
+// `thinking: { type: "disabled" }`, which conflicts with that contract.
 const KIMI_ALWAYS_THINKING_MODELS = new Set([
+  "k3",
+  "kimi-k2.7-code",
+  "kimi-k2.7-code-highspeed",
+]);
+// Kimi's coding endpoint enforces temperature 1.0 for these always-thinking
+// model families. K3 is included here based on the API error contract:
+// "invalid temperature: only 1 is allowed for this model".
+const KIMI_THINKING_TEMPERATURE_MODELS = new Set([
+  "k3",
   "kimi-k2.7-code",
   "kimi-k2.7-code-highspeed",
 ]);
@@ -42,18 +53,17 @@ export function normalizeKimiChatCompletionBody(body: unknown): unknown {
   const normalized = { ...body };
 
   if (isKimiAlwaysThinkingModel(normalized.model)) {
-    // K2.7 code models are forced-thinking models; explicitly disabling
-    // thinking causes the coding endpoint to reject otherwise valid requests.
+    // Always-thinking models reject an explicit disabled-thinking request.
     delete normalized.thinking;
   } else {
     // Non-thinking mode: reasoning outputs should not persist in history.
     normalized.thinking = { type: "disabled" };
   }
 
-  // Kimi's coding backend validates temperature per model family. Non-thinking
-  // models currently require 0.6, while K2.7 Code forced-thinking models require
-  // 1.0 and reject the 0.6 default.
-  normalized.temperature = isKimiAlwaysThinkingModel(normalized.model)
+  // Kimi's coding backend validates temperature per model family. Always-
+  // thinking coding models require exactly 1.0.
+  normalized.temperature = typeof normalized.model === "string" &&
+    KIMI_THINKING_TEMPERATURE_MODELS.has(normalized.model.toLowerCase())
     ? KIMI_THINKING_TEMPERATURE
     : KIMI_FIXED_TEMPERATURE;
   normalized.top_p = 0.95;
@@ -102,21 +112,35 @@ async function kimiCustomFetch(
 let _kimiClient: ReturnType<typeof createOpenAICompatible> | null = null;
 let _kimiClientApiKey: string | undefined = undefined;
 let _kimiClientIsOAuth: boolean = false;
+let _kimiClientBaseURL: string | undefined = undefined;
 
-export function getKimiClient(): ReturnType<typeof createOpenAICompatible> {
+export function getKimiApiBaseUrl(modelId: string, isOAuth: boolean): string {
+  // K3 is configured upstream on the Kimi Code endpoint for both OAuth and
+  // API-key authentication. OAuth already uses this endpoint for all models.
+  return isOAuth || modelId.toLowerCase() === "k3"
+    ? KIMI_CONFIG.CODING_BASE_URL
+    : KIMI_CONFIG.BASE_URL;
+}
+
+export function getKimiClient(modelId: string): ReturnType<typeof createOpenAICompatible> {
   const isOAuth = isKimiOAuthAuthenticated();
   const apiKey = isOAuth ? (getKimiAccessToken() ?? undefined) : getKimiApiKey();
-  const baseURL = isOAuth ? KIMI_OAUTH_CONFIG.API_BASE_URL : KIMI_CONFIG.BASE_URL;
+  const baseURL = getKimiApiBaseUrl(modelId, isOAuth);
   const extraHeaders = isOAuth ? getKimiDeviceHeaders() : {};
 
-  // Recreate client if API key or auth mode changed
-  if (_kimiClient && (_kimiClientApiKey !== apiKey || _kimiClientIsOAuth !== isOAuth)) {
+  // Recreate client if authentication or the model's endpoint changed.
+  if (_kimiClient && (
+    _kimiClientApiKey !== apiKey ||
+    _kimiClientIsOAuth !== isOAuth ||
+    _kimiClientBaseURL !== baseURL
+  )) {
     _kimiClient = null;
   }
 
   if (!_kimiClient) {
     _kimiClientApiKey = apiKey;
     _kimiClientIsOAuth = isOAuth;
+    _kimiClientBaseURL = baseURL;
     _kimiClient = createOpenAICompatible({
       name: "kimi",
       baseURL,
@@ -137,4 +161,5 @@ export function invalidateKimiClient(): void {
   _kimiClient = null;
   _kimiClientApiKey = undefined;
   _kimiClientIsOAuth = false;
+  _kimiClientBaseURL = undefined;
 }

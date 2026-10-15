@@ -3,6 +3,7 @@ import {
   channelConnections,
   channelConversations,
   channelMessages,
+  channelOutbox,
 } from "./sqlite-schema";
 import type {
   ChannelConnection,
@@ -11,8 +12,10 @@ import type {
   NewChannelConversation,
   ChannelMessage,
   NewChannelMessage,
+  ChannelOutboxEntry,
+  NewChannelOutboxEntry,
 } from "./sqlite-schema";
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { eq, desc, asc, and, or, isNull, lte, lt, inArray, sql } from "drizzle-orm";
 
 // ============================================================================
 // CHANNEL CONNECTIONS
@@ -181,6 +184,22 @@ export async function createChannelMessage(data: NewChannelMessage): Promise<Cha
   return entry;
 }
 
+/**
+ * Find an outbound channel message record for an internal message ID.
+ * Used by the outbox worker to detect that a delivery already succeeded
+ * (e.g. a timed-out send that actually landed) and avoid duplicate sends.
+ */
+export async function findOutboundChannelMessageByMessageId(
+  messageId: string
+): Promise<ChannelMessage | undefined> {
+  return db.query.channelMessages.findFirst({
+    where: and(
+      eq(channelMessages.messageId, messageId),
+      eq(channelMessages.direction, "outbound")
+    ),
+  });
+}
+
 export async function findChannelMessageByExternalId(params: {
   connectionId: string;
   channelType: ChannelMessage["channelType"];
@@ -195,4 +214,126 @@ export async function findChannelMessageByExternalId(params: {
       eq(channelMessages.direction, params.direction)
     ),
   });
+}
+
+// ============================================================================
+// CHANNEL OUTBOX (durable delivery queue)
+// ============================================================================
+
+/**
+ * Idempotent enqueue: `message_id` is unique, so a concurrent/duplicate
+ * enqueue for the same final message returns the existing entry instead of
+ * creating a second delivery.
+ */
+export async function createChannelOutboxEntry(
+  data: NewChannelOutboxEntry
+): Promise<ChannelOutboxEntry> {
+  const [entry] = await db
+    .insert(channelOutbox)
+    .values(data)
+    .onConflictDoNothing({ target: channelOutbox.messageId })
+    .returning();
+  if (entry) return entry;
+  const existing = await db.query.channelOutbox.findFirst({
+    where: eq(channelOutbox.messageId, data.messageId),
+  });
+  if (!existing) {
+    throw new Error(`Failed to enqueue outbox entry for message ${data.messageId}`);
+  }
+  return existing;
+}
+
+/**
+ * Atomically claim a pending outbox entry for delivery. Returns the updated
+ * entry if this caller won the claim, or undefined if the entry was already
+ * claimed/delivered by a concurrent worker (the caller must then skip it).
+ */
+export async function claimChannelOutboxEntry(
+  id: string
+): Promise<ChannelOutboxEntry | undefined> {
+  const [entry] = await db
+    .update(channelOutbox)
+    .set({
+      status: "delivering",
+      // Increment in SQL so a stale in-memory row can never reset the count.
+      attempts: sql`${channelOutbox.attempts} + 1`,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(and(eq(channelOutbox.id, id), eq(channelOutbox.status, "pending")))
+    .returning();
+  return entry;
+}
+
+/**
+ * Guarded terminal/retry transition: only applies if the entry is still in
+ * 'delivering' state at the expected attempt count, so a stale racer can
+ * never overwrite a newer delivered/failed/pending state. Returns the updated
+ * entry, or undefined if the guard did not match.
+ */
+export async function finalizeChannelOutboxEntry(
+  id: string,
+  expectedAttempts: number,
+  data: Partial<NewChannelOutboxEntry>
+): Promise<ChannelOutboxEntry | undefined> {
+  const [entry] = await db
+    .update(channelOutbox)
+    .set({ ...data, updatedAt: new Date().toISOString() })
+    .where(
+      and(
+        eq(channelOutbox.id, id),
+        eq(channelOutbox.status, "delivering"),
+        eq(channelOutbox.attempts, expectedAttempts)
+      )
+    )
+    .returning();
+  return entry;
+}
+
+export async function updateChannelOutboxEntry(
+  id: string,
+  data: Partial<NewChannelOutboxEntry>
+): Promise<ChannelOutboxEntry | undefined> {
+  const [entry] = await db
+    .update(channelOutbox)
+    .set({ ...data, updatedAt: new Date().toISOString() })
+    .where(eq(channelOutbox.id, id))
+    .returning();
+  return entry;
+}
+
+/**
+ * List outbox entries that are due for a delivery attempt: pending entries
+ * whose next_attempt_at is unset or in the past.
+ */
+export async function listDueChannelOutboxEntries(limit = 20): Promise<ChannelOutboxEntry[]> {
+  const now = new Date().toISOString();
+  return db.query.channelOutbox.findMany({
+    where: and(
+      eq(channelOutbox.status, "pending"),
+      or(isNull(channelOutbox.nextAttemptAt), lte(channelOutbox.nextAttemptAt, now))
+    ),
+    orderBy: asc(channelOutbox.createdAt),
+    limit,
+  });
+}
+
+/**
+ * Reset entries stuck in 'delivering' (e.g. process crashed mid-send) back to
+ * 'pending' so the worker can retry them. Only touches entries older than the
+ * provided threshold to avoid clobbering an in-flight attempt.
+ */
+export async function resetStaleChannelOutboxEntries(staleBeforeIso: string): Promise<number> {
+  const stale = await db.query.channelOutbox.findMany({
+    where: and(
+      eq(channelOutbox.status, "delivering"),
+      lt(channelOutbox.updatedAt, staleBeforeIso)
+    ),
+    columns: { id: true },
+  });
+  if (stale.length === 0) return 0;
+  await db
+    .update(channelOutbox)
+    .set({ status: "pending", updatedAt: new Date().toISOString() })
+    .where(inArray(channelOutbox.id, stale.map((s) => s.id)));
+  return stale.length;
 }

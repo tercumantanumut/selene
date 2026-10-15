@@ -196,6 +196,21 @@ export async function register() {
       }
     }, 3500);
 
+    // Recover delegation completions persisted before a restart: re-schedule
+    // the server-side auto-resume fallback so subagent results delivered
+    // while the process was down still reach the initiator autonomously.
+    // Runs after zombie-run cleanup so stale run state cannot block resume.
+    setTimeout(async () => {
+      try {
+        const { recoverPendingDelegationAutoResumes } = await import(
+          "@/lib/background-tasks/delegation-auto-resume"
+        );
+        recoverPendingDelegationAutoResumes();
+      } catch (error) {
+        console.error("[Instrumentation] Error recovering delegation auto-resumes:", error);
+      }
+    }, 4500);
+
     // Start scheduled task scheduler
     setTimeout(async () => {
       try {

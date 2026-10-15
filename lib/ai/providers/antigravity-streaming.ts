@@ -12,7 +12,7 @@ import {
 } from "@/lib/auth/antigravity-auth";
 import {
   classifyRecoverability,
-  getBackoffDelayMs,
+  getRetryDelayMs,
   shouldRetry,
   sleepWithAbort,
   type RecoveryClassification,
@@ -619,6 +619,7 @@ export function createAntigravityFetch(
         const classification = classifyRecoverability({
           provider: "antigravity",
           statusCode: response.status,
+          headers: response.headers,
           message: errorText,
         });
         const shouldAttemptRetry = shouldRetry({
@@ -629,7 +630,7 @@ export function createAntigravityFetch(
         });
 
         if (shouldAttemptRetry) {
-          const delay = getBackoffDelayMs(attempt);
+          const delay = getRetryDelayMs({ attempt, classification });
           console.log("[Antigravity] Scheduling HTTP stream recovery retry", {
             attempt: attempt + 1,
             reason: classification.reason,
@@ -668,7 +669,7 @@ export function createAntigravityFetch(
                   );
                   return null;
                 }
-                const delay = getBackoffDelayMs(attempt);
+                const delay = getRetryDelayMs({ attempt, classification });
                 console.log("[Antigravity] Scheduling mid-stream recovery retry", {
                   attempt: attempt + 1,
                   reason: classification.reason,

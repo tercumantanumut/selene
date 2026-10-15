@@ -261,10 +261,36 @@ export class TelegramConnector implements ChannelConnector {
     }
 
     // ── Step 4: Plain text fallback (no attachments) ─────────────────────
+    // Render command buttons as an inline keyboard when provided. Callback
+    // data is prefixed with "cmd:" and re-dispatched through the inbound
+    // command pipeline (see callback_query handler below).
+    let commandKeyboard: InlineKeyboard | undefined;
+    if (payload.commandButtons?.length) {
+      commandKeyboard = new InlineKeyboard();
+      let hasButtons = false;
+      for (const row of payload.commandButtons) {
+        let rowHasButtons = false;
+        for (const button of row) {
+          const callbackData = `cmd:${button.command}`;
+          // Telegram limits callback_data to 64 bytes; skip oversized buttons
+          // (the message text always contains a typed-command fallback).
+          if (Buffer.byteLength(callbackData, "utf8") > 64) {
+            console.warn(`[Telegram] Skipping command button over 64-byte callback limit: ${callbackData}`);
+            continue;
+          }
+          commandKeyboard.text(button.label, callbackData);
+          rowHasButtons = true;
+          hasButtons = true;
+        }
+        if (rowHasButtons) commandKeyboard.row();
+      }
+      if (!hasButtons) commandKeyboard = undefined;
+    }
     const sent = await this.bot.api.sendMessage(chatId, text || " ", {
       message_thread_id: payload.threadId ? Number(payload.threadId) : undefined,
       reply_parameters: replyParameters,
       parse_mode: payload.parseMode,
+      reply_markup: commandKeyboard,
     });
     return {
       externalMessageId: String(sent.message_id),
@@ -370,9 +396,34 @@ export class TelegramConnector implements ChannelConnector {
       return;
     });
 
-    // Handle inline keyboard button clicks for interactive questions
+    // Handle inline keyboard button clicks for interactive questions and
+    // command buttons (session management).
     this.bot.on("callback_query:data", async (ctx) => {
       const data = ctx.callbackQuery.data;
+
+      // Command buttons: "cmd:/switch 2" → re-dispatch through the normal
+      // inbound pipeline as if the user typed the command.
+      if (data?.startsWith("cmd:")) {
+        const command = data.slice(4).trim();
+        await ctx.answerCallbackQuery().catch(() => {});
+        const chatId = ctx.callbackQuery.message?.chat?.id;
+        if (!command || chatId === undefined) return;
+        this.dispatchInboundMessage({
+          connectionId: this.connectionId,
+          characterId: this.characterId,
+          channelType: "telegram",
+          peerId: String(chatId),
+          peerName: ctx.from?.username || ctx.from?.first_name || null,
+          threadId: ctx.callbackQuery.message?.message_thread_id
+            ? String(ctx.callbackQuery.message.message_thread_id)
+            : null,
+          messageId: `cbq-${ctx.callbackQuery.id}`,
+          text: command,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
       if (!data?.startsWith("auq:")) return;
 
       const parts = data.split(":");

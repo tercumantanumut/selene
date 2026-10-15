@@ -3,6 +3,8 @@ import * as path from "path";
 import * as fs from "fs";
 import { debugLog, debugError } from "./debug-logger";
 import type { IpcHandlerContext } from "./ipc-context";
+import { getSetting } from "@/lib/settings/settings-manager";
+import { uiScaleToZoomFactor } from "@/lib/ui/ui-scale";
 import {
   getWindowBackgroundColor,
   currentElectronThemePreference,
@@ -63,6 +65,7 @@ export function registerBrowserSessionHandlers(ctx: IpcHandlerContext): void {
         show: false,
       });
 
+      win.webContents.setZoomFactor(uiScaleToZoomFactor(getSetting("uiScale")));
       sessionWindows.set(sessionId, win);
 
       // Attach ready-to-show BEFORE loadURL — the event fires on first paint,

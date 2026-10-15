@@ -13,12 +13,21 @@ import type { SdkToolResultBridge, SdkToolResultRecord } from "@/lib/ai/provider
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MIN_TIMEOUT_MS = 250;
 const MAX_BUFFERED_RESULTS = 256;
+const MAX_CANCELLED_IDS = 1024;
 
 type Waiter = (value: SdkToolResultRecord | undefined) => void;
 
 export function createSdkToolResultBridge(): SdkToolResultBridge {
   const results = new Map<string, SdkToolResultRecord>();
   const waiters = new Map<string, Waiter[]>();
+  /**
+   * Tool-call IDs whose SDK stream ended without publishing a result. Waits
+   * for these resolve immediately (undefined) instead of hanging — the
+   * per-request bridge outlives a single SDK stream (multi-step runs), so
+   * this is scoped per ID rather than disposing the whole bridge.
+   */
+  const cancelledIds = new Set<string>();
+  let disposed = false;
 
   const resolveWaiters = (toolCallId: string, value: SdkToolResultRecord | undefined) => {
     const pending = waiters.get(toolCallId);
@@ -63,6 +72,12 @@ export function createSdkToolResultBridge(): SdkToolResultBridge {
     if (existing) {
       results.delete(toolCallId);
       return Promise.resolve(existing);
+    }
+
+    // Sticky: once the bridge is disposed or this ID was cancelled, nothing
+    // can publish a result for it anymore — never park a waiter.
+    if (disposed || cancelledIds.has(toolCallId)) {
+      return Promise.resolve(undefined);
     }
 
     const abortSignal = options?.abortSignal;
@@ -110,8 +125,24 @@ export function createSdkToolResultBridge(): SdkToolResultBridge {
     });
   };
 
+  const cancel: SdkToolResultBridge["cancel"] = (toolCallId) => {
+    if (!toolCallId || results.has(toolCallId)) return;
+    cancelledIds.add(toolCallId);
+    while (cancelledIds.size > MAX_CANCELLED_IDS) {
+      const oldest = cancelledIds.values().next().value;
+      if (oldest === undefined) break;
+      cancelledIds.delete(oldest);
+    }
+    resolveWaiters(toolCallId, undefined);
+  };
+
+  /**
+   * Sticky end-of-life: every pending waiter resolves with undefined and any
+   * later wait resolves immediately. Buffered results are kept so an executor
+   * that reaches `waitFor` after disposal still receives its real output.
+   */
   const dispose: SdkToolResultBridge["dispose"] = () => {
-    results.clear();
+    disposed = true;
     for (const pending of waiters.values()) {
       for (const resolve of pending) {
         resolve(undefined);
@@ -123,6 +154,7 @@ export function createSdkToolResultBridge(): SdkToolResultBridge {
   return {
     publish,
     waitFor,
+    cancel,
     dispose,
   };
 }

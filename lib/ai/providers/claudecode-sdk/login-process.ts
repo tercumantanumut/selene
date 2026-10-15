@@ -1,9 +1,9 @@
 /**
  * Claude Agent SDK OAuth login subprocess management.
  *
- * Drives `node cli.js login` from `@anthropic-ai/claude-agent-sdk`, captures the
- * OAuth URL for the browser popup, accepts the pasted code over stdin, and
- * resolves on exit. Credentials are written to ~/.claude by the SDK CLI itself.
+ * Drives the native Claude Code executable bundled by `@anthropic-ai/claude-agent-sdk`,
+ * captures the OAuth URL for the browser popup, accepts the pasted code over stdin,
+ * and resolves on exit. Credentials are written to ~/.claude by Claude Code itself.
  *
  * This is the SDK-backend analogue of `lib/ai/providers/dario/login.ts`; the two
  * keep separate credential stores and must be imported by explicit path so the
@@ -15,21 +15,35 @@ import { isElectronProduction } from "@/lib/utils/environment";
 import { buildEnvironmentForTarget } from "@/lib/process-env/policy";
 import { consolidatePathKeys } from "@/lib/utils/windows-env";
 
-// Resolved lazily so process.cwd() is evaluated at runtime, not build time.
-// In production Electron builds, node_modules live under resourcesPath/standalone/.
+function getAgentSdkPlatformPackageCandidates(): string[] {
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const platform = process.platform === "win32" ? "win32" : process.platform;
+  const base = `claude-agent-sdk-${platform}-${arch}`;
+  return platform === "linux" ? [base, `${base}-musl`] : [base];
+}
+
+// Resolved lazily so process.cwd() and Electron resourcesPath are evaluated at runtime.
+// Agent SDK 0.3.x ships Claude Code in a platform-specific optional dependency.
 export function getCliPath(): string {
+  const fs = require("fs") as typeof import("fs");
+  const executableName = process.platform === "win32" ? "claude.exe" : "claude";
   const resourcesPath =
     (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ||
     process.env.ELECTRON_RESOURCES_PATH;
+  const nodeModulesRoots = [
+    resourcesPath ? path.join(resourcesPath, "standalone", "node_modules") : null,
+    path.join(process.cwd(), "node_modules"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
-  if (resourcesPath) {
-    // Production Electron: modules are bundled under standalone/
-    const prodPath = path.join(resourcesPath, "standalone", "node_modules", "@anthropic-ai", "claude-agent-sdk", "cli.js");
-    const fs = require("fs") as typeof import("fs");
-    if (fs.existsSync(prodPath)) return prodPath;
+  for (const nodeModulesRoot of nodeModulesRoots) {
+    for (const packageName of getAgentSdkPlatformPackageCandidates()) {
+      const candidate = path.join(nodeModulesRoot, "@anthropic-ai", packageName, executableName);
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
 
-  return path.join(process.cwd(), "node_modules/@anthropic-ai/claude-agent-sdk/cli.js");
+  const expectedPackage = getAgentSdkPlatformPackageCandidates()[0];
+  return path.join(nodeModulesRoots[0], "@anthropic-ai", expectedPackage, executableName);
 }
 
 function fileExistsAndExecutable(filePath: string): boolean {
@@ -181,7 +195,7 @@ function getSystemNodeBinary(nodeName: string): string | null {
 }
 
 /**
- * Returns the Node.js binary used to run claude-agent-sdk/cli.js.
+ * Returns the Node.js binary exposed to Claude Code subprocesses and SDK tools.
  * Resolution order:
  *   1. System node from PATH / common macOS install locations
  *   2. Bundled node at $ELECTRON_RESOURCES_PATH/standalone/node_modules/.bin/node
@@ -285,9 +299,8 @@ async function startClaudeLoginProcessOnce(
 ): Promise<{ url: string | null; output: string[] }> {
   killActive();
 
-  const nodeBinary = getNodeBinary();
+  const cliPath = getCliPath();
   const isProduction = isElectronProduction();
-  const useElectronRunAsNode = isProduction && nodeBinary === process.execPath;
 
   // Use the same sanitized env as the SDK auth check for consistency.
   // This ensures HOME, PATH, and USERPROFILE are set correctly on all platforms.
@@ -297,16 +310,12 @@ async function startClaudeLoginProcessOnce(
   });
 
   const spawnEnv = { ...sdkEnv } as NodeJS.ProcessEnv;
-  // CLAUDECODE is already removed by CLAUDE_SDK_BLOCKED_KEYS in sanitizeEnvironment
-  if (useElectronRunAsNode) {
-    spawnEnv.ELECTRON_RUN_AS_NODE = "1";
-  }
+  // CLAUDECODE is already removed by CLAUDE_SDK_BLOCKED_KEYS in sanitizeEnvironment.
 
   const state: LoginProcessState = {
-    process: spawn(nodeBinary, [getCliPath(), "login"], {
+    process: spawn(cliPath, ["login"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: spawnEnv,
-      shell: process.platform === "win32",
       windowsHide: true,
     }),
     url: null,

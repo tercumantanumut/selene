@@ -99,9 +99,21 @@ function extractPrimaryText(output: unknown): string | null {
     return parts.join("\n");
   }
 
-  for (const field of ["content", "text", "result", "results", "output", "summary", "markdown"]) {
+  for (const field of ["content", "text", "result", "results", "output", "markdown"]) {
     if (typeof obj[field] === "string") return obj[field] as string;
   }
+
+  // Nested payloads (designWorkspace readSource and similar): { data: { code } }
+  if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) {
+    const data = obj.data as Record<string, unknown>;
+    for (const field of ["code", "content", "text"]) {
+      if (typeof data[field] === "string") return data[field] as string;
+    }
+  }
+
+  // NOTE: `summary` is deliberately NOT treated as primary text — it is a short
+  // derived digest. Storing it as the "full content" makes retrieveFullContent
+  // useless for recovering the real payload; callers fall back to full JSON.
 
   return null;
 }

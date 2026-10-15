@@ -80,6 +80,16 @@ export interface ChannelSendPayload {
   totalChunks?: number;
   /** Telegram-compatible parse mode. Legacy "Markdown" is supported but "MarkdownV2" is preferred. */
   parseMode?: "Markdown" | "MarkdownV2" | "HTML";
+  /**
+   * Optional rows of command buttons. Connectors with native button support
+   * (Telegram inline keyboards) render these; tapping a button re-dispatches
+   * its `command` string through the normal inbound command pipeline.
+   * Connectors without button support ignore this field — callers must keep
+   * the text usable standalone (text-only fallback).
+   * Note: Telegram callback data is limited to 64 bytes, so commands should
+   * stay short (e.g. "/switch 2").
+   */
+  commandButtons?: Array<Array<{ label: string; command: string }>>;
 }
 
 export interface ChannelSendResult {

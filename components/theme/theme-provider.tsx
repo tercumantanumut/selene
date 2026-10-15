@@ -3,6 +3,8 @@
 import type { ReactNode } from "react";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { BackgroundConfig } from "@/lib/personalization/wallpapers";
+import { getElectronAPI } from "@/lib/electron/types";
+import { DEFAULT_UI_SCALE, normalizeUiScale, uiScaleToZoomFactor } from "@/lib/ui/ui-scale";
 import { DEFAULT_THEME_PRESET, type ThemePresetId } from "@/lib/personalization/theme-presets";
 import {
   DEFAULT_CHAT_WORKSPACE_MODE,
@@ -48,6 +50,8 @@ type ThemeContextValue = {
   theme: ThemePreference;
   resolvedTheme: ResolvedTheme;
   setTheme: (theme: ThemePreference) => void;
+  uiScale: number;
+  setUiScale: (scale: number) => void;
   themePreset: ThemePresetId;
   setThemePreset: (preset: ThemePresetId) => void;
   homepageBackground: BackgroundConfig;
@@ -132,14 +136,17 @@ const DEFAULT_BG: BackgroundConfig = { type: "none" };
 
 export function ThemeProvider({
   initialTheme,
+  initialUiScale = DEFAULT_UI_SCALE,
   initialChatWorkspaceMode = DEFAULT_CHAT_WORKSPACE_MODE,
   children,
 }: {
   initialTheme: ThemePreference;
+  initialUiScale?: number;
   initialChatWorkspaceMode?: ChatWorkspaceMode;
   children: ReactNode;
 }) {
   const [theme, setTheme] = useState<ThemePreference>(initialTheme);
+  const [uiScale, setUiScaleState] = useState(() => normalizeUiScale(initialUiScale));
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme(initialTheme));
   const [themePreset, setThemePresetState] = useState<ThemePresetId>(DEFAULT_THEME_PRESET);
   const [homepageBackground, setHomepageBgState] = useState<BackgroundConfig>(DEFAULT_BG);
@@ -164,6 +171,27 @@ export function ThemeProvider({
       // Ignore storage errors
     }
   }, [theme]);
+
+  useEffect(() => {
+    const normalizedScale = normalizeUiScale(uiScale);
+    const zoomFactor = uiScaleToZoomFactor(normalizedScale);
+    const root = document.documentElement;
+    root.dataset.uiScale = String(normalizedScale);
+
+    const electronAPI = getElectronAPI();
+    if (electronAPI?.window.setZoomFactor) {
+      // Electron's native page zoom scales the complete renderer, including
+      // fixed layers and Radix portals. Avoid applying CSS zoom as well.
+      root.style.setProperty("--ui-scale-factor", "1");
+      void electronAPI.window.setZoomFactor(zoomFactor, false).catch((error) => {
+        console.warn("[Theme] Failed to apply Electron UI scale:", error);
+      });
+      return;
+    }
+
+    // Browser fallback. Root-level zoom includes portaled overlays under body.
+    root.style.setProperty("--ui-scale-factor", String(zoomFactor));
+  }, [uiScale]);
 
   useEffect(() => {
     applyPreset(themePreset);
@@ -214,6 +242,19 @@ export function ThemeProvider({
     };
   }, []);
 
+  const setUiScale = (scale: number) => {
+    const normalizedScale = normalizeUiScale(scale);
+    const electronAPI = getElectronAPI();
+    if (electronAPI?.window.setZoomFactor) {
+      void electronAPI.window
+        .setZoomFactor(uiScaleToZoomFactor(normalizedScale), true)
+        .catch((error) => {
+          console.warn("[Theme] Failed to broadcast Electron UI scale:", error);
+        });
+    }
+    setUiScaleState(normalizedScale);
+  };
+
   const setThemePreset = (preset: ThemePresetId) => {
     setThemePresetState(preset);
   };
@@ -245,6 +286,8 @@ export function ThemeProvider({
       theme,
       resolvedTheme,
       setTheme,
+      uiScale,
+      setUiScale,
       themePreset,
       setThemePreset,
       homepageBackground,
@@ -254,7 +297,7 @@ export function ThemeProvider({
       chatWorkspaceMode,
       setChatWorkspaceMode,
     }),
-    [theme, resolvedTheme, themePreset, homepageBackground, chatBackground, chatWorkspaceMode]
+    [theme, resolvedTheme, uiScale, themePreset, homepageBackground, chatBackground, chatWorkspaceMode]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

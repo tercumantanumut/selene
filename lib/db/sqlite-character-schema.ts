@@ -3,6 +3,7 @@ import {
   text,
   integer,
   index,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { relations, sql } from "drizzle-orm";
 import { users, sessions, messages } from "./sqlite-schema-base";
@@ -255,6 +256,47 @@ export const channelMessages = sqliteTable(
     connectionIdx: index("channel_messages_connection_idx").on(table.connectionId),
     externalIdx: index("channel_messages_external_idx").on(table.channelType, table.externalMessageId, table.direction),
     sessionIdx: index("channel_messages_session_idx").on(table.sessionId),
+    // At most one outbound record per internal message (outbox dedup invariant).
+    outboundMessageIdx: uniqueIndex("idx_channel_messages_outbound_message_uidx")
+      .on(table.messageId)
+      .where(sql`direction = 'outbound'`),
+  })
+);
+
+// ============================================================================
+// CHANNEL OUTBOX TABLE
+// ============================================================================
+// Durable delivery queue for outbound channel replies. Final assistant
+// responses are enqueued here before delivery so that a failed/timed-out
+// send (e.g. after a 30-40 minute agent run) can be retried by the outbox
+// worker instead of being silently dropped.
+
+export const channelOutbox = sqliteTable(
+  "channel_outbox",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    sessionId: text("session_id")
+      .references(() => sessions.id, { onDelete: "cascade" })
+      .notNull(),
+    messageId: text("message_id")
+      .references(() => messages.id, { onDelete: "cascade" })
+      .notNull(),
+    rawMode: integer("raw_mode", { mode: "boolean" }).default(false).notNull(),
+    status: text("status", { enum: ["pending", "delivering", "delivered", "failed"] })
+      .default("pending")
+      .notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    lastError: text("last_error"),
+    nextAttemptAt: text("next_attempt_at"),
+    deliveredAt: text("delivered_at"),
+    createdAt: text("created_at").default(sql`(datetime('now'))`).notNull(),
+    updatedAt: text("updated_at").default(sql`(datetime('now'))`).notNull(),
+  },
+  (table) => ({
+    statusIdx: index("channel_outbox_status_idx").on(table.status, table.nextAttemptAt),
+    statusUpdatedIdx: index("channel_outbox_status_updated_idx").on(table.status, table.updatedAt),
+    // One logical delivery per final message — makes enqueue idempotent.
+    messageIdx: uniqueIndex("channel_outbox_message_uidx").on(table.messageId),
   })
 );
 
@@ -364,6 +406,8 @@ export type ChannelConversation = typeof channelConversations.$inferSelect;
 export type NewChannelConversation = typeof channelConversations.$inferInsert;
 export type ChannelMessage = typeof channelMessages.$inferSelect;
 export type NewChannelMessage = typeof channelMessages.$inferInsert;
+export type ChannelOutboxEntry = typeof channelOutbox.$inferSelect;
+export type NewChannelOutboxEntry = typeof channelOutbox.$inferInsert;
 
 export interface CharacterFull extends Character {
   images: CharacterImage[];

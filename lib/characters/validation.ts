@@ -42,7 +42,7 @@ const characterImageSchema = z.object({
   seed: z.number().optional(),
   generationModel: z.string().max(50).optional(),
   sortOrder: z.number().int().optional().default(0),
-  metadata: z.record(z.unknown()).optional().default({}),
+  metadata: z.record(z.string(), z.unknown()).optional().default({}),
 });
 
 // ============================================================================
@@ -76,9 +76,15 @@ const pluginAgentSeedSchema = z.object({
   tags: z.array(z.string().max(120)).optional(),
 });
 
+const toolLoadingPreferenceSchema = z.enum(["always", "deferred"]);
+
 export const agentMetadataSchema = z.object({
   /** List of enabled tool names for this agent */
   enabledTools: z.array(z.string()).optional(),
+  /** Per-enabled-tool initial loading preference. Authorization still comes from enabledTools. */
+  toolLoadingPreferences: z.record(z.string(), toolLoadingPreferenceSchema).optional(),
+  /** Internal migration guard for per-tool initial loading preferences */
+  toolLoadingPolicyMigrationApplied: z.boolean().optional(),
   /** Optional cache/fallback list of enabled plugin IDs for this agent */
   enabledPlugins: z.array(z.string()).optional(),
   /** Agent's purpose/responsibilities description */
@@ -107,13 +113,13 @@ export const agentMetadataSchema = z.object({
    * Can override or extend global MCP servers
    */
   mcpServers: z.object({
-    mcpServers: z.record(z.object({
+    mcpServers: z.record(z.string(), z.object({
       type: z.enum(["http", "sse", "stdio"]).optional(),
       url: z.string().optional(),
       command: z.string().optional(),
       args: z.array(z.string()).optional(),
-      env: z.record(z.string()).optional(),
-      headers: z.record(z.string()).optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
       timeout: z.number().optional(),
     })),
   }).optional(),

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#33225f">
+  <meta name="color-scheme" content="light dark">
+  <title>Phuket City & Malls Plan — Tuesday, 28 July 2026</title>
+  <style>
+    :root {
+      --ink:#211d29; --muted:#6c6675; --paper:#f7f4fb; --card:#fff;
+      --line:#ded7e7; --purple:#3d286d; --purple2:#6548a3; --pink:#b84878;
+      --gold:#b87712; --blue:#116787; --green:#17634b; --red:#9a3e2d;
+      --soft-purple:#f0eafb; --soft-pink:#fff0f6; --soft-blue:#eaf7fc;
+      --soft-green:#eaf7f1; --soft-red:#fff0eb; --soft-gold:#fff7df;
+      --shadow:0 10px 28px rgba(47,28,76,.09); --radius:18px;
+    }
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{margin:0;color:var(--ink);background:
+      radial-gradient(circle at 90% 0,rgba(184,72,120,.12),transparent 24rem),
+      linear-gradient(180deg,#eee8f7 0,var(--paper) 24rem);
+      font:16px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      -webkit-font-smoothing:antialiased}
+    a{color:var(--purple2);text-underline-offset:3px}
+    .wrap{width:min(100% - 20px,880px);margin:auto;padding:10px 0 68px}
+    .hero{padding:27px 21px 23px;border-radius:24px;color:white;background:
+      linear-gradient(135deg,rgba(51,34,95,.98),rgba(101,72,163,.95));box-shadow:var(--shadow)}
+    .eyebrow{margin:0 0 8px;color:#e8def9;font-size:.75rem;font-weight:850;letter-spacing:.12em;text-transform:uppercase}
+    h1{margin:0;font-size:clamp(1.85rem,7vw,3rem);line-height:1.05;letter-spacing:-.035em}
+    .hero p{margin:13px 0 0;color:#f7f2ff}
+    .pills{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}
+    .pill{padding:7px 10px;border:1px solid rgba(255,255,255,.22);border-radius:999px;background:rgba(255,255,255,.13);font-size:.78rem;font-weight:800}
+    .go,.section{margin-top:14px;padding:18px;border-radius:var(--radius);box-shadow:var(--shadow)}
+    .go{border:2px solid #ce9ce0;background:linear-gradient(135deg,#fff,#f4ecfb)}
+    .section{border:1px solid var(--line);background:var(--card)}
+    h2{margin:0 0 11px;font-size:1.3rem;line-height:1.2;letter-spacing:-.015em}
+    h3{margin:18px 0 7px;font-size:1.03rem}
+    p{margin:7px 0} ul,ol{padding-left:1.22rem} li+li{margin-top:6px}
+    .actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:13px}
+    .btn{display:flex;align-items:center;justify-content:center;min-height:47px;padding:10px 12px;border-radius:12px;background:var(--purple);color:white;text-align:center;text-decoration:none;font-weight:850;line-height:1.25}
+    .btn.alt{border:1px solid var(--purple);background:white;color:var(--purple)}
+    .btn.pink{background:var(--pink)}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .metric{padding:13px;border:1px solid var(--line);border-radius:14px;background:#fcfbfe}
+    .metric b{display:block;color:var(--purple);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+    .metric strong{display:block;margin-top:2px;font-size:1.04rem}.metric small{display:block;margin-top:3px;color:var(--muted)}
+    .notice{margin:10px 0;padding:12px 13px;border-left:5px solid var(--blue);border-radius:10px;background:var(--soft-blue)}
+    .warning{border-left-color:var(--red);background:var(--soft-red)}
+    .good{border-left-color:var(--green);background:var(--soft-green)}
+    .tag{display:inline-flex;padding:3px 7px;border-radius:999px;font-size:.67rem;font-weight:900;letter-spacing:.035em;text-transform:uppercase;white-space:nowrap}
+    .verified{color:var(--green);background:var(--soft-green)}
+    .estimate{color:var(--purple2);background:var(--soft-purple)}
+    .check{color:#815400;background:var(--soft-gold)}
+    .timeline{margin-top:10px}
+    .stop{position:relative;display:grid;grid-template-columns:74px minmax(0,1fr);gap:12px;padding-bottom:18px}
+    .stop:not(:last-child):after{content:"";position:absolute;left:36px;top:37px;bottom:3px;width:2px;background:#d5cae3}
+    .time{position:relative;z-index:1;align-self:start;padding:7px 5px;border-radius:10px;background:var(--purple2);color:white;text-align:center;font-size:.81rem;font-weight:900}
+    .stopbox{padding:13px;border:1px solid var(--line);border-radius:14px;background:#fff}
+    .stopbox h3{margin:0 0 5px}.stopbox p{margin:5px 0}
+    .links{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
+    .links a{display:inline-flex;align-items:center;min-height:39px;padding:7px 10px;border:1px solid #c9bdda;border-radius:10px;background:#faf7ff;text-decoration:none;font-size:.81rem;font-weight:850}
+    table{width:100%;border-collapse:collapse;margin-top:8px;font-size:.9rem}
+    th,td{padding:9px 7px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+    th{color:var(--purple);font-size:.73rem;letter-spacing:.045em;text-transform:uppercase}
+    th:last-child,td:last-child{text-align:right}
+    details{margin-top:10px;border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
+    summary{cursor:pointer;padding:13px 14px;color:var(--purple);font-weight:850}
+    details>div{padding:0 14px 14px}
+    .source-list{font-size:.88rem;word-break:break-word}.source-list li+li{margin-top:9px}.source-list small{color:var(--muted)}
+    .foot{padding-top:11px;border-top:1px solid var(--line);color:var(--muted);font-size:.81rem}
+    .sticky{position:sticky;z-index:10;bottom:max(8px,env(safe-area-inset-bottom));display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px;padding:8px;border-radius:15px;background:rgba(51,34,95,.94);box-shadow:0 12px 30px rgba(0,0,0,.22);backdrop-filter:blur(10px)}
+    .sticky a{display:flex;align-items:center;justify-content:center;min-height:44px;border-radius:10px;background:white;color:var(--purple);text-align:center;text-decoration:none;font-size:.82rem;font-weight:900}
+    @media(max-width:560px){.wrap{width:min(100% - 14px,880px)}.hero{padding:23px 17px 20px}.section,.go{padding:16px}.actions{grid-template-columns:1fr}.stop{grid-template-columns:65px minmax(0,1fr);gap:9px}.stop:not(:last-child):after{left:31px}.grid{grid-template-columns:1fr 1fr}table{font-size:.82rem}}
+    @media(prefers-color-scheme:dark){:root{--ink:#f1ecf6;--muted:#b8afc1;--paper:#121016;--card:#1d1922;--line:#403747;--soft-purple:#302643;--soft-pink:#3b202d;--soft-blue:#182e39;--soft-green:#18342a;--soft-red:#3b211c;--soft-gold:#382d13}.metric,.stopbox,details{background:#211c27}.go{background:linear-gradient(135deg,#211c27,#2a2037)}.btn.alt{background:#eee7f5}.links a{background:#292133;border-color:#5a4c68}}
+    @media print{body{background:#fff;color:#111}.wrap{width:100%;padding:0}.hero,.go,.section{box-shadow:none;break-inside:avoid}.sticky{display:none}a{color:#111;text-decoration:none}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <header class="hero">
+    <p class="eyebrow">Same-day indoor plan · prepared for an 11:10 ICT start</p>
+    <h1>Phuket City & Malls Day</h1>
+    <p>Tuesday, 28 July 2026 · Solo-friendly shopping, aquarium, food and optional spa · From Patong Bay Residence</p>
+    <div class="pills">
+      <span class="pill">Leave about 11:30</span>
+      <span class="pill">Mostly indoors</span>
+      <span class="pill">Central Floresta + Festival</span>
+      <span class="pill">Return about 20:45</span>
+    </div>
+  </header>
+
+  <section class="go" aria-labelledby="do-now">
+    <h2 id="do-now">Do this now</h2>
+    <ol>
+      <li>Take a small umbrella, passport or passport photo, phone charger and a light layer for strong mall air-conditioning.</li>
+      <li>At about <strong>11:20–11:30</strong>, request a Grab car to <strong>Central Phuket Floresta</strong>—not Central Patong.</li>
+      <li>Before confirming, try Central Pattana's active international-visitor code <strong>CPNTR25</strong>. It advertises up to 25% off eligible rides to or from participating Central malls; the app must show the discount before booking.</li>
+      <li>If the app estimates more than 60 minutes, or the driver reports water across the Kathu road, use the Jungceylon fallback in this file instead.</li>
+    </ol>
+    <div class="actions">
+      <a class="btn" href="https://www.google.com/maps/dir/?api=1&amp;origin=Patong%20Bay%20Residence%20Phuket&amp;destination=Central%20Phuket%20Floresta&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Open route to Central</a>
+      <a class="btn pink" href="https://www.centralpattana.co.th/en/shopping/shopping-update/promotions/1564/central-pattana-x-grab-international-customer-promotion-2026-exclusive-privileges-to-international-customers" target="_blank" rel="noopener noreferrer">Check Grab promotion</a>
+      <a class="btn alt" href="tel:+6676603333">Call Central Floresta</a>
+      <a class="btn alt" href="tel:+6676629800">Call Aquaria</a>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="snapshot">
+    <h2 id="snapshot">Plan snapshot</h2>
+    <div class="grid">
+      <div class="metric"><b>Main destination</b><strong>Central Phuket</strong><small>Two connected wings: Floresta and Festival.</small></div>
+      <div class="metric"><b>Transport</b><strong>Grab car both ways</strong><small>Avoid a scooter in rain and holiday traffic.</small></div>
+      <div class="metric"><b>Fixed paid activity</b><strong>Aquaria: ฿1,090</strong><small>Official TAT-listed foreign-adult price; confirm at checkout.</small></div>
+      <div class="metric"><b>Expected non-shopping spend</b><strong>฿2,590–5,000+</strong><small>Rides, meals, aquarium and optional simple spa service.</small></div>
+    </div>
+    <p class="foot"><span class="tag verified">Verified</span> Central publishes daily hours of 10:00–22:00. Aquaria is open 10:30–19:00 with last admission at 18:00. The aquarium states that public-holiday admission pricing is unchanged, although queues may be longer.</p>
+  </section>
+
+  <section class="section" aria-labelledby="weather">
+    <h2 id="weather">Weather and holiday status</h2>
+    <div class="notice warning">
+      <p><strong>Keep the day indoors.</strong> At 11:15, the supplementary Open-Meteo model showed about 31.8°C, feeling like 36.5°C, with gusts near 36 km/h. Rain probability rises from roughly 41% at noon to 59–71% later in the afternoon and evening.</p>
+    </div>
+    <ul>
+      <li><span class="tag verified">Verified</span> The Thai Meteorological Department has an active heavy-to-very-heavy-rain warning during this monsoon period. Localised downpours and road water pooling can occur quickly.</li>
+      <li><span class="tag verified">Verified</span> Today is H.M. the King's Birthday and a public holiday. Expect family crowds, slower taxis and queues.</li>
+      <li><span class="tag verified">Verified</span> Today is not the Buddhist alcohol-ban day. The dry days are 29–30 July. Alcohol may generally be sold today by licensed businesses from 11:00–24:00 under the updated national rule.</li>
+      <li><span class="tag check">Live check</span> No reliable current road-closure notice was found. Treat the driver's local report and visible road conditions as decisive.</li>
+    </ul>
+  </section>
+
+  <section class="section" aria-labelledby="timeline">
+    <h2 id="timeline">Recommended timeline</h2>
+    <div class="timeline">
+      <article class="stop">
+        <div class="time">11:20</div>
+        <div class="stopbox">
+          <h3>Prepare and request the car</h3>
+          <p>Bring a payment card plus ฿1,000–2,000 cash. Save the hotel's name and address in the phone. For tourist promotions or VAT paperwork, a passport is better than relying only on a photo.</p>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">11:30</div>
+        <div class="stopbox">
+          <h3>Patong Bay Residence → Central Phuket Floresta</h3>
+          <p><span class="tag estimate">Estimate</span> About 12–15 km and normally 30–45 minutes. Allow 45–75 minutes today because of the public holiday and possible rain.</p>
+          <p>Use a car, sit in the rear seat, wear the seat belt and keep the ride details shared in the app.</p>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">12:15</div>
+        <div class="stopbox">
+          <h3>Arrive at Floresta and visit Tourist Services</h3>
+          <p>Ask for the current international-visitor Welcome Pack or The 1 Tourist privileges, today’s event sheet, the Aquaria show board and VAT-refund instructions. Promotions are conditional and should not drive a purchase unless the counter confirms them.</p>
+          <div class="links">
+            <a href="https://www.centralphuket.com" target="_blank" rel="noopener noreferrer">Central official site</a>
+            <a href="https://www.google.com/maps/search/?api=1&amp;query=Central%20Phuket%20Floresta" target="_blank" rel="noopener noreferrer">Floresta map</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">12:25</div>
+        <div class="stopbox">
+          <h3>Lunch in Floresta</h3>
+          <p>Choose one comfortable sit-down option rather than crossing the whole complex hungry:</p>
+          <ul>
+            <li><strong>Nara Thai Cuisine:</strong> polished Thai food; reported daily 10:30–22:00.</li>
+            <li><strong>Maimorn Cuisine:</strong> Phuket and Southern Thai dishes in the Floresta wing.</li>
+            <li><strong>Food hall:</strong> quickest and lowest-cost choice if Aquaria has a queue.</li>
+          </ul>
+          <p><span class="tag estimate">Budget</span> ฿300–800 for one person, depending on venue and seafood.</p>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">13:20</div>
+        <div class="stopbox">
+          <h3>Aquaria Phuket — indoor anchor activity</h3>
+          <p><span class="tag verified">Verified</span> B1, Central Phuket Floresta; daily 10:30–19:00; last admission 18:00; recommended visit about 1 hour 45 minutes.</p>
+          <p>Buy at the official counter or official booking page. Immediately photograph the day’s feeding and Mermaid Show board; official show pages warn that times can change without notice.</p>
+          <p><strong>Suggested exit:</strong> 15:10–15:30. Do not rush to match an unconfirmed online showtime.</p>
+          <div class="links">
+            <a href="https://www.aquaria-phuket.com" target="_blank" rel="noopener noreferrer">Aquaria official site</a>
+            <a href="https://www.aquaria-phuket.com/aquaria-phuket-showtimes.php" target="_blank" rel="noopener noreferrer">Official showtimes page</a>
+            <a href="https://www.aquaria-phuket.com/feeding-program-schedule.php" target="_blank" rel="noopener noreferrer">Official feeding schedule</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">15:30</div>
+        <div class="stopbox">
+          <h3>Coffee, dessert and Floresta shopping</h3>
+          <p>Take a 20-minute seated break, then browse Floresta’s department store, cosmetics, fashion and luxury floors. Many luxury boutiques publish earlier individual closing times around 20:00–21:00 even though the mall closes at 22:00, so browse them now rather than late evening.</p>
+          <p>If buying qualifying goods for export, ask the shop for the tourist VAT-refund form at the time of purchase and keep the goods, receipts and passport details together.</p>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">17:00</div>
+        <div class="stopbox">
+          <h3>Choose one: wellness or more shopping</h3>
+          <p><strong>Relax option:</strong> Ask Pimnara Spa on the 3rd floor of Floresta for the earliest 60–90 minute foot, shoulder, facial or nail appointment. Do not prepay until the service, duration and total price are written down.</p>
+          <p><strong>Shopping option:</strong> Use the covered moving walkway to Festival for high-street fashion, electronics, pharmacy, supermarket and practical purchases.</p>
+          <p><span class="tag estimate">Spa estimate</span> Approximately ฿400 for a basic short service to ฿2,600+ for packages; availability and exact menu are not verified.</p>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">18:30</div>
+        <div class="stopbox">
+          <h3>Festival wing or optional cinema check</h3>
+          <p>Browse the Festival wing, connected to Floresta by covered moving walkways. If she prefers a movie, check the SFX desk or official SF app in person; no dependable same-day online showtime was verified during research.</p>
+          <div class="links">
+            <a href="https://www.google.com/maps/search/?api=1&amp;query=Central%20Phuket%20Festival" target="_blank" rel="noopener noreferrer">Festival map</a>
+            <a href="https://www.sfcinemacity.com" target="_blank" rel="noopener noreferrer">SF Cinema official</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">19:15</div>
+        <div class="stopbox">
+          <h3>Dinner under one roof</h3>
+          <p>Eat before requesting the return ride. Choose the closest suitable restaurant rather than crossing wings again. Budget ฿300–900 for one person.</p>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">20:15</div>
+        <div class="stopbox">
+          <h3>Request Grab back to Patong</h3>
+          <p>Use a designated mall pickup point and wait indoors until the app shows the correct vehicle. Recheck the plate before entering. Try <strong>CPNTR25</strong> again if the promotion remains available.</p>
+          <p><span class="tag estimate">Estimate</span> 35–70 minutes to Patong; later if a downpour begins.</p>
+          <div class="links">
+            <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Central%20Phuket%20Floresta&amp;destination=Patong%20Bay%20Residence%20Phuket&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Return route</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="stop">
+        <div class="time">20:45</div>
+        <div class="stopbox">
+          <h3>Expected hotel return</h3>
+          <p>Normal target is 20:45–21:15. If roads slow down, remain inside Central until the ride is accepted; the published mall closing time is 22:00.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="cost">
+    <h2 id="cost">Budget excluding shopping</h2>
+    <table>
+      <thead><tr><th>Item</th><th>Expected cost</th></tr></thead>
+      <tbody>
+        <tr><td>Two Grab car rides</td><td>฿600–1,100 <span class="tag estimate">Estimate</span></td></tr>
+        <tr><td>Aquaria foreign adult</td><td>฿1,090 <span class="tag verified">Listed</span></td></tr>
+        <tr><td>Lunch + dinner + coffee</td><td>฿900–1,800 <span class="tag estimate">Estimate</span></td></tr>
+        <tr><td>Optional basic spa/beauty service</td><td>฿400–2,600+ <span class="tag estimate">Estimate</span></td></tr>
+      </tbody>
+    </table>
+    <p><strong>Without spa:</strong> approximately ฿2,590–3,990. <strong>With a simple spa service:</strong> approximately ฿2,990–5,000+. Shopping is entirely separate.</p>
+  </section>
+
+  <section class="section" aria-labelledby="mall-guide">
+    <h2 id="mall-guide">Which wing is for what?</h2>
+    <div class="grid">
+      <div class="metric"><b>Floresta</b><strong>Start here</strong><small>Aquaria, Central department store, cosmetics, luxury boutiques, spa and polished dining.</small></div>
+      <div class="metric"><b>Festival</b><strong>Finish here</strong><small>High-street shopping, electronics, pharmacy, supermarket, casual food and SFX cinema.</small></div>
+    </div>
+    <p class="foot">The two buildings are linked by covered moving walkways. There is no need to cross the main road at street level.</p>
+  </section>
+
+  <section class="section" aria-labelledby="fallback">
+    <h2 id="fallback">Patong fallback if the cross-island ride is poor</h2>
+    <details open>
+      <summary>Use Jungceylon instead if Grab shows over 60 minutes or roads are waterlogged</summary>
+      <div>
+        <p>Jungceylon is close to Patong Bay Residence and publishes regular daily hours of 11:00–22:00; Big C publishes 09:00–23:00. No official mall closure notice for today was found during research, but individual shops may use public-holiday hours.</p>
+        <ol>
+          <li><strong>11:35:</strong> short car ride or, only if dry and comfortable, approximately 15-minute walk from the hotel.</li>
+          <li><strong>12:00:</strong> lunch at Din Tai Fung, a Thai restaurant or the food court.</li>
+          <li><strong>13:00–15:30:</strong> shopping, pharmacy, Big C and coffee.</li>
+          <li><strong>15:30–17:00:</strong> walk-in massage in the basement Jungle Zone; official mall guidance lists traditional massage businesses daily 11:00–22:00.</li>
+          <li><strong>17:15 onward:</strong> check SF Cinema in person, or continue shopping and eat dinner in the mall.</li>
+          <li><strong>20:00:</strong> return to the hotel before the heaviest evening rain risk.</li>
+        </ol>
+        <div class="links">
+          <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Patong%20Bay%20Residence%20Phuket&amp;destination=Jungceylon%20Shopping%20Center&amp;travelmode=walking" target="_blank" rel="noopener noreferrer">Walking route</a>
+          <a href="https://www.jungceylon.com/en" target="_blank" rel="noopener noreferrer">Jungceylon official</a>
+          <a href="https://www.jungceylon.com/en/dining" target="_blank" rel="noopener noreferrer">Dining directory</a>
+          <a href="https://www.jungceylon.com/en/directory/sf-cinema" target="_blank" rel="noopener noreferrer">SF Cinema listing</a>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="section" aria-labelledby="safety">
+    <h2 id="safety">Solo-friendly practical rules</h2>
+    <ul>
+      <li>Use app-booked cars, confirm the plate and share ride status. Decline unsolicited taxi changes after entering the car.</li>
+      <li>Wait for pickup inside the mall until the vehicle is close; use the mall’s designated pickup area.</li>
+      <li>Keep handbag zipped and worn in front in crowded areas. Do not leave the phone on a café table.</li>
+      <li>For expensive purchases, verify the final card amount in baht before tapping and retain receipts.</li>
+      <li>Do not walk through moving or ankle-deep road water; remain inside and request a different pickup point.</li>
+      <li>Tourist Police: <a href="tel:1155">1155</a>. Medical emergency: <a href="tel:1669">1669</a>. Central Floresta: <a href="tel:+6676603333">+66 76 603 333</a>.</li>
+    </ul>
+  </section>
+
+  <section class="section source-list" aria-labelledby="sources">
+    <h2 id="sources">Sources and verification record</h2>
+    <p>Research completed around 11:10–11:20 ICT on 28 July 2026. Dynamic availability, traffic, promotions and individual-shop hours can change.</p>
+    <ol>
+      <li><a href="https://www.centralphuket.com" target="_blank" rel="noopener noreferrer">Central Phuket official website</a><br><small>Official mall hours, two-wing complex, directory, visitor services and contact details.</small></li>
+      <li><a href="https://www.centralphuket.com/about-us" target="_blank" rel="noopener noreferrer">Central Phuket — About Us</a><br><small>Official confirmation that Festival and Floresta are linked by moving walkways.</small></li>
+      <li><a href="https://www.centralpattana.co.th/en/shopping/shopping-update/promotions/1564/central-pattana-x-grab-international-customer-promotion-2026-exclusive-privileges-to-international-customers" target="_blank" rel="noopener noreferrer">Central Pattana × Grab international promotion</a><br><small>Official 2026 promotion: code CPNTR25, up to 25% off eligible rides, subject to in-app terms and availability.</small></li>
+      <li><a href="https://www.aquaria-phuket.com" target="_blank" rel="noopener noreferrer">Aquaria Phuket official website</a><br><small>Official 10:30–19:00 hours, 18:00 last admission, B1 location, recommended 1h45 visit, public-holiday queue notice and contact number.</small></li>
+      <li><a href="https://www.tourismthailand.org/Attraction/aquaria-phuket" target="_blank" rel="noopener noreferrer">Tourism Authority of Thailand — Aquaria Phuket</a><br><small>Official tourism listing used for the ฿1,090 foreign-adult aquarium-only reference price.</small></li>
+      <li><a href="https://www.aquaria-phuket.com/aquaria-phuket-showtimes.php" target="_blank" rel="noopener noreferrer">Aquaria official showtimes page</a><br><small>Official warning that shows may change without prior notice.</small></li>
+      <li><a href="https://www.tmd.go.th/en" target="_blank" rel="noopener noreferrer">Thai Meteorological Department</a><br><small>Official heavy-to-very-heavy-rain warning and monsoon conditions.</small></li>
+      <li><a href="https://api.open-meteo.com/v1/forecast?latitude=7.91&amp;longitude=98.37&amp;current=temperature_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m,wind_gusts_10m&amp;hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,rain,weather_code,wind_speed_10m,wind_gusts_10m&amp;daily=precipitation_probability_max,precipitation_sum,rain_sum,uv_index_max&amp;timezone=Asia%2FBangkok&amp;start_date=2026-07-28&amp;end_date=2026-07-28" target="_blank" rel="noopener noreferrer">Open-Meteo live model output for Phuket</a><br><small>Supplementary current and hourly weather values checked at 11:15 ICT.</small></li>
+      <li><a href="https://www.tatnews.org/2026/05/alcohol-sales-and-consumption-rules-updated-in-thailand-what-tourists-need-to-know" target="_blank" rel="noopener noreferrer">TAT Newsroom — updated alcohol rules</a><br><small>Official tourism guidance: general licensed sales window 11:00–24:00 from 29 May 2026, subject to dry-day and location restrictions.</small></li>
+      <li><a href="https://www.jungceylon.com/en" target="_blank" rel="noopener noreferrer">Jungceylon official website</a><br><small>Official regular hours: mall 11:00–22:00, Big C 09:00–23:00 and bank zone 11:00–18:00.</small></li>
+    </ol>
+    <h3>Explicit estimates</h3>
+    <ul>
+      <li>Grab prices, traffic time, spa pricing and same-day spa availability.</li>
+      <li>Individual restaurant queues and public-holiday hours.</li>
+      <li>Whether CPNTR25 applies to the specific account, vehicle category and ride.</li>
+      <li>Exact return time, which depends on rain and Kathu–Patong traffic.</li>
+    </ul>
+    <p class="foot">This is a same-day planning file, not a reservation. The aquarium, spa, cinema and rides remain unbooked.</p>
+  </section>
+
+  <nav class="sticky" aria-label="Quick actions">
+    <a href="https://www.google.com/maps/dir/?api=1&amp;origin=Patong%20Bay%20Residence%20Phuket&amp;destination=Central%20Phuket%20Floresta&amp;travelmode=driving" target="_blank" rel="noopener noreferrer">Go to Central</a>
+    <a href="https://www.aquaria-phuket.com" target="_blank" rel="noopener noreferrer">Aquaria official</a>
+  </nav>
+</main>
+</body>
+</html>

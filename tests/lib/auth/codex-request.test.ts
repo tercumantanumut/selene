@@ -169,3 +169,67 @@ describe("transformCodexRequest", () => {
     expect(normalizeCodexModel("codex-auto-review-xhigh")).toBe("codex-auto-review");
   });
 });
+
+describe("GPT-6 Astra Codex support", () => {
+  it.each([
+    ["gpt-6-astra-low", "low"],
+    ["gpt-6-astra-medium", "medium"],
+    ["gpt-6-astra-high", "high"],
+    ["gpt-6-astra-xhigh", "xhigh"],
+    ["gpt-6-astra-max", "max"],
+    ["gpt-6-astra-ultra", "ultra"],
+  ] as const)("maps %s to gpt-6-astra with %s reasoning effort", async (modelId, effort) => {
+    const transformed = await transformCodexRequest(
+      { model: modelId, input: [] } as Record<string, any>,
+      "",
+    );
+
+    expect(transformed.model).toBe("gpt-6-astra");
+    expect(transformed.reasoning?.effort).toBe(effort);
+  });
+
+  it("uses Astra's upstream default reasoning effort (low)", async () => {
+    const transformed = await transformCodexRequest(
+      { model: "gpt-6-astra", input: [] } as Record<string, any>,
+      "",
+    );
+
+    expect(transformed.model).toBe("gpt-6-astra");
+    expect(transformed.reasoning?.effort).toBe("low");
+  });
+
+  it("keeps text verbosity for Astra because upstream declares support_verbosity", async () => {
+    const transformed = await transformCodexRequest(
+      { model: "gpt-6-astra-high", input: [] } as Record<string, any>,
+      "",
+    );
+
+    expect(transformed.text?.verbosity).toBeDefined();
+  });
+
+  it("lists every Astra reasoning variant in the Codex model picker with readable names", () => {
+    const models = getCodexModels();
+    const ids = models.map((model) => model.id);
+
+    expect(ids).toEqual(expect.arrayContaining([
+      "gpt-6-astra",
+      "gpt-6-astra-low",
+      "gpt-6-astra-medium",
+      "gpt-6-astra-high",
+      "gpt-6-astra-xhigh",
+      "gpt-6-astra-max",
+      "gpt-6-astra-ultra",
+    ]));
+    expect(ids).not.toContain("gpt-6-astra-none");
+    expect(models.find((model) => model.id === "gpt-6-astra")?.name).toBe("GPT-6 Astra");
+    expect(models.find((model) => model.id === "gpt-6-astra-ultra")?.name).toBe("GPT-6 Astra (Ultra)");
+    expect(models.find((model) => model.id === "gpt-6-astra-xhigh")?.name).toBe("GPT-6 Astra (Extra High)");
+  });
+
+  it("normalizes Astra variants, provider-prefixed IDs, and loose spellings to gpt-6-astra", () => {
+    expect(normalizeCodexModel("gpt-6-astra-ultra")).toBe("gpt-6-astra");
+    expect(normalizeCodexModel("openai/gpt-6-astra-max")).toBe("gpt-6-astra");
+    expect(normalizeCodexModel("GPT-6-Astra")).toBe("gpt-6-astra");
+    expect(normalizeCodexModel("gpt 6 astra")).toBe("gpt-6-astra");
+  });
+});

@@ -13,6 +13,7 @@ import {
 } from "@/lib/chat/workspace-mode";
 import type { VoiceSettingsFields } from "@/lib/settings/voice-settings-fields";
 import type { LlmProvider } from "@/app/settings/settings-types";
+import { DEFAULT_UI_SCALE, normalizeUiScale } from "@/lib/ui/ui-scale";
 
 export type PostEditHooksPreset = "off" | "fast" | "strict";
 
@@ -238,6 +239,7 @@ export interface AppSettings {
     // App preferences
     appLanguage?: "en" | "tr";
     theme: "dark" | "light" | "system";
+    uiScale?: number;
     chatWorkspaceMode?: ChatWorkspaceMode;
     toolLoadingMode?: "deferred" | "always";  // Tool loading strategy: deferred saves tokens, always loads all upfront
     toolDisplayMode?: "compact" | "detailed"; // Tool card rendering strategy in chat UI
@@ -365,6 +367,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     localUserEmail: "local@zlutty.ai",
     appLanguage: "en",
     theme: "dark",
+    uiScale: DEFAULT_UI_SCALE,
     chatWorkspaceMode: DEFAULT_CHAT_WORKSPACE_MODE,
     toolLoadingMode: "deferred",  // Default to deferred loading to save tokens
     toolDisplayMode: "compact",
@@ -547,6 +550,7 @@ export function loadSettings(): AppSettings {
         try {
             const data = readFileSync(/*turbopackIgnore: true*/ settingsPath, "utf-8");
             const loaded: AppSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
+            loaded.uiScale = normalizeUiScale(loaded.uiScale);
             // NOTE: We no longer clear incompatible models on read.
             // Validation happens at write-time (settings PUT, session model-config PUT)
             // via model-validation.ts. The runtime guard in providers.ts handles any
@@ -581,6 +585,8 @@ export function saveSettings(settings: AppSettings): void {
     if (!existsSync(/*turbopackIgnore: true*/ dir)) {
         mkdirSync(/*turbopackIgnore: true*/ dir, { recursive: true });
     }
+
+    settings.uiScale = normalizeUiScale(settings.uiScale);
 
     // Sanitize browser profile path: strip null bytes and trim whitespace
     if (settings.chromiumUserProfilePath) {

@@ -45,9 +45,14 @@ export async function connectPluginMCPServers(
         characterId
       );
 
-      await manager.connect(namespacedName, resolved, characterId);
-      connected.push(namespacedName);
-      console.log(`[Plugin MCP] Connected: ${namespacedName}`);
+      const status = await manager.connect(namespacedName, resolved, characterId);
+      if (status.connected) {
+        connected.push(namespacedName);
+        console.log(`[Plugin MCP] Connected: ${namespacedName}`);
+      } else {
+        failed.push(namespacedName);
+        console.warn(`[Plugin MCP] ${namespacedName} did not connect: ${status.lastError ?? status.connectionState ?? "unknown error"}`);
+      }
     } catch (error) {
       console.error(`[Plugin MCP] Failed to connect ${namespacedName}:`, error);
       failed.push(namespacedName);

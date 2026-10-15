@@ -104,8 +104,8 @@ export function mcpToolToMetadata(
 ): ToolMetadata {
     // Determine loading configuration based on preference
     const loadingConfig = preference?.loadingMode === "always"
-        ? { alwaysLoad: true, deferLoading: false }
-        : { alwaysLoad: false, deferLoading: true };  // Default to deferred
+        ? { alwaysLoad: true, deferLoading: false, defaultPolicy: "always" as const }
+        : { alwaysLoad: false, deferLoading: true, defaultPolicy: "deferred" as const };  // Default to deferred
 
     // Defensive: handle missing name/serverName from a deleted or partially-loaded tool
     const toolName = mcpTool.name || "unknown_tool";

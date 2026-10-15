@@ -30,6 +30,7 @@ describe("isModelCompatibleWithProvider", () => {
 
     it("rejects non-claude models", () => {
       expect(isModelCompatibleWithProvider("gpt-5.1-codex", "anthropic")).toBe(false);
+      expect(isModelCompatibleWithProvider("gpt-6-astra", "anthropic")).toBe(false);
       expect(isModelCompatibleWithProvider("kimi-k2.5", "anthropic")).toBe(false);
       expect(isModelCompatibleWithProvider("llama3.1:8b", "anthropic")).toBe(false);
     });
@@ -79,6 +80,8 @@ describe("isModelCompatibleWithProvider", () => {
       expect(isModelCompatibleWithProvider("gpt-5.1-codex", "codex")).toBe(true);
       expect(isModelCompatibleWithProvider("gpt-5.1-codex-mini", "codex")).toBe(true);
       expect(isModelCompatibleWithProvider("gpt-5.3-codex-medium", "codex")).toBe(true);
+      expect(isModelCompatibleWithProvider("gpt-6-astra", "codex")).toBe(true);
+      expect(isModelCompatibleWithProvider("gpt-6-astra-ultra", "codex")).toBe(true);
     });
 
     it("rejects non-codex models", () => {
@@ -89,6 +92,10 @@ describe("isModelCompatibleWithProvider", () => {
 
   describe("claudecode", () => {
     it("accepts Claude Code OAuth models", () => {
+      expect(isModelCompatibleWithProvider("claude-fable-5-1", "claudecode")).toBe(true);
+      expect(isModelCompatibleWithProvider("claude-opus-5", "claudecode")).toBe(true);
+      expect(isModelCompatibleWithProvider("claude-opus-5-5", "claudecode")).toBe(true);
+      expect(isModelCompatibleWithProvider("claude-sonnet-5-5", "claudecode")).toBe(true);
       expect(isModelCompatibleWithProvider("claude-sonnet-4-5-20250929", "claudecode")).toBe(true);
       expect(isModelCompatibleWithProvider("claude-haiku-4-5-20251001", "claudecode")).toBe(true);
       expect(isModelCompatibleWithProvider("claude-opus-4-20250929", "claudecode")).toBe(true);
@@ -104,14 +111,16 @@ describe("isModelCompatibleWithProvider", () => {
   });
 
   describe("kimi", () => {
-    it("accepts kimi models", () => {
+    it("accepts Kimi models, including the bare K3 coding API ID", () => {
+      expect(isModelCompatibleWithProvider("k3", "kimi")).toBe(true);
       expect(isModelCompatibleWithProvider("kimi-k2.5", "kimi")).toBe(true);
       expect(isModelCompatibleWithProvider("kimi-k2-turbo-preview", "kimi")).toBe(true);
       expect(isModelCompatibleWithProvider("moonshot-v1-8k", "kimi")).toBe(true);
     });
 
-    it("rejects non-kimi models", () => {
+    it("rejects non-Kimi models and K3-like IDs", () => {
       expect(isModelCompatibleWithProvider("claude-sonnet-4-5-20250929", "kimi")).toBe(false);
+      expect(isModelCompatibleWithProvider("k3-preview", "kimi")).toBe(false);
     });
   });
 
@@ -213,6 +222,18 @@ describe("validateSessionModelConfig", () => {
       },
       "anthropic", // global provider is different
     );
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts K3 when selected as a Kimi session model", () => {
+    const result = validateSessionModelConfig(
+      {
+        sessionProvider: "kimi",
+        sessionChatModel: "k3",
+      },
+      "anthropic",
+    );
+
     expect(result.valid).toBe(true);
   });
 

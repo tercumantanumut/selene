@@ -80,6 +80,35 @@ export async function listSessions(userId?: string, limit = 100) {
   });
 }
 
+/**
+ * List active sessions created from a specific channel conversation identity
+ * (connectionId + peerId + threadId), scoped to the owning user. Filtering
+ * happens in SQL (json_extract on session metadata) so sessions are found
+ * even when the user has more active sessions than any in-memory page size.
+ */
+export async function listChannelConversationSessions(params: {
+  userId: string;
+  connectionId: string;
+  peerId: string;
+  threadId?: string | null;
+  limit?: number;
+}): Promise<Session[]> {
+  const threadId = params.threadId || null;
+  return db.query.sessions.findMany({
+    where: and(
+      eq(sessions.userId, params.userId),
+      eq(sessions.status, "active"),
+      sql`json_extract(${sessions.metadata}, '$.channelConnectionId') = ${params.connectionId}`,
+      sql`json_extract(${sessions.metadata}, '$.channelPeerId') = ${params.peerId}`,
+      threadId === null
+        ? sql`json_extract(${sessions.metadata}, '$.channelThreadId') IS NULL`
+        : sql`json_extract(${sessions.metadata}, '$.channelThreadId') = ${threadId}`
+    ),
+    orderBy: desc(sessions.updatedAt),
+    limit: params.limit ?? 50,
+  });
+}
+
 export async function getSessionByCharacterId(userId: string, characterId: string): Promise<Session | null> {
   const result = await db
     .select()
@@ -300,7 +329,7 @@ export async function updateSession(id: string, data: Partial<NewSession>) {
 export async function updateSessionSummary(
   id: string,
   summary: string,
-  summaryUpToMessageId: string
+  summaryUpToMessageId: string | null
 ) {
   return updateSession(id, { summary, summaryUpToMessageId });
 }

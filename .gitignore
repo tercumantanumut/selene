@@ -140,3 +140,6 @@ tmp/docling-office/
 tmp/docling-retry/
 
 rtk/
+
+# Local scratch/probe artifacts
+.tmp/

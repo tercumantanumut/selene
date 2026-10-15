@@ -3,6 +3,7 @@ import {
   app,
   shell,
   dialog,
+  BrowserWindow,
 } from "electron";
 import * as path from "path";
 import * as fs from "fs";
@@ -18,6 +19,7 @@ import { registerMiniOverlayHandlers } from "./mini-overlay-ipc-handlers";
 import { registerOverlaySessionHandlers } from "./ipc-overlay-session-handlers";
 import { registerGhostOsHandlers } from "./ipc-ghost-os-handlers";
 import type { IpcHandlerContext } from "./ipc-context";
+import { normalizeUiScale, uiScaleToZoomFactor } from "@/lib/ui/ui-scale";
 export type { IpcHandlerContext } from "./ipc-context";
 
 // ---------------------------------------------------------------------------
@@ -90,6 +92,23 @@ export function setupIpcHandlers(ctx: IpcHandlerContext): void {
 
   ipcMain.handle("window:isFullScreen", () => {
     return mainWindow()?.isFullScreen() ?? false;
+  });
+
+  ipcMain.handle("window:setZoomFactor", (event, zoomFactor: number, allWindows = false) => {
+    const uiScale = normalizeUiScale(Number(zoomFactor) * 100);
+    const normalizedFactor = uiScaleToZoomFactor(uiScale);
+
+    if (allWindows) {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+          win.webContents.setZoomFactor(normalizedFactor);
+        }
+      }
+    } else if (!event.sender.isDestroyed()) {
+      event.sender.setZoomFactor(normalizedFactor);
+    }
+
+    return uiScale;
   });
 
   // --------------------------------------------------------------------------

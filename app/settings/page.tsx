@@ -23,7 +23,7 @@ export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState<SettingsSection>("api-keys");
   const t = useTranslations("settings");
   const tc = useTranslations("common");
-  const { setTheme, setChatWorkspaceMode } = useTheme();
+  const { setTheme, setChatWorkspaceMode, setUiScale } = useTheme();
 
   // Form state for editable fields
   const [formState, setFormState] = useState<FormState>(DEFAULT_FORM_STATE);
@@ -95,6 +95,7 @@ export default function SettingsPage() {
       const nextFormState = buildFormStateFromData(data);
       setFormState(nextFormState);
       setLastSavedState(nextFormState);
+      setUiScale(nextFormState.uiScale);
       prevScreenCaptureEnabledRef.current = nextFormState.screenCaptureEnabled;
       hasInitializedRef.current = true;
     } catch (err) {
@@ -102,7 +103,7 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [setUiScale, t]);
 
   const loadAntigravityAuth = async (): Promise<boolean> => {
     try {
@@ -680,6 +681,7 @@ export default function SettingsPage() {
       setLastSavedState(formState);
       saveResetTimeoutRef.current = setTimeout(() => setSaved(false), 2000);
       setTheme(formState.theme);
+      setUiScale(formState.uiScale);
       setChatWorkspaceMode(formState.chatWorkspaceMode);
 
       const electron = getElectronAPI();
@@ -712,7 +714,7 @@ export default function SettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [formState, loadSettings, setChatWorkspaceMode, setTheme, t]);
+  }, [formState, loadSettings, setChatWorkspaceMode, setTheme, setUiScale, t]);
 
   useEffect(() => {
     return () => {

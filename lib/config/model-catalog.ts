@@ -40,8 +40,24 @@ const MODEL_METADATA: Record<
   Partial<Pick<ModelItem, "tier"> & { capabilities: Partial<ModelCapabilities> }>
 > = {
   // Anthropic direct / Claude Code
-  // --- 5 / 4.8 / 4.7 / 4.6 / 4.5 Series ---
+  // --- 5.5 / 5.1 / 5 / 4.8 / 4.7 / 4.6 / 4.5 Series ---
+  "claude-fable-5-1": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
+  "claude-opus-5-5": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
+  "claude-sonnet-5-5": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "fast" },
+  },
   "claude-fable-5": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
+  "claude-opus-5": {
     tier: "flagship",
     capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
   },
@@ -122,6 +138,11 @@ const MODEL_METADATA: Record<
     capabilities: { vision: false, contextWindow: "128K", speed: "standard" },
   },
 
+  // Codex GPT-6 Astra (Codex backend context_window 272K; max_context_window 872K is opt-in upstream)
+  "gpt-6-astra": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "272K", speed: "standard" },
+  },
   // Codex GPT-5.6 family (372K context)
   "gpt-5.6-sol": {
     tier: "flagship",
@@ -192,6 +213,10 @@ const MODEL_METADATA: Record<
   },
 
   // Kimi
+  "k3": {
+    tier: "flagship",
+    capabilities: { vision: true, thinking: true, contextWindow: "1M", speed: "standard" },
+  },
   "kimi-k2.6": {
     tier: "flagship",
     capabilities: { vision: true, thinking: true, contextWindow: "256K", speed: "standard" },
@@ -410,7 +435,7 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
   antigravity: "claude-sonnet-4-6",
   codex: "gpt-5.4",
   claudecode: "claude-sonnet-4-6",
-  kimi: "kimi-k2.6",
+  kimi: "k3",
   minimax: "MiniMax-M2.1",
   blackboxai: "anthropic/claude-sonnet-4.5",
   deepseek: "deepseek-v4-pro",
@@ -439,9 +464,15 @@ export function buildModelCatalog(
 
   // Anthropic (expanded to include full roster)
   const anthropicModels = [
-    // 4.7 / 4.6 / 4.5 Series
+    // 5.5 / 5.1 / 5 / 4.8 / 4.7 / 4.6 / 4.5 Series
+    { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
+    { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+    { id: "claude-opus-5", name: "Claude Opus 5" },
+    { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
     { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+    { id: "claude-fable-5", name: "Claude Fable 5" },
+    { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
     { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
     { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5" },
     { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },

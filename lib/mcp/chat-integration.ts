@@ -10,6 +10,8 @@ import {
     mcpToolToMetadata,
     type MCPToolLoadingPreference,
 } from "@/lib/ai/tool-registry/mcp-tool-adapter";
+import { resolveToolLoadingPolicy } from "@/lib/ai/tool-registry/loading-policy";
+import type { ToolLoadingPreference } from "@/lib/ai/tool-registry/types";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { getGhostOsServerConfig, GHOST_OS_SERVER_NAME } from "@/lib/ghost-os/config";
 
@@ -43,7 +45,11 @@ interface MCPToolLoadResult {
  * and clears their tools from the registry.
  */
 export async function loadMCPToolsForCharacter(
-    character?: Character
+    character?: Character,
+    options: {
+        toolLoadingMode?: "deferred" | "always";
+        toolLoadingPreferences?: Record<string, ToolLoadingPreference>;
+    } = {}
 ): Promise<MCPToolLoadResult> {
     const settings = loadSettings();
     const manager = MCPClientManager.getInstance();
@@ -73,8 +79,10 @@ export async function loadMCPToolsForCharacter(
     const enabledServers = metadata?.enabledMcpServers;
     const enabledTools = metadata?.enabledMcpTools;
 
-    // NEW: Get per-tool preferences
+    // Legacy MCP preferences and canonical generic loading preferences.
     const mcpToolPreferences = metadata?.mcpToolPreferences ?? {};
+    const toolLoadingPreferences = options.toolLoadingPreferences ?? metadata?.toolLoadingPreferences;
+    const toolLoadingMode = options.toolLoadingMode ?? settings.toolLoadingMode ?? "deferred";
 
     // Build set of servers that should be connected based on current config
     const configuredServerNames = new Set<string>(Object.keys(combinedConfig));
@@ -188,10 +196,29 @@ export async function loadMCPToolsForCharacter(
             continue;
         }
 
-        // Register with ToolRegistry using preference-aware metadata
-        // Wrap in try/catch to tolerate schema errors or missing tool data
+        const baseMetadata = mcpToolToMetadata(mcpTool, preference);
+        const resolved = resolveToolLoadingPolicy({
+            toolId,
+            metadata: baseMetadata,
+            isAvailable: true,
+            toolLoadingPreferences,
+            toolLoadingMode,
+            legacyMcpPreference: preference,
+        });
+
+        if (resolved.policy === "disabled") {
+            continue;
+        }
+
+        const effectivePreference: MCPToolLoadingPreference = {
+            ...preference,
+            loadingMode: resolved.initiallyActive ? "always" : "deferred",
+        };
+
+        // Register with ToolRegistry using resolved policy-aware metadata.
+        // Wrap in try/catch to tolerate schema errors or missing tool data.
         try {
-            const toolMetadata = mcpToolToMetadata(mcpTool, preference);
+            const toolMetadata = mcpToolToMetadata(mcpTool, effectivePreference);
             const factory = () => createMCPToolWrapper(mcpTool);
             registry.register(toolId, toolMetadata, factory);
 
@@ -201,8 +228,7 @@ export async function loadMCPToolsForCharacter(
             continue;
         }
 
-        // Track by loading mode
-        if (preference.loadingMode === "always") {
+        if (resolved.initiallyActive) {
             alwaysLoadToolIds.push(toolId);
         } else {
             deferredToolIds.push(toolId);

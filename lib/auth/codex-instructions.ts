@@ -13,22 +13,36 @@ type CacheMetadata = {
   url: string;
 };
 
-type CodexModelFamily = "gpt-5.5" | "gpt-5.4" | "gpt-5.2-codex" | "codex-max" | "codex" | "gpt-5.2" | "gpt-5.1";
+type CodexModelFamily =
+  | "gpt-6-astra"
+  | "gpt-5.5"
+  | "gpt-5.4"
+  | "gpt-5.2-codex"
+  | "codex-max"
+  | "codex"
+  | "gpt-5.2"
+  | "gpt-5.1";
 
+// Paths are relative to `codex-rs/` in the openai/codex release tag.
 const PROMPT_FILES: Record<CodexModelFamily, string> = {
+  // GPT-6 Astra ships with `base_instructions: null` in openai/codex
+  // models-manager/models.json, so the CLI uses the shared models-manager
+  // base prompt for it.
+  "gpt-6-astra": "models-manager/prompt.md",
   // GPT-5.5 doesn't have its own prompt file in the openai/codex repo yet;
   // fall back to the gpt-5.2-codex prompt (same fallback used for 5.4).
-  "gpt-5.5": "gpt-5.2-codex_prompt.md",
+  "gpt-5.5": "core/gpt-5.2-codex_prompt.md",
   // GPT-5.4 doesn't have its own prompt file yet; fall back to gpt-5.2-codex prompt
-  "gpt-5.4": "gpt-5.2-codex_prompt.md",
-  "gpt-5.2-codex": "gpt-5.2-codex_prompt.md",
-  "codex-max": "gpt-5.1-codex-max_prompt.md",
-  "codex": "gpt_5_codex_prompt.md",
-  "gpt-5.2": "gpt_5_2_prompt.md",
-  "gpt-5.1": "gpt_5_1_prompt.md",
+  "gpt-5.4": "core/gpt-5.2-codex_prompt.md",
+  "gpt-5.2-codex": "core/gpt-5.2-codex_prompt.md",
+  "codex-max": "core/gpt-5.1-codex-max_prompt.md",
+  "codex": "core/gpt_5_codex_prompt.md",
+  "gpt-5.2": "core/gpt_5_2_prompt.md",
+  "gpt-5.1": "core/gpt_5_1_prompt.md",
 };
 
 const CACHE_FILES: Record<CodexModelFamily, string> = {
+  "gpt-6-astra": "gpt-6-astra-instructions.md",
   "gpt-5.5": "gpt-5.5-instructions.md",
   "gpt-5.4": "gpt-5.4-instructions.md",
   "gpt-5.2-codex": "gpt-5.2-codex-instructions.md",
@@ -44,6 +58,9 @@ function getCacheDir(): string {
 }
 
 function getModelFamily(normalizedModel: string): CodexModelFamily {
+  if (normalizedModel.includes("gpt-6-astra") || normalizedModel.includes("gpt 6 astra")) {
+    return "gpt-6-astra";
+  }
   if (normalizedModel.includes("gpt-5.5") || normalizedModel.includes("gpt 5.5")) {
     return "gpt-5.5";
   }
@@ -134,7 +151,7 @@ export async function getCodexInstructions(
 
     const latestTag = await getLatestReleaseTag();
     const promptFile = PROMPT_FILES[modelFamily];
-    const instructionsUrl = `https://raw.githubusercontent.com/openai/codex/${latestTag}/codex-rs/core/${promptFile}`;
+    const instructionsUrl = `https://raw.githubusercontent.com/openai/codex/${latestTag}/codex-rs/${promptFile}`;
 
     if (cachedTag !== latestTag) {
       cachedETag = null;

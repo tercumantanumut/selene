@@ -30,6 +30,7 @@ export interface CharacterSummary {
   isDefault?: boolean;
   metadata?: {
     enabledTools?: string[];
+    toolLoadingPreferences?: Record<string, "always" | "deferred">;
     enabledMcpTools?: string[];
     enabledPlugins?: string[];
     purpose?: string;

@@ -15,7 +15,7 @@
  * resolved `scopedPlugins` and `pluginRoots`.
  */
 
-import { tool, jsonSchema, type Tool } from "ai";
+import type { Tool } from "ai";
 import type { ExecuteCommandProgressUpdate } from "@/lib/command-execution/types";
 import {
   createRetrieveFullContentTool,
@@ -37,9 +37,12 @@ import { createWorkspaceTool } from "@/lib/ai/tools/workspace-tool";
 import { createDesignWorkspaceTool } from "@/lib/ai/tools/design-workspace-tool";
 import {
   ToolRegistry,
+  applyCompanionToolActivation,
+  authorizeRuntimeLoadedTools,
   createToolSearchTool,
 } from "@/lib/ai/tool-registry";
 import { getCharacterFull } from "@/lib/characters/queries";
+import type { AgentMetadata } from "@/lib/characters/validation";
 import { getRegisteredHooks } from "@/lib/plugins/hooks-engine";
 import {
   runPreToolUseHooks,
@@ -54,19 +57,7 @@ import {
   normalizeReadFileInputArgs,
   WEB_SEARCH_NO_RESULT_GUARD,
 } from "./content-sanitizer";
-import { mcpContextStore } from "@/lib/ai/providers/mcp-context-store";
-import { sanitizeToolResultForBase64, attachMediaRefs } from "@/lib/media/base64-extract";
-import {
-  buildMissingSdkPassthroughOutput,
-  normalizeSdkPassthroughOutput,
-} from "./sdk-passthrough-normalizer";
-
-// Inputs above this byte threshold are not echoed back verbatim in the SDK
-// passthrough fallback — only a small preview + metadata is kept.
-const SDK_PASSTHROUGH_LARGE_INPUT_BYTES = (() => {
-  const parsed = Number(process.env.SDK_PASSTHROUGH_LARGE_INPUT_BYTES);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 262_144;
-})();
+import { createSdkPassthroughTool } from "./sdk-passthrough-tool";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
@@ -123,8 +114,10 @@ interface ToolsBuildResult {
   enabledMcpServers?: string[];
   /** Specific MCP tool IDs enabled for the current agent (forwarded to SeleneMcpContext) */
   enabledMcpTools?: string[];
-  /** MCP tool IDs that are alwaysLoad (forwarded to SeleneMcpContext for deferred gating) */
+  /** MCP tool IDs that are always/required active (forwarded to SeleneMcpContext for deferred gating) */
   alwaysLoadMcpToolIds: string[];
+  /** Tool IDs that are unauthorized/unavailable for this request. */
+  disabledToolIds: string[];
 }
 
 // ─── Main builder ────────────────────────────────────────────────────────────
@@ -153,8 +146,14 @@ export async function buildToolsForRequest(
 
   const useDeferredLoading = toolLoadingMode !== "always";
 
+  const character = characterId
+    ? await getCharacterFull(characterId)
+    : undefined;
+  const agentMetadata = character?.metadata as AgentMetadata | undefined;
+  const toolLoadingPreferences = agentMetadata?.toolLoadingPreferences;
+
   // Create tools via the centralized Tool Registry.
-  // CRITICAL: Create agentEnabledTools Set for strict filtering.
+  // CRITICAL: Create agentEnabledTools Set for strict authorization filtering.
   // Migration aliases: remap old tool names to their merged successors so
   // agents created before the merge still resolve correctly.
   const TOOL_ALIASES: Record<string, string> = {
@@ -169,48 +168,35 @@ export async function buildToolsForRequest(
 
   const registry = ToolRegistry.getInstance();
 
-  // First, get non-deferred tools to build the initial active set.
-  // When devWorkspace is enabled, force-include workspace in the initial active set
-  // so the model sees it without needing searchTools discovery.
+  // When devWorkspace is enabled, force-include workspace in the initial active
+  // set so the model sees it without needing searchTools discovery.
   const eagerIncludeTools = devWorkspaceEnabled ? ["workspace"] : undefined;
 
-  const nonDeferredTools = registry.getTools({
+  const registryPlan = registry.getToolLoadPlan({
     sessionId,
     userId,
     characterId: characterId || undefined,
     characterAvatarUrl: characterAvatarUrl || undefined,
     characterAppearanceDescription: characterAppearanceDescription || undefined,
-    includeDeferredTools: false,
     includeTools: eagerIncludeTools,
     agentEnabledTools,
-    provider: ctx.provider,
-  });
-  const initialActiveTools = new Set(Object.keys(nonDeferredTools));
-
-  // Load ALL authorized tools for the implementation map.
-  const allTools = registry.getTools({
-    sessionId,
-    userId,
-    characterId: characterId || undefined,
-    characterAvatarUrl: characterAvatarUrl || undefined,
-    characterAppearanceDescription: characterAppearanceDescription || undefined,
-    agentEnabledTools,
-    includeDeferredTools: true,
+    toolLoadingPreferences,
+    toolLoadingMode,
     provider: ctx.provider,
   });
 
-  // Companion-tool enforcement: bash and executeCommand are coupled by the
-  // stub-retrieval protocol.  bash produces logId-bearing stubs that need
-  // executeCommand's readLog sub-command to retrieve; pre-loading one without
-  // the other is a protocol violation that causes model looping.
-  if (
-    initialActiveTools.has("bash") &&
-    !initialActiveTools.has("executeCommand") &&
-    allTools.executeCommand
-  ) {
-    initialActiveTools.add("executeCommand");
+  const allTools = registryPlan.allAuthorizedTools;
+  const initialActiveTools = new Set(registryPlan.initialActiveToolIds);
+  const disabledToolIds = new Set(registryPlan.disabledToolIds);
+
+  const promotedCompanions = applyCompanionToolActivation(
+    initialActiveTools,
+    Object.keys(allTools),
+    (toolId) => registry.get(toolId)?.metadata
+  );
+  if (promotedCompanions.length > 0) {
     console.log(
-      "[CHAT API] Companion-tool enforcement: promoted executeCommand to always-loaded because bash is loaded"
+      `[CHAT API] Companion-tool enforcement promoted: ${promotedCompanions.join(", ")}`
     );
   }
 
@@ -227,7 +213,9 @@ export async function buildToolsForRequest(
   const toolSearchContext = {
     initialActiveTools,
     discoveredTools,
-    enabledTools: enabledTools ? new Set(enabledTools) : undefined,
+    enabledTools: agentEnabledTools ? new Set(agentEnabledTools) : undefined,
+    disabledTools: disabledToolIds,
+    resolvedPolicies: registryPlan.resolutions,
     subagentDirectory: workflowPromptContextInput?.subagentDirectory,
     enableAnthropicToolReferences:
       useDeferredLoading && ctx.provider === "anthropic",
@@ -359,10 +347,10 @@ export async function buildToolsForRequest(
     const { loadMCPToolsForCharacter } = await import(
       "@/lib/mcp/chat-integration"
     );
-    const character = characterId
-      ? await getCharacterFull(characterId)
-      : undefined;
-    mcpToolResult = await loadMCPToolsForCharacter(character || undefined);
+    mcpToolResult = await loadMCPToolsForCharacter(character || undefined, {
+      toolLoadingMode,
+      toolLoadingPreferences,
+    });
 
     if (Object.keys(mcpToolResult.allTools).length > 0) {
       console.log(
@@ -375,12 +363,11 @@ export async function buildToolsForRequest(
         `[CHAT API] MCP deferred: ${mcpToolResult.deferredToolIds.join(", ") || "none"}`
       );
 
+      const loadedMcpToolIds = Object.keys(mcpToolResult.allTools);
+      authorizeRuntimeLoadedTools(toolSearchContext, loadedMcpToolIds);
       if (toolSearchContext.enabledTools) {
-        Object.keys(mcpToolResult.allTools).forEach((name) =>
-          toolSearchContext.enabledTools!.add(name)
-        );
         console.log(
-          `[CHAT API] Added ${Object.keys(mcpToolResult.allTools).length} MCP tools to enabledTools set for discovery`
+          `[CHAT API] Added ${loadedMcpToolIds.length} MCP tools to enabledTools set for discovery`
         );
       }
     }
@@ -456,12 +443,11 @@ export async function buildToolsForRequest(
         `[CHAT API] Loaded ${Object.keys(customComfyUIToolResult.allTools).length} Custom ComfyUI tools.`
       );
 
+      const loadedCustomComfyUIToolIds = Object.keys(customComfyUIToolResult.allTools);
+      authorizeRuntimeLoadedTools(toolSearchContext, loadedCustomComfyUIToolIds);
       if (toolSearchContext.enabledTools) {
-        Object.keys(customComfyUIToolResult.allTools).forEach((name) =>
-          toolSearchContext.enabledTools!.add(name)
-        );
         console.log(
-          `[CHAT API] Added ${Object.keys(customComfyUIToolResult.allTools).length} Custom ComfyUI tools to enabledTools set for discovery`
+          `[CHAT API] Added ${loadedCustomComfyUIToolIds.length} Custom ComfyUI tools to enabledTools set for discovery`
         );
       }
     }
@@ -487,103 +473,10 @@ export async function buildToolsForRequest(
   // The Dario backend is a plain Anthropic Messages consumer with real tool
   // execution, so this block must NEVER run for it.
   const sdkPassthroughNames = new Set<string>();
-  const mcpPassthroughNames = new Set<string>();
 
   if (ctx.backend === "sdk") {
-    const createSdkPassthroughTool = (registeredToolName: string): Tool =>
-      tool({
-        description: "Claude Agent SDK passthrough tool (executed internally by the SDK agent)",
-        inputSchema: jsonSchema<Record<string, unknown>>({
-          type: "object",
-          additionalProperties: true,
-        }),
-        // Resolve the real SDK tool output from the per-request bridge.
-        // Fallback to passthrough marker only if no bridged output arrives in time.
-        execute: async (args, options) => {
-          const serializedArgs = (() => {
-            try {
-              return JSON.stringify(args ?? {});
-            } catch {
-              return "";
-            }
-          })();
-          const largeInputMetadata =
-            serializedArgs.length > SDK_PASSTHROUGH_LARGE_INPUT_BYTES
-              ? {
-                  _sdkLargeInput: true,
-                  _sdkLargeInputBytes: serializedArgs.length,
-                  _sdkLargeInputPreview: serializedArgs.slice(0, 2_000),
-                }
-              : null;
-
-          const toolCallId =
-            options && typeof options === "object" && "toolCallId" in options &&
-            typeof (options as { toolCallId?: unknown }).toolCallId === "string"
-              ? (options as { toolCallId: string }).toolCallId
-              : "";
-
-          const abortSignal =
-            options && typeof options === "object" && "abortSignal" in options &&
-            (options as { abortSignal?: unknown }).abortSignal instanceof AbortSignal
-              ? (options as { abortSignal: AbortSignal }).abortSignal
-              : undefined;
-
-          const bridge = mcpContextStore.getStore()?.sdkToolResultBridge;
-          if (bridge && toolCallId) {
-            // MCP tools (delegateToSubagent, etc.) and SDK agent tools (Task,
-            // Agent, etc.) can run arbitrarily long — never time them out.
-            const isLongRunningTool =
-              mcpPassthroughNames.has(registeredToolName) ||
-              registeredToolName === "Task" ||
-              registeredToolName === "Agent" ||
-              registeredToolName === "TaskCreate" ||
-              registeredToolName === "TaskGet" ||
-              registeredToolName === "TaskUpdate" ||
-              registeredToolName === "TaskList";
-
-            try {
-              const resolved = await bridge.waitFor(toolCallId, {
-                timeoutMs: isLongRunningTool ? null : 300_000,
-                abortSignal,
-              });
-              if (resolved) {
-                // Strip base64 image/document envelopes emitted by SDK-native
-                // built-ins like Read before the payload reaches the executor.
-                const { sanitized, mediaRefs } = await sanitizeToolResultForBase64(
-                  resolved.output,
-                  { sessionId, role: "generated" }
-                );
-                const normalized = normalizeSdkPassthroughOutput(
-                  resolved.toolName || registeredToolName,
-                  sanitized,
-                  args
-                );
-                const withMediaRefs = attachMediaRefs(normalized, mediaRefs);
-                if (largeInputMetadata) {
-                  return { ...withMediaRefs, ...largeInputMetadata };
-                }
-                return withMediaRefs;
-              }
-              console.warn(
-                `[CHAT API] SDK passthrough wait ended without result: ${toolCallId} tool=${registeredToolName}`
-              );
-              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
-                reason: `No bridged SDK tool result arrived for toolCallId=${toolCallId}. The underlying tool likely failed before publishing a structured result.`,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              console.warn(
-                `[CHAT API] SDK passthrough bridge wait failed: toolCallId=${toolCallId} tool=${registeredToolName} error=${message}`
-              );
-              return buildMissingSdkPassthroughOutput(registeredToolName, args, {
-                reason: `SDK passthrough bridge wait failed for toolCallId=${toolCallId}: ${message}`,
-              });
-            }
-          }
-
-          return { _sdkPassthrough: true, ...(largeInputMetadata ?? {}) };
-        },
-      });
+    const createPassthrough = (registeredToolName: string): Tool =>
+      createSdkPassthroughTool(registeredToolName, { sessionId });
 
     // (a) SDK built-in tools (Bash, Read, Write, etc.)
     //
@@ -602,7 +495,7 @@ export async function buildToolsForRequest(
 
     for (const name of SDK_AGENT_TOOLS) {
       if (!allToolsWithMCP[name]) {
-        allToolsWithMCP[name] = createSdkPassthroughTool(name);
+        allToolsWithMCP[name] = createPassthrough(name);
         sdkPassthroughNames.add(name);
       }
     }
@@ -614,9 +507,8 @@ export async function buildToolsForRequest(
     const existingToolNames = Object.keys(allToolsWithMCP);
     for (const name of existingToolNames) {
       if (sdkPassthroughNames.has(name)) continue;
-      allToolsWithMCP[name] = createSdkPassthroughTool(name);
+      allToolsWithMCP[name] = createPassthrough(name);
       sdkPassthroughNames.add(name);
-      mcpPassthroughNames.add(name);
     }
   }
 
@@ -836,16 +728,24 @@ export async function buildToolsForRequest(
     ? Object.keys(allToolsWithMCP).filter((name) => sdkPassthroughNames.has(name))
     : [];
 
+  for (const toolName of [
+    ...mcpToolResult.alwaysLoadToolIds,
+    ...customComfyUIToolResult.alwaysLoadToolIds,
+    ...sdkPassthroughToolNames,
+  ]) {
+    if (allToolsWithMCP[toolName]) {
+      initialActiveTools.add(toolName);
+    }
+  }
+
+  const availableToolNames = new Set(Object.keys(allToolsWithMCP));
   const initialActiveToolNames = useDeferredLoading
     ? [
         ...new Set([
           ...initialActiveTools,
           ...previouslyDiscoveredTools,
-          ...mcpToolResult.alwaysLoadToolIds,
-          ...customComfyUIToolResult.alwaysLoadToolIds,
-          ...sdkPassthroughToolNames,
         ]),
-      ]
+      ].filter((name) => availableToolNames.has(name) && !disabledToolIds.has(name))
     : Object.keys(allToolsWithMCP);
 
   console.log(
@@ -872,5 +772,6 @@ export async function buildToolsForRequest(
     enabledMcpServers: mcpToolResult.enabledMcpServers,
     enabledMcpTools: mcpToolResult.enabledMcpTools,
     alwaysLoadMcpToolIds: mcpToolResult.alwaysLoadToolIds,
+    disabledToolIds: [...disabledToolIds],
   };
 }

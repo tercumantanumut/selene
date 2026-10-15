@@ -11,6 +11,7 @@ import { ToolRegistry } from "@/lib/ai/tool-registry/registry";
 import { getActivePluginMCPServers, updatePluginMCPServerConfig } from "@/lib/plugins/registry";
 import type { MCPConfig, MCPServerConfig } from "@/lib/mcp/types";
 import { getGhostOsServerConfig, GHOST_OS_SERVER_NAME } from "@/lib/ghost-os/config";
+import { getMCPOAuthStatus } from "@/lib/mcp/oauth-provider";
 
 /**
  * GET /api/mcp
@@ -45,6 +46,44 @@ export async function GET() {
 
         // Gather plugin-declared MCP servers with connection status
         const allStatus = manager.getAllStatus();
+        const statusNames = new Set(allStatus.map(s => s.serverName));
+
+        for (const [name, config] of Object.entries(mcpServers)) {
+            const transportType = config.command ? "stdio" : (config.type || "sse");
+            const oauthConfigured = !config.command && Boolean(config.url) && (
+                config.auth?.type === "oauth" ||
+                (transportType === "http" && config.auth?.type !== "none" && config.auth?.type !== "headers")
+            );
+
+            if (config.enabled === false || statusNames.has(name) || !oauthConfigured || !config.url) continue;
+
+            const oauthStatus = getMCPOAuthStatus(name, config.url);
+            const connectionState = oauthStatus.authState === "connected"
+                ? "not_connected"
+                : oauthStatus.authState === "unauthenticated"
+                    ? "authorization_required"
+                    : oauthStatus.authState;
+
+            allStatus.push({
+                serverName: name,
+                connected: false,
+                lastError: oauthStatus.lastError,
+                connectionState,
+                authRequired: connectionState === "authorization_required" || connectionState === "authorizing" || connectionState === "expired" || connectionState === "failed",
+                authorizationUrl: oauthStatus.authorizationUrl,
+                serverUrl: config.url,
+                transportType,
+                details: oauthStatus.hasTokens
+                    ? "OAuth credentials are saved. Reconnect to discover tools."
+                    : "This URL-based MCP server is configured for browser authorization.",
+                recovery: oauthStatus.hasTokens
+                    ? "Reconnect this MCP server. Selene will reuse saved OAuth credentials."
+                    : "Use Connect with browser to authorize this MCP server.",
+                toolCount: 0,
+                tools: [],
+            });
+        }
+
         const statusByName = new Map(allStatus.map(s => [s.serverName, s]));
 
         let pluginServers: Array<{
@@ -57,6 +96,11 @@ export async function GET() {
             toolCount: number;
             tools: string[];
             lastError?: string;
+            connectionState?: string;
+            authRequired?: boolean;
+            authorizationUrl?: string;
+            details?: string;
+            recovery?: string;
             config: Record<string, unknown>;
             incomplete?: boolean;
             incompleteReason?: string;
@@ -84,6 +128,11 @@ export async function GET() {
                     toolCount: status?.toolCount ?? 0,
                     tools: status?.tools ?? [],
                     lastError: incomplete ? undefined : status?.lastError,
+                    connectionState: status?.connectionState,
+                    authRequired: status?.authRequired,
+                    authorizationUrl: status?.authorizationUrl,
+                    details: status?.details,
+                    recovery: status?.recovery,
                     config: row.config,
                     incomplete: incomplete || undefined,
                     incompleteReason: incomplete

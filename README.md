@@ -113,7 +113,7 @@ Use any combination, or go fully local with no API keys. Selene has its own arch
 
 | Provider | Models |
 |----------|--------|
-| **Anthropic** | Claude (Opus 4.7, Sonnet, Haiku) via API or Agent SDK |
+| **Anthropic** | Claude (Opus 5.5, Sonnet 5.5, Fable 5.1, Haiku) via API or Agent SDK |
 | **OpenAI** | GPT-5 family + Codex |
 | **OpenRouter** | Claude, Gemini, Grok, DeepSeek, and hundreds more |
 | **Ollama** | Any local model; dynamic thinking detection |

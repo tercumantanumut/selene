@@ -1,19 +1,27 @@
 /**
  * Moonshot Kimi Model Definitions
  *
- * Kimi K2.6 is Moonshot AI's flagship multimodal model with:
- * - 256K context window
- * - Native vision support
- * - Thinking/reasoning modes
- * - Native video understanding
- * - Strong agentic capabilities
+ * K3 is Moonshot AI's flagship coding model with:
+ * - 1,048,576-token context window
+ * - Always-on thinking at the `max` effort
+ * - Native image and video input
+ * - Tool use
  *
- * Kimi K2.7 Code is Moonshot AI's current coding-specialized line.
+ * Kimi K2.6 and K2.7 Code remain available as previous multimodal and
+ * coding-specialized models.
  *
- * API: OpenAI-compatible at https://api.moonshot.ai/v1
+ * Upstream reference: MoonshotAI/kimi-code, branch
+ * feat/apikey-managed-provider-model-refresh, docs/en/configuration/config-files.md.
+ *
+ * APIs: OpenAI-compatible at https://api.moonshot.ai/v1 and
+ * https://api.kimi.com/coding/v1 for Kimi Code models such as K3.
  */
 
 export const KIMI_MODEL_IDS = [
+  // Current flagship coding model. The Kimi Code alias is `kimi-code/k3`;
+  // the OpenAI-compatible API model ID sent by Selene is `k3`.
+  "k3",
+
   // Primary multimodal model (recommended)
   "kimi-k2.6",
 
@@ -49,6 +57,7 @@ type KimiModelId = (typeof KIMI_MODEL_IDS)[number];
 
 // Models that support vision
 const KIMI_VISION_MODELS = new Set<string>([
+  "k3",
   "kimi-k2.6",
   "kimi-k2.5",
   "moonshot-v1-8k-vision-preview",
@@ -58,6 +67,7 @@ const KIMI_VISION_MODELS = new Set<string>([
 
 // Models that support thinking mode
 const KIMI_THINKING_MODELS = new Set<string>([
+  "k3",
   "kimi-k2.7-code",
   "kimi-k2.7-code-highspeed",
   "kimi-k2.6",
@@ -68,15 +78,17 @@ const KIMI_THINKING_MODELS = new Set<string>([
 
 // Default models for different roles
 const KIMI_DEFAULT_MODELS = {
-  chat: "kimi-k2.6" as KimiModelId,
-  research: "kimi-k2.6" as KimiModelId,
-  vision: "kimi-k2.6" as KimiModelId,
+  chat: "k3" as KimiModelId,
+  research: "k3" as KimiModelId,
+  vision: "k3" as KimiModelId,
   utility: "kimi-k2-turbo-preview" as KimiModelId,
 };
 
 // Kimi API configuration
 export const KIMI_CONFIG = {
   BASE_URL: "https://api.moonshot.ai/v1",
+  // K3 is served by Kimi Code rather than Moonshot's legacy Open Platform.
+  CODING_BASE_URL: "https://api.kimi.com/coding/v1",
   DEFAULT_TEMPERATURE: 0.6,
   // K2.5 uses fixed temperature 1.0 in thinking mode
   THINKING_TEMPERATURE: 1.0,
@@ -84,6 +96,7 @@ export const KIMI_CONFIG = {
 
 // Model display names
 const MODEL_LABELS: Record<string, string> = {
+  "k3": "Kimi K3",
   "kimi-k2.6": "Kimi K2.6",
   "kimi-k2.5": "Kimi K2.5",
   "kimi-k2.7-code": "Kimi K2.7 Code",

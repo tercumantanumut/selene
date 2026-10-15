@@ -4,8 +4,11 @@ import { NextResponse, type NextRequest } from "next/server";
 // Session cookie name (must match the one in local-auth.ts)
 const SESSION_COOKIE_NAME = "zlutty-session";
 
-// Public routes that don't require authentication
-const PUBLIC_ROUTES = ["/login", "/signup", "/api/auth"];
+// Public routes that don't require authentication.
+// Prefix routes cover auth screens/APIs; exact routes are intentionally narrow
+// for browser callbacks that must arrive without Selene's local session cookie.
+const PUBLIC_ROUTE_PREFIXES = ["/login", "/signup", "/api/auth"];
+const PUBLIC_ROUTE_EXACT = ["/api/mcp/oauth/callback"];
 
 // Static assets and API routes that should always be accessible
 const STATIC_ROUTES = [
@@ -81,7 +84,9 @@ export async function proxy(request: NextRequest) {
   const sessionId = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   // Check if this is a public route
-  const isPublicRoute = PUBLIC_ROUTES.some((route) => pathname.startsWith(route));
+  const isPublicRoute =
+    PUBLIC_ROUTE_EXACT.includes(pathname) ||
+    PUBLIC_ROUTE_PREFIXES.some((route) => pathname.startsWith(route));
 
   // If no session and trying to access protected route
   if (!sessionId && !isPublicRoute && !isInternalAuthRequest && !isInternalMediaRequest) {

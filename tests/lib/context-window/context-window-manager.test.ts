@@ -80,7 +80,7 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
     expect(result.compactionResult?.success).toBe(true);
   });
 
-  it("blocks when compaction succeeds but context is still exceeded", async () => {
+  it("uses aggressive retry when the first pass is insufficient and preserves final summary provenance", async () => {
     const usageSpy = vi.spyOn(TokenTracker, "calculateUsage")
       .mockResolvedValueOnce(makeUsage(385_000)) // Above 380K hard limit
       .mockResolvedValueOnce(makeUsage(385_000)) // Still exceeded after first compaction
@@ -92,12 +92,25 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
         tokensFreed: 1_000,
         messagesCompacted: 1,
         newSummary: "summary",
+        summaryMethod: "utility_model",
+        summaryDiagnostics: {
+          sourceTokens: 1_500,
+          boundedSourceTokens: 1_500,
+          sourceTruncated: false,
+        },
       })
       .mockResolvedValueOnce({
         success: true,
         tokensFreed: 380_000,
         messagesCompacted: 50,
         newSummary: "aggressive summary",
+        summaryMethod: "deterministic_fallback",
+        summaryDiagnostics: {
+          sourceTokens: 380_000,
+          boundedSourceTokens: 10_000,
+          sourceTruncated: true,
+          fallbackReason: "utility_model_call_failed",
+        },
       });
 
     const result = await ContextWindowManager.preFlightCheck(
@@ -114,6 +127,10 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
     // Merged compaction results
     expect(result.compactionResult?.tokensFreed).toBe(381_000);
     expect(result.compactionResult?.messagesCompacted).toBe(51);
+    expect(result.compactionResult?.summaryMethod).toBe("deterministic_fallback");
+    expect(result.compactionResult?.summaryDiagnostics?.fallbackReason).toBe(
+      "utility_model_call_failed",
+    );
   });
 
   it("force-proceeds with warning when compaction freed tokens but still exceeded", async () => {
@@ -214,9 +231,97 @@ describe("ContextWindowManager.preFlightCheck compaction", () => {
     await ContextWindowManager.preFlightCheck(sessionId, modelId, systemPromptLength);
 
     // targetTokensToFree = 385000 - floor(400000 * 0.7) = 385000 - 280000 = 105000
-    expect(compactSpy).toHaveBeenCalledWith(sessionId, {
-      targetTokensToFree: 105_000,
-    });
+    expect(compactSpy).toHaveBeenCalledWith(
+      sessionId,
+      expect.objectContaining({
+        targetTokensToFree: 105_000,
+        allowDeterministicFallback: true,
+      }),
+    );
+  });
+
+  it("forceCompact retries aggressively when the first pass cannot compact sparse history", async () => {
+    vi.spyOn(TokenTracker, "calculateUsage")
+      .mockResolvedValueOnce(makeUsage(385_000))
+      .mockResolvedValueOnce(makeUsage(385_000))
+      .mockResolvedValueOnce(makeUsage(20_000));
+
+    const compactSpy = vi.spyOn(CompactionService, "compact")
+      .mockResolvedValueOnce({
+        success: false,
+        tokensFreed: 0,
+        messagesCompacted: 0,
+        newSummary: "",
+        error: "No messages available to compact after preserving recent messages",
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        tokensFreed: 365_000,
+        messagesCompacted: 2,
+        newSummary: "aggressive summary",
+      });
+
+    const result = await ContextWindowManager.forceCompact(
+      sessionId,
+      modelId,
+      systemPromptLength,
+    );
+    const compactCalls = compactSpy.mock.calls.slice();
+    vi.restoreAllMocks();
+
+    expect(compactCalls).toHaveLength(2);
+    expect(compactCalls[1]).toEqual([
+      sessionId,
+      expect.objectContaining({
+        keepRecentMessages: 0,
+        preserveToolResults: [],
+      }),
+    ]);
+    expect(result.success).toBe(true);
+    expect(result.afterStatus.status).toBe("safe");
+    expect(result.compactionResult.tokensFreed).toBe(365_000);
+  });
+
+  it("forceCompact does not report success while the session is still blocked", async () => {
+    vi.spyOn(TokenTracker, "calculateUsage")
+      .mockResolvedValueOnce(makeUsage(385_000))
+      .mockResolvedValueOnce(makeUsage(384_000))
+      .mockResolvedValueOnce(makeUsage(383_000));
+
+    vi.spyOn(CompactionService, "compact")
+      .mockResolvedValueOnce({
+        success: true,
+        tokensFreed: 1_000,
+        messagesCompacted: 1,
+        newSummary: "first summary",
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        tokensFreed: 1_000,
+        messagesCompacted: 1,
+        newSummary: "second summary",
+      });
+
+    const result = await ContextWindowManager.forceCompact(
+      sessionId,
+      modelId,
+      systemPromptLength,
+    );
+    vi.restoreAllMocks();
+
+    expect(result.success).toBe(false);
+    expect(result.afterStatus.status).toBe("exceeded");
+    expect(result.compactionResult.tokensFreed).toBe(2_000);
+  });
+});
+
+describe("K3 context window limit", () => {
+  it("uses K3's documented 1,048,576-token context and supports streaming", () => {
+    const config = getContextWindowConfig("k3", "kimi");
+
+    expect(config.maxTokens).toBe(1_048_576);
+    expect(config.maxOutputTokens).toBeUndefined();
+    expect(config.supportsStreaming).toBe(true);
   });
 });
 
@@ -233,6 +338,27 @@ describe("Codex model context window limits", () => {
       const config = getContextWindowConfig(modelId, "codex");
       expect(config.maxTokens, `${modelId} should have 372K context`).toBe(372_000);
     }
+  });
+
+  it("returns 272K for normalized GPT-6 Astra variants (Codex backend context_window)", () => {
+    const astraModels = [
+      "gpt-6-astra",
+      "gpt-6-astra-low",
+      "gpt-6-astra-max",
+      "gpt-6-astra-ultra",
+      "openai/gpt-6-astra-high",
+    ];
+
+    for (const modelId of astraModels) {
+      const config = getContextWindowConfig(modelId, "codex");
+      expect(config.maxTokens, `${modelId} should have 272K context`).toBe(272_000);
+      expect(config.supportsStreaming).toBe(true);
+    }
+  });
+
+  it("resolves GPT-6 Astra limits without an explicit provider hint", () => {
+    const config = getContextWindowConfig("gpt-6-astra-high");
+    expect(config.maxTokens).toBe(272_000);
   });
 
   it("returns 400K for legacy codex models", () => {
@@ -409,6 +535,43 @@ describe("ContextWindowManager scoped counting integration", () => {
     expect(usageSpy.mock.calls[1]?.[4]).toMatchObject({ scopedMode: "legacy" });
     expect(status.currentTokens).toBe(1_000);
     expect(status.status).toBe("safe");
+  });
+
+  it("counts delegated-scope history inside a delegated subagent session", async () => {
+    dbMocks.getSession.mockResolvedValue({
+      id: sessionId,
+      summary: null,
+      metadata: { provider: "claudecode", isDelegation: true },
+    });
+    dbMocks.getNonCompactedMessages.mockResolvedValue([
+      {
+        id: "delegated-user",
+        sessionId,
+        role: "user",
+        content: [{ type: "text", text: "Inspect the delegated task", contextScope: "delegated" }],
+        tokenCount: 20,
+        isCompacted: false,
+        metadata: { contextScope: "delegated" },
+      },
+      {
+        id: "delegated-assistant",
+        sessionId,
+        role: "assistant",
+        content: [{ type: "text", text: "Working through the delegated task", contextScope: "delegated" }],
+        tokenCount: 30,
+        isCompacted: false,
+        metadata: { contextScope: "delegated" },
+      },
+    ] as any);
+
+    const status = await ContextWindowManager.checkContextWindow(
+      sessionId,
+      modelId,
+      0,
+      "claudecode"
+    );
+
+    expect(status.currentTokens).toBeGreaterThan(4);
   });
 
   it("wouldExceedLimit projection uses scoped baselene", async () => {

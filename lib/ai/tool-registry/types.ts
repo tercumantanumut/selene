@@ -30,20 +30,58 @@ export type ToolCategory =
 /**
  * Configuration for when a tool should be loaded
  */
-interface ToolLoadingConfig {
+export type ToolDefaultLoadingPolicy = "required" | "always" | "deferred";
+export type ToolLoadingPreference = "always" | "deferred";
+export type EffectiveToolLoadingPolicy = "required" | "always" | "deferred" | "disabled";
+
+export type ResolvedToolLoadingPolicy = {
+  policy: EffectiveToolLoadingPolicy;
+  initiallyActive: boolean;
+  discoverable: boolean;
+  authorized: boolean;
+  reason:
+    | "required"
+    | "agent-override"
+    | "legacy-mcp-preference"
+    | "system-default"
+    | "tool-default"
+    | "runtime-include"
+    | "not-enabled"
+    | "unavailable";
+};
+
+export type ToolLoadPlan = {
+  allAuthorizedTools: Record<string, Tool>;
+  initialActiveToolIds: Set<string>;
+  deferredToolIds: Set<string>;
+  disabledToolIds: Set<string>;
+  resolutions: Map<string, ResolvedToolLoadingPolicy>;
+};
+
+export interface ToolLoadingConfig {
   /**
-   * If true, this tool is excluded from the initial context and only
+   * Legacy flag: if true, this tool is excluded from the initial context and only
    * loaded when discovered via the tool search tool.
    * Default: false (always loaded)
    */
   deferLoading?: boolean;
 
   /**
-   * If true, this tool is always included in the context regardless
-   * of other settings. Used for core/essential tools.
+   * Legacy flag: if true, this tool is included in the initial context.
+   * Required/bootstrap behavior is now represented by defaultPolicy="required"
+   * and/or mandatory=true.
    * Default: false
    */
   alwaysLoad?: boolean;
+
+  /** Canonical default loading behavior when an agent has no override. */
+  defaultPolicy?: ToolDefaultLoadingPolicy;
+
+  /** Required/bootstrap tools cannot be deferred or disabled by agent settings. */
+  mandatory?: boolean;
+
+  /** Tools that must be activated with this tool for protocol/recovery safety. */
+  companions?: string[];
 }
 
 /**
@@ -173,10 +211,17 @@ export interface ToolContext {
 
   /**
    * Agent-specific enabled tools filter.
-   * If provided, ONLY tools in this set (plus alwaysLoad tools) will be loaded.
-   * This enforces per-agent tool restrictions selected via the UI.
+   * If provided, ONLY tools in this set (plus required/bootstrap tools and
+   * safety companions) are authorized. Loading policy controls only whether
+   * authorized tools are initially active or deferred.
    */
   agentEnabledTools?: Set<string>;
+
+  /** Per-agent initial-loading preferences for authorized tools. */
+  toolLoadingPreferences?: Record<string, ToolLoadingPreference>;
+
+  /** System-level default loading mode for tools without an agent override. */
+  toolLoadingMode?: "deferred" | "always";
 
   /** LLM provider name — used by delegation tools to decide execution strategy. */
   provider?: string;

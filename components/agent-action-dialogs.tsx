@@ -61,6 +61,7 @@ export function AgentActionDialogs({
         editingCharacter={toolEditor.editingCharacter}
         availableTools={toolEditor.availableTools}
         selectedTools={toolEditor.selectedTools}
+        toolLoadingPreferences={toolEditor.toolLoadingPreferences}
         isSaving={toolEditor.isSaving}
         toolSearchQuery={toolEditor.toolSearchQuery}
         setToolSearchQuery={toolEditor.setToolSearchQuery}
@@ -73,6 +74,7 @@ export function AgentActionDialogs({
         toggleAllInCategory={toolEditor.toggleAllInCategory}
         getSelectedCountInCategory={toolEditor.getSelectedCountInCategory}
         toggleTool={toolEditor.toggleTool}
+        setToolLoadingPreference={toolEditor.setToolLoadingPreference}
         onSave={toolEditor.saveTools}
       />
 

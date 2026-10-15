@@ -47,6 +47,7 @@ import { BrowserBackdrop } from "./browser-backdrop";
 import { useTheme } from "@/components/theme/theme-provider";
 import { useChatTransportError } from "@/components/chat-provider";
 import type { ChatWorkspaceMode } from "@/lib/chat/workspace-mode";
+import { useThreadViewportAutoScroll } from "./thread-viewport-auto-scroll";
 
 type OpenDelegationSessionHandler = (sessionId: string, delegateAgentId: string) => void | Promise<void>;
 
@@ -87,7 +88,7 @@ export const Thread: FC<ThreadProps> = ({
   const router = useRouter();
   const { character } = useCharacter();
   const threadRuntime = useThreadRuntime();
-
+  const threadViewportRef = useThreadViewportAutoScroll();
 
   // Deep research mode (for drag-drop gating)
   const deepResearch = useOptionalDeepResearch();
@@ -360,8 +361,12 @@ export const Thread: FC<ThreadProps> = ({
         <SessionActivityWatcher onSessionActivity={wrappedOnSessionActivity} />
         <GalleryWrapper>
           <ThreadPrimitive.Viewport
-          className="relative z-10 flex min-w-0 flex-1 flex-col items-center overflow-x-hidden overflow-y-auto px-4 pt-8 [overflow-anchor:auto]"
-          data-chat-viewport="true">
+            ref={threadViewportRef}
+            autoScroll={false}
+            scrollToBottomOnRunStart={false}
+            className="relative z-10 flex min-w-0 flex-1 flex-col items-center overflow-x-hidden overflow-y-auto px-4 pt-8 [overflow-anchor:auto]"
+            data-chat-viewport="true"
+          >
             <ThreadWelcome />
             <ThreadPrimitive.Messages
               components={{

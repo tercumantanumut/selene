@@ -145,7 +145,39 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     supportsStreaming: true,
   },
 
-  // Claude Code — Opus 4.8 / 4.7 / 4.6 and Fable 5 have 1M context via Dario.
+  // Claude Code — Fable 5.1 / 5, Opus 5.5 / 5 / 4.8 / 4.7 / 4.6 and Sonnet 5.5 have 1M context.
+  "claude-fable-5-1": {
+    maxTokens: 1000000,
+    maxOutputTokens: 128000,
+    supportsStreaming: true,
+    warningThreshold: 0.80,
+    criticalThreshold: 0.92,
+    hardLimit: 0.97,
+  },
+  "claude-opus-5-5": {
+    maxTokens: 1000000,
+    maxOutputTokens: 128000,
+    supportsStreaming: true,
+    warningThreshold: 0.80,
+    criticalThreshold: 0.92,
+    hardLimit: 0.97,
+  },
+  "claude-sonnet-5-5": {
+    maxTokens: 1000000,
+    maxOutputTokens: 128000,
+    supportsStreaming: true,
+    warningThreshold: 0.80,
+    criticalThreshold: 0.92,
+    hardLimit: 0.97,
+  },
+  "claude-opus-5": {
+    maxTokens: 1000000,
+    maxOutputTokens: 128000,
+    supportsStreaming: true,
+    warningThreshold: 0.80,
+    criticalThreshold: 0.92,
+    hardLimit: 0.97,
+  },
   "claude-opus-4-8": {
     maxTokens: 1000000,
     supportsStreaming: true,
@@ -210,6 +242,12 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
     supportsStreaming: true,
   },
 
+  // Codex GPT-6 Astra — openai/codex models.json context_window 272K
+  // (max_context_window 872K only when a client opts in via model_context_window)
+  "gpt-6-astra": {
+    maxTokens: 272000,
+    supportsStreaming: true,
+  },
   // Codex GPT-5.6 family (372K context)
   "gpt-5.6-sol": {
     maxTokens: 372000,
@@ -269,6 +307,12 @@ const MODEL_CONTEXT_CONFIGS: Record<string, Partial<ContextWindowConfig>> = {
   },
 
   // Kimi models
+  // K3's 1,048,576-token context is documented in MoonshotAI/kimi-code's
+  // `kimi-code/k3` configuration. Upstream declares no max output cap.
+  "k3": {
+    maxTokens: 1_048_576,
+    supportsStreaming: true,
+  },
   "kimi-k2.6": {
     maxTokens: 256000,
     supportsStreaming: true,
@@ -516,7 +560,12 @@ function resolveContextConfigModelId(modelId: string, provider?: LLMProvider): s
   const baseModelId = modelId.includes("/") ? modelId.split("/").pop()! : modelId;
   const lowerModelId = baseModelId.toLowerCase();
 
-  if (provider === "codex" || lowerModelId.includes("codex") || lowerModelId.includes("gpt-5")) {
+  if (
+    provider === "codex" ||
+    lowerModelId.includes("codex") ||
+    lowerModelId.includes("gpt-5") ||
+    lowerModelId.includes("gpt-6")
+  ) {
     return normalizeCodexModel(baseModelId);
   }
 

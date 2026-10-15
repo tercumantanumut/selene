@@ -127,35 +127,97 @@ function prepareCommandInput(
 
 interface ParsedPatchFile {
     filePath: string;
+    resultPath: string;
     operation: "add" | "modify" | "delete";
 }
 
+export type InlineDiffBeforeState = Map<string, string>;
+
 /**
- * Parse apply_patch text to extract file paths and operations from headers like:
- * *** Add File: src/foo.ts
- * *** Modify File: src/bar.tsx  (or *** Update File: ...)
- * *** Delete File: src/baz.ts
+ * Parse apply_patch file headers, including optional move targets.
  */
 function parsePatchFileHeaders(patchText: string): ParsedPatchFile[] {
+    const lines = patchText.replace(/\r\n/g, "\n").split("\n");
     const files: ParsedPatchFile[] = [];
-    const headerRegex = /^\*\*\*\s+(Add|Modify|Update|Delete)\s+File:\s+(.+)$/gm;
-    let match;
-    while ((match = headerRegex.exec(patchText)) !== null) {
-        const rawOp = match[1].toLowerCase();
-        const op = (rawOp === "update" ? "modify" : rawOp) as "add" | "modify" | "delete";
-        files.push({ filePath: match[2].trim(), operation: op });
+
+    for (let index = 0; index < lines.length; index++) {
+        const match = lines[index].match(
+            /^\*\*\*\s+(Add|Modify|Update|Delete)\s+File:\s+(.+)$/,
+        );
+        if (!match) continue;
+
+        const rawOperation = match[1].toLowerCase();
+        const operation = (rawOperation === "update" ? "modify" : rawOperation) as ParsedPatchFile["operation"];
+        const filePath = match[2].trim();
+        let resultPath = filePath;
+
+        if (operation === "modify") {
+            const moveMatch = lines[index + 1]?.match(/^\*\*\*\s+Move to:\s+(.+)$/);
+            if (moveMatch) {
+                resultPath = moveMatch[1].trim();
+            }
+        }
+
+        files.push({ filePath, resultPath, operation });
     }
+
     return files;
 }
 
+function isPathWithinRoot(rootPath: string, targetPath: string): boolean {
+    const root = path.resolve(rootPath);
+    const target = path.resolve(targetPath);
+    const relative = path.relative(root, target);
+    const escapesRoot = relative === ".." || relative.startsWith(`..${path.sep}`);
+    return !escapesRoot && !path.isAbsolute(relative);
+}
+
+function resolvePatchPath(cwd: string, filePath: string): string | null {
+    const resolved = path.resolve(cwd, filePath);
+    return isPathWithinRoot(cwd, resolved) ? resolved : null;
+}
+
+/** Capture the exact working-tree contents before apply_patch mutates them. */
+export async function captureInlineDiffBeforeState(
+    patchText: string,
+    cwd: string,
+    allowedRoots: string[],
+    allowOutsideRoots = false,
+): Promise<InlineDiffBeforeState> {
+    const beforeState: InlineDiffBeforeState = new Map();
+    if (!allowOutsideRoots && !allowedRoots.some((root) => isPathWithinRoot(root, cwd))) {
+        return beforeState;
+    }
+
+    for (const file of parsePatchFileHeaders(patchText)) {
+        if (file.operation === "add") {
+            beforeState.set(file.filePath, "");
+            continue;
+        }
+
+        const absPath = resolvePatchPath(cwd, file.filePath);
+        if (!absPath) continue;
+
+        try {
+            beforeState.set(file.filePath, await fs.readFile(absPath, "utf-8"));
+        } catch {
+            // A successful patch should only reach diff generation when the source
+            // existed. Leave the entry absent so the preview reports the failure.
+        }
+    }
+
+    return beforeState;
+}
+
 /**
- * After a successful apply_patch, read the patched files from disk and compute
- * unified diffs against the git-tracked version (before state).
- * Falls back to raw patch text if diff computation fails.
+ * After a successful apply_patch, compare each file against the working-tree
+ * snapshot captured immediately before that patch. This keeps unrelated existing
+ * changes out of the inline preview.
  */
 export async function computeInlineDiffs(
     patchText: string,
     cwd: string,
+    beforeState: InlineDiffBeforeState,
 ): Promise<InlineDiffPayload> {
     const parsedFiles = parsePatchFileHeaders(patchText);
     if (parsedFiles.length === 0) {
@@ -165,60 +227,44 @@ export async function computeInlineDiffs(
     const diffFiles: InlineDiffFile[] = [];
 
     for (const file of parsedFiles) {
-        const absPath = path.resolve(cwd, file.filePath);
-        try {
-            if (file.operation === "delete") {
-                // File was deleted — show the removal diff from git
-                diffFiles.push({
-                    path: file.filePath,
-                    operation: "delete",
-                    diff: `File deleted: ${file.filePath}`,
-                });
-                continue;
-            }
+        const displayPath = file.resultPath === file.filePath
+            ? file.filePath
+            : `${file.filePath} → ${file.resultPath}`;
+        const afterPath = resolvePatchPath(cwd, file.resultPath);
+        const beforeContent = beforeState.get(file.filePath);
 
-            // Read the current (post-patch) file content
-            const afterContent = await fs.readFile(absPath, "utf-8");
-
-            if (file.operation === "add") {
-                // New file — diff against empty
-                const diff = createTwoFilesPatch(
-                    file.filePath,
-                    file.filePath,
-                    "",
-                    afterContent,
-                    "before",
-                    "after",
-                );
-                diffFiles.push({ path: file.filePath, operation: "add", diff });
-            } else {
-                // Modified file — try to get the git-tracked version as "before"
-                let beforeContent = "";
-                try {
-                    const { execSync } = await import("child_process");
-                    beforeContent = execSync(
-                        `git show HEAD:${JSON.stringify(file.filePath)}`,
-                        { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-                    );
-                } catch {
-                    // File might be new to git or git not available — diff against empty
-                }
-                const diff = createTwoFilesPatch(
-                    file.filePath,
-                    file.filePath,
-                    beforeContent,
-                    afterContent,
-                    "before",
-                    "after",
-                );
-                diffFiles.push({ path: file.filePath, operation: "modify", diff });
-            }
-        } catch {
-            // If we can't read the file, skip it
+        if (beforeContent === undefined || (file.operation !== "delete" && !afterPath)) {
             diffFiles.push({
-                path: file.filePath,
+                path: displayPath,
                 operation: file.operation,
-                diff: `Could not compute diff for ${file.filePath}`,
+                diff: `Could not compute diff for ${displayPath}`,
+            });
+            continue;
+        }
+
+        try {
+            const afterContent = file.operation === "delete"
+                ? ""
+                : await fs.readFile(afterPath!, "utf-8");
+            const diff = createTwoFilesPatch(
+                file.filePath,
+                file.resultPath,
+                beforeContent,
+                afterContent,
+                "before",
+                "after",
+                { context: 2 },
+            );
+            diffFiles.push({
+                path: displayPath,
+                operation: file.operation,
+                diff,
+            });
+        } catch {
+            diffFiles.push({
+                path: displayPath,
+                operation: file.operation,
+                diff: `Could not compute diff for ${displayPath}`,
             });
         }
     }
@@ -670,6 +716,18 @@ The tool returns immediately with a processId. Poll with processId to check stat
                 }
 
                 // ── Foreground execution ─────────────────────────────────
+                const isApplyPatch = normalizeCommandName(normalizedInput.command) === "apply_patch";
+                const rawPatch = isApplyPatch
+                    ? (preparedInput.stdin || preparedInput.args.join("\n")).trim()
+                    : "";
+                const inlineDiffBeforeState = rawPatch
+                    ? await captureInlineDiffBeforeState(
+                        rawPatch,
+                        executionDir,
+                        syncedFolders,
+                        areUnsafeAgentPermissionsEnabled(),
+                    )
+                    : undefined;
                 const maxTimeout = 600_000; // 10 min for foreground too
                 const initialOptions = {
                     command: normalizedInput.command,
@@ -731,13 +789,15 @@ The tool returns immediately with a processId. Poll with processId to check stat
                     });
                 }
 
-                const isApplyPatch = normalizedInput.command.trim().toLowerCase() == "apply_patch";
                 let inlineDiff: string | InlineDiffPayload | undefined;
                 if (isApplyPatch) {
-                    const rawPatch = (preparedInput.stdin || preparedInput.args.join("\n")).trim();
-                    if (rawPatch && result.success) {
+                    if (rawPatch && result.success && inlineDiffBeforeState) {
                         try {
-                            inlineDiff = await computeInlineDiffs(rawPatch, executionDir);
+                            inlineDiff = await computeInlineDiffs(
+                                rawPatch,
+                                executionDir,
+                                inlineDiffBeforeState,
+                            );
                         } catch {
                             inlineDiff = rawPatch || undefined;
                         }
