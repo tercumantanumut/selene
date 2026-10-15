@@ -14,6 +14,7 @@ import { debugLog, debugError, debugVerbose, debugWarn, setLogRendererWindow } f
 import { buildPersistedLocaleCookie } from "@/lib/i18n/persisted-locale";
 import { getSetting } from "@/lib/settings/settings-manager";
 import { isElectronInternalUrl } from "./local-url-policy";
+import { uiScaleToZoomFactor } from "@/lib/ui/ui-scale";
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -262,6 +263,8 @@ export async function createWindow(opts: CreateWindowOptions): Promise<void> {
     },
     show: false, // Don't show until ready to prevent visual flash
   });
+
+  mainWindow.webContents.setZoomFactor(uiScaleToZoomFactor(getSetting("uiScale")));
 
   debugLog("[Window] BrowserWindow created");
   registerThemeListener();

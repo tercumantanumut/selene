@@ -22,6 +22,7 @@ import { TaskNotificationProvider } from "@/components/schedules/task-notificati
 import { OverlaySessionNavigator } from "@/components/overlay-session-navigator";
 import { PermissionListener } from "@/components/permission-listener";
 import { loadSettings } from "@/lib/settings/settings-manager";
+import { normalizeUiScale } from "@/lib/ui/ui-scale";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -69,6 +70,8 @@ export default async function RootLayout({
   const locale = await getLocale();
   const headersList = await headers();
   const isStandalone = headersList.get("x-standalone") === "1";
+  const settings = loadSettings();
+  const initialUiScale = normalizeUiScale(settings.uiScale);
 
   // Standalone pages (e.g. browser-session pop-out window) skip the full
   // app shell — no auth, sync, task providers, sidebar, toaster, etc.
@@ -78,11 +81,12 @@ export default async function RootLayout({
       <html
         lang={locale}
         data-theme="dark"
+        data-ui-scale={initialUiScale}
         className={`${inter.variable} ${jetbrainsMono.variable} dark`}
         suppressHydrationWarning
       >
         <body className="bg-black overflow-hidden antialiased font-sans">
-          <ThemeProvider initialTheme="dark" initialChatWorkspaceMode="sidebar">
+          <ThemeProvider initialTheme="dark" initialUiScale={initialUiScale} initialChatWorkspaceMode="sidebar">
             <NextIntlClientProvider locale={locale} messages={messages}>
               {children}
             </NextIntlClientProvider>
@@ -93,7 +97,6 @@ export default async function RootLayout({
   }
 
   const messages = await getMessages();
-  const settings = loadSettings();
   const initialTheme = settings.theme ?? "system";
   const initialChatWorkspaceMode = settings.chatWorkspaceMode ?? "sidebar";
   const chatRefreshDebugStorageKey = "selene-debug-chat-refresh";
@@ -200,6 +203,7 @@ export default async function RootLayout({
     <html
       lang={locale}
       data-theme={initialTheme}
+      data-ui-scale={initialUiScale}
       className={`${inter.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
@@ -208,7 +212,7 @@ export default async function RootLayout({
         <Script id="theme-script" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: themeScript }} />
         <Script id="renderer-recovery" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: rendererRecoveryScript }} />
         <div id="app-root">
-          <ThemeProvider initialTheme={initialTheme} initialChatWorkspaceMode={initialChatWorkspaceMode}>
+          <ThemeProvider initialTheme={initialTheme} initialUiScale={initialUiScale} initialChatWorkspaceMode={initialChatWorkspaceMode}>
             <NextIntlClientProvider locale={locale} messages={messages}>
               <GlobalSyncWrapper>
                 <AuthProvider>

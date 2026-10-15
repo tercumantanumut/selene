@@ -9,9 +9,10 @@ import { useTheme } from "@/components/theme/theme-provider";
 import { THEME_PRESETS } from "@/lib/personalization/theme-presets";
 import { WALLPAPERS, WALLPAPER_CATEGORIES, type BackgroundConfig } from "@/lib/personalization/wallpapers";
 import { VIDEO_WALLPAPERS, VIDEO_WALLPAPER_CATEGORIES, getVideoWallpaperById } from "@/lib/personalization/video-wallpapers";
-import { Check, X, Image as ImageIcon, Play, Globe } from "lucide-react";
+import { Check, X, Image as ImageIcon, Play, Globe, RotateCcw } from "lucide-react";
 import { invalidateSettingsCache } from "@/lib/hooks/use-settings";
 import type { FormState } from "./settings-types";
+import { DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE, normalizeUiScale } from "@/lib/ui/ui-scale";
 
 interface PreferencesSectionProps {
   formState: FormState;
@@ -85,7 +86,7 @@ export function PreferencesSection({ formState, updateField, reloadSettings }: P
   const t = useTranslations("settings");
   const router = useRouter();
   const currentLocale = useLocale() as Locale;
-  const { themePreset, setThemePreset, homepageBackground, setHomepageBackground, chatBackground, setChatBackground } = useTheme();
+  const { themePreset, setThemePreset, homepageBackground, setHomepageBackground, chatBackground, setChatBackground, setUiScale } = useTheme();
   const [bgTab, setBgTab] = useState<"homepage" | "chat">("homepage");
   const [bgMediaType, setBgMediaType] = useState<"images" | "videos">("images");
   const [wallpaperCategory, setWallpaperCategory] = useState<string>("all");
@@ -156,6 +157,12 @@ export function PreferencesSection({ formState, updateField, reloadSettings }: P
     setActiveBg({ type: "none" });
   };
 
+  const handleUiScaleChange = (value: number) => {
+    const nextScale = normalizeUiScale(value);
+    updateField("uiScale", nextScale);
+    setUiScale(nextScale);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -181,6 +188,52 @@ export function PreferencesSection({ formState, updateField, reloadSettings }: P
               <span className="font-mono capitalize text-terminal-dark">{t(`preferences.theme.${theme}`)}</span>
             </label>
           ))}
+        </div>
+      </div>
+
+      <div className="space-y-3 rounded border border-terminal-border bg-terminal-cream/30 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <label htmlFor="ui-scale" className="font-mono text-base font-semibold text-terminal-dark">
+              {t("preferences.uiScale.heading")}
+            </label>
+            <p className="mt-1 font-mono text-xs text-terminal-muted">
+              {t("preferences.uiScale.description")}
+            </p>
+          </div>
+          <output
+            htmlFor="ui-scale"
+            className="min-w-14 rounded-md border border-terminal-border bg-terminal-cream px-2 py-1 text-center font-mono text-sm font-semibold text-terminal-dark shadow-inner"
+            aria-live="polite"
+          >
+            {formState.uiScale}%
+          </output>
+        </div>
+
+        <input
+          id="ui-scale"
+          type="range"
+          min={MIN_UI_SCALE}
+          max={MAX_UI_SCALE}
+          step={1}
+          value={formState.uiScale}
+          onChange={(event) => handleUiScaleChange(Number(event.target.value))}
+          className="h-2 w-full cursor-pointer accent-terminal-green"
+          aria-valuetext={`${formState.uiScale}%`}
+        />
+
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-mono text-[10px] text-terminal-muted">{MIN_UI_SCALE}%</span>
+          <button
+            type="button"
+            onClick={() => handleUiScaleChange(DEFAULT_UI_SCALE)}
+            disabled={formState.uiScale === DEFAULT_UI_SCALE}
+            className="inline-flex items-center gap-1.5 rounded-md border border-terminal-border bg-terminal-cream/70 px-2.5 py-1 font-mono text-xs text-terminal-dark transition-colors hover:bg-terminal-cream disabled:cursor-default disabled:opacity-50"
+          >
+            <RotateCcw className="size-3" />
+            {t("preferences.uiScale.reset")}
+          </button>
+          <span className="font-mono text-[10px] text-terminal-muted">{MAX_UI_SCALE}%</span>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ import {
   type ChatWorkspaceMode,
 } from "@/lib/chat/workspace-mode";
 import type { VoiceSettingsFields } from "@/lib/settings/voice-settings-fields";
+import { DEFAULT_UI_SCALE, normalizeUiScale } from "@/lib/ui/ui-scale";
 
 export type LlmProvider = "anthropic" | "openrouter" | "antigravity" | "codex" | "kimi" | "minimax" | "ollama" | "claudecode" | "blackboxai" | "deepseek" | "vllm";
 
@@ -37,6 +38,7 @@ interface AppSettingsPublic {
   utilityModel?: string;
   embeddingReindexRequired?: boolean;
   theme: "dark" | "light" | "system";
+  uiScale?: number;
   chatWorkspaceMode?: ChatWorkspaceMode;
   toolDisplayMode?: "compact" | "detailed";
   localUserId: string;
@@ -139,6 +141,7 @@ export interface FormState {
   utilityModel: string;
   openrouterArgs: string;
   theme: "dark" | "light" | "system";
+  uiScale: number;
   chatWorkspaceMode: ChatWorkspaceMode;
   toolLoadingMode: "deferred" | "always";
   toolDisplayMode: "compact" | "detailed";
@@ -282,6 +285,7 @@ export const DEFAULT_FORM_STATE: FormState = {
   utilityModel: "",
   openrouterArgs: "{}",
   theme: "dark",
+  uiScale: DEFAULT_UI_SCALE,
   chatWorkspaceMode: DEFAULT_CHAT_WORKSPACE_MODE,
   toolLoadingMode: "deferred",
   toolDisplayMode: "compact",
@@ -417,6 +421,7 @@ export function buildFormStateFromData(data: Record<string, any>): FormState {
     utilityModel: data.utilityModel || "",
     openrouterArgs: data.openrouterArgs || "{}",
     theme: data.theme || "dark",
+    uiScale: normalizeUiScale(data.uiScale),
     chatWorkspaceMode: data.chatWorkspaceMode === "browser-tabs" ? "browser-tabs" : DEFAULT_CHAT_WORKSPACE_MODE,
     toolLoadingMode: data.toolLoadingMode || "deferred",
     toolDisplayMode: data.toolDisplayMode === "detailed" ? "detailed" : "compact",

@@ -2937,6 +2937,11 @@
         "light": "Light",
         "system": "System"
       },
+      "uiScale": {
+        "heading": "Interface scale",
+        "description": "Scale the complete Selene interface, including navigation, cards, dialogs, and overlays. Changes preview immediately and are saved with your settings.",
+        "reset": "Reset to 100%"
+      },
       "colorPalette": {
         "heading": "Color Palette",
         "description": "Choose a color palette to change the overall look and feel"

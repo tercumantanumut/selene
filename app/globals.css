@@ -552,6 +552,11 @@
 }
 
 @layer base {
+  html {
+    --ui-scale-factor: 1;
+    zoom: var(--ui-scale-factor);
+  }
+
   * {
     @apply border-transparent;
   }

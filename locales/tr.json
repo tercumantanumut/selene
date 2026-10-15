@@ -2722,6 +2722,11 @@
         "light": "Aydınlık",
         "system": "Sistem"
       },
+      "uiScale": {
+        "heading": "Arayüz ölçeği",
+        "description": "Gezinme, kartlar, iletişim kutuları ve katmanlar dahil tüm Selene arayüzünü ölçeklendirin. Değişiklikler anında önizlenir ve ayarlarınızla kaydedilir.",
+        "reset": "%100'e sıfırla"
+      },
       "colorPalette": {
         "heading": "Renk Paleti",
         "description": "Genel görünümü değiştirmek için bir renk paleti seçin"
