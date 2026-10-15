@@ -340,6 +340,27 @@ describe("Codex model context window limits", () => {
     }
   });
 
+  it("returns 272K for normalized GPT-6 Astra variants (Codex backend context_window)", () => {
+    const astraModels = [
+      "gpt-6-astra",
+      "gpt-6-astra-low",
+      "gpt-6-astra-max",
+      "gpt-6-astra-ultra",
+      "openai/gpt-6-astra-high",
+    ];
+
+    for (const modelId of astraModels) {
+      const config = getContextWindowConfig(modelId, "codex");
+      expect(config.maxTokens, `${modelId} should have 272K context`).toBe(272_000);
+      expect(config.supportsStreaming).toBe(true);
+    }
+  });
+
+  it("resolves GPT-6 Astra limits without an explicit provider hint", () => {
+    const config = getContextWindowConfig("gpt-6-astra-high");
+    expect(config.maxTokens).toBe(272_000);
+  });
+
   it("returns 400K for legacy codex models", () => {
     const codexModels = [
       "gpt-5.3-codex",

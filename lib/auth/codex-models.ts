@@ -1,4 +1,12 @@
 export const CODEX_MODEL_IDS = [
+  // GPT-6 Astra (Codex backend: 272K context, six reasoning levels, default low)
+  "gpt-6-astra",
+  "gpt-6-astra-low",
+  "gpt-6-astra-medium",
+  "gpt-6-astra-high",
+  "gpt-6-astra-xhigh",
+  "gpt-6-astra-max",
+  "gpt-6-astra-ultra",
   // GPT-5.6 Sol (372K context, six reasoning levels)
   "gpt-5.6-sol",
   "gpt-5.6-sol-low",
@@ -107,6 +115,14 @@ export const CODEX_MODEL_IDS = [
 type CodexModelId = (typeof CODEX_MODEL_IDS)[number];
 
 const MODEL_MAP: Record<string, string> = {
+  // GPT-6 Astra
+  "gpt-6-astra": "gpt-6-astra",
+  "gpt-6-astra-low": "gpt-6-astra",
+  "gpt-6-astra-medium": "gpt-6-astra",
+  "gpt-6-astra-high": "gpt-6-astra",
+  "gpt-6-astra-xhigh": "gpt-6-astra",
+  "gpt-6-astra-max": "gpt-6-astra",
+  "gpt-6-astra-ultra": "gpt-6-astra",
   // GPT-5.6 Sol
   "gpt-5.6-sol": "gpt-5.6-sol",
   "gpt-5.6-sol-low": "gpt-5.6-sol",
@@ -213,6 +229,7 @@ const MODEL_MAP: Record<string, string> = {
 };
 
 const BASE_MODEL_LABELS: Record<string, string> = {
+  "gpt-6-astra": "GPT-6 Astra",
   "gpt-5.6-sol": "GPT-5.6 Sol",
   "gpt-5.6-terra": "GPT-5.6 Terra",
   "gpt-5.6-luna": "GPT-5.6 Luna",
@@ -268,6 +285,9 @@ export function normalizeCodexModel(model: string | undefined): string {
 
   const normalized = modelId.toLowerCase();
 
+  if (normalized.includes("gpt-6-astra") || normalized.includes("gpt 6 astra")) {
+    return "gpt-6-astra";
+  }
   if (normalized.includes("gpt-5.6-sol") || normalized.includes("gpt 5.6 sol")) {
     return "gpt-5.6-sol";
   }

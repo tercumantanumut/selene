@@ -71,6 +71,10 @@ describe("Context Window Fix Validation", () => {
     });
 
     const claude1MModels = [
+      "claude-fable-5-1",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-opus-5",
       "claude-opus-4-8",
       "claude-fable-5",
       "claude-opus-4-7",
@@ -83,6 +87,14 @@ describe("Context Window Fix Validation", () => {
         expect(config.maxTokens).toBe(1000000);
       });
     });
+
+    it.each(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-5"])(
+      "should configure %s with 128K maximum output",
+      (modelId) => {
+        const config = getContextWindowConfig(modelId, "claudecode");
+        expect(config.maxOutputTokens).toBe(128000);
+      },
+    );
   });
 
   describe("GPT-5/Codex Model-Specific Configurations (400K)", () => {
@@ -197,6 +209,10 @@ describe("Context Window Fix Validation", () => {
 
       // Claude Code flagship models have 1M context (model-catalog contextWindow: "1M")
       const claude1MModels = [
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-opus-5",
         "claude-opus-4-8",
         "claude-fable-5",
         "claude-opus-4-7",

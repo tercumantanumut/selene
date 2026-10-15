@@ -30,6 +30,7 @@ describe("isModelCompatibleWithProvider", () => {
 
     it("rejects non-claude models", () => {
       expect(isModelCompatibleWithProvider("gpt-5.1-codex", "anthropic")).toBe(false);
+      expect(isModelCompatibleWithProvider("gpt-6-astra", "anthropic")).toBe(false);
       expect(isModelCompatibleWithProvider("kimi-k2.5", "anthropic")).toBe(false);
       expect(isModelCompatibleWithProvider("llama3.1:8b", "anthropic")).toBe(false);
     });
@@ -79,6 +80,8 @@ describe("isModelCompatibleWithProvider", () => {
       expect(isModelCompatibleWithProvider("gpt-5.1-codex", "codex")).toBe(true);
       expect(isModelCompatibleWithProvider("gpt-5.1-codex-mini", "codex")).toBe(true);
       expect(isModelCompatibleWithProvider("gpt-5.3-codex-medium", "codex")).toBe(true);
+      expect(isModelCompatibleWithProvider("gpt-6-astra", "codex")).toBe(true);
+      expect(isModelCompatibleWithProvider("gpt-6-astra-ultra", "codex")).toBe(true);
     });
 
     it("rejects non-codex models", () => {
@@ -89,6 +92,10 @@ describe("isModelCompatibleWithProvider", () => {
 
   describe("claudecode", () => {
     it("accepts Claude Code OAuth models", () => {
+      expect(isModelCompatibleWithProvider("claude-fable-5-1", "claudecode")).toBe(true);
+      expect(isModelCompatibleWithProvider("claude-opus-5", "claudecode")).toBe(true);
+      expect(isModelCompatibleWithProvider("claude-opus-5-5", "claudecode")).toBe(true);
+      expect(isModelCompatibleWithProvider("claude-sonnet-5-5", "claudecode")).toBe(true);
       expect(isModelCompatibleWithProvider("claude-sonnet-4-5-20250929", "claudecode")).toBe(true);
       expect(isModelCompatibleWithProvider("claude-haiku-4-5-20251001", "claudecode")).toBe(true);
       expect(isModelCompatibleWithProvider("claude-opus-4-20250929", "claudecode")).toBe(true);

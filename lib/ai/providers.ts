@@ -339,7 +339,7 @@ function isCodexModel(modelId: string): boolean {
   const baseModel = modelId.includes("/") ? modelId.split("/").pop()! : modelId;
   const lower = baseModel.toLowerCase();
   if (CODEX_MODEL_ID_SET.has(lower)) return true;
-  return lower.includes("codex") || lower.includes("gpt-5");
+  return lower.includes("codex") || lower.includes("gpt-5") || lower.includes("gpt-6");
 }
 
 function isKimiModel(modelId: string): boolean {

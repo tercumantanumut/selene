@@ -35,8 +35,8 @@ const KIMI_EXACT_MODELS = new Set(["k3"]);
 // Prefix-based matching for providers with unambiguous model naming
 const MODEL_PREFIXES: Record<LLMProvider, string[]> = {
   anthropic: ["claude-"],
-  claudecode: ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"],
-  codex: ["gpt-5", "codex"],
+  claudecode: ["claude-opus-", "claude-sonnet-", "claude-haiku-", "claude-fable-"],
+  codex: ["gpt-5", "gpt-6", "codex"],
   kimi: ["kimi-", "moonshot-"],
   minimax: ["minimax-"],
   blackboxai: ["blackbox-", "blackboxai/"], // used by openrouter exclusion check
@@ -60,8 +60,8 @@ const MODEL_PREFIXES: Record<LLMProvider, string[]> = {
  * Rules:
  * - Antigravity: exact match only (short IDs overlap with Anthropic prefix)
  * - Anthropic: claude-* prefix, but NOT Antigravity exact models
- * - Claude Code: claude-opus-4*, claude-sonnet-4*, claude-haiku-4* (also accepts Anthropic claude-* models)
- * - Codex: gpt-5*, codex*
+ * - Claude Code: current Claude families, plus generic Anthropic claude-* model IDs
+ * - Codex: gpt-5*, gpt-6*, codex*
  * - Kimi: k3, kimi-*, moonshot-*
  * - BlackBox AI: accepts any non-empty model ID so newly released models can be used before the catalog is updated
  * - Ollama: accepts any model
@@ -93,7 +93,7 @@ export function isModelCompatibleWithProvider(
     );
   }
 
-  // Codex: gpt-5*, codex*
+  // Codex: gpt-5*, gpt-6*, codex*
   if (provider === "codex") {
     return (
       MODEL_PREFIXES.codex.some((p) => lowerModel.startsWith(p)) ||
