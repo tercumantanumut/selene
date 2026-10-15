@@ -110,6 +110,17 @@ let writeBuffer = "";
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_INTERVAL_MS = 500;
 const FLUSH_SIZE_THRESHOLD = 64 * 1024;
+// Rotate while running, not only at startup: a long-lived session otherwise
+// grows debug.log without bound.
+const MAX_LOG_FILE_BYTES = 10 * 1024 * 1024;
+let logFileBytes = 0;
+
+function rotateDebugLog(): void {
+  const oldPath = DEBUG_LOG_FILE + ".old";
+  try { fs.unlinkSync(oldPath); } catch {}
+  fs.renameSync(DEBUG_LOG_FILE, oldPath);
+  logFileBytes = 0;
+}
 
 function appendToBuffer(message: string): void {
   writeBuffer += message;
@@ -132,7 +143,9 @@ export function flushDebugLog(): void {
   const data = writeBuffer;
   writeBuffer = "";
   try {
+    if (logFileBytes >= MAX_LOG_FILE_BYTES) rotateDebugLog();
     fs.appendFileSync(DEBUG_LOG_FILE, data);
+    logFileBytes += Buffer.byteLength(data);
   } catch (e) {
     console.error("[Debug] Failed to write to log file:", e);
   }
@@ -222,11 +235,7 @@ export function initDebugLog(opts: {
     // Log rotation: if existing file > 10MB, rotate to .old
     try {
       const stats = fs.statSync(DEBUG_LOG_FILE);
-      if (stats.size > 10 * 1024 * 1024) {
-        const oldPath = DEBUG_LOG_FILE + ".old";
-        try { fs.unlinkSync(oldPath); } catch {}
-        fs.renameSync(DEBUG_LOG_FILE, oldPath);
-      }
+      if (stats.size > MAX_LOG_FILE_BYTES) rotateDebugLog();
     } catch {}
 
     const header = `
@@ -245,6 +254,7 @@ process.resourcesPath: ${opts.resourcesPath}
 ================================================================================
 `;
     fs.writeFileSync(DEBUG_LOG_FILE, header);
+    logFileBytes = Buffer.byteLength(header);
     debugLog("[Debug] Log file initialized at:", DEBUG_LOG_FILE);
   } catch (e) {
     console.error("[Debug] Failed to initialize log file:", e);

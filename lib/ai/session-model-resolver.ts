@@ -163,6 +163,9 @@ function resolveEffectiveProvider(
   };
 }
 
+// Logged once per distinct skip; this runs on every context-status poll.
+const reportedSkippedCandidates = new Set<string>();
+
 function pickCompatibleModel(
   fieldName: RoleField,
   provider: LLMProvider,
@@ -176,9 +179,13 @@ function pickCompatibleModel(
     }
 
     if (resolved === providerDefault) {
-      console.warn(
-        `[SESSION-RESOLVER] Skipping incompatible ${candidate.source} ${fieldName} "${candidate.model}" for provider "${provider}"`,
-      );
+      const warningKey = `${provider}|${fieldName}|${candidate.source}|${candidate.model}`;
+      if (!reportedSkippedCandidates.has(warningKey)) {
+        reportedSkippedCandidates.add(warningKey);
+        console.warn(
+          `[SESSION-RESOLVER] Skipping incompatible ${candidate.source} ${fieldName} "${candidate.model}" for provider "${provider}"`,
+        );
+      }
     }
   }
 

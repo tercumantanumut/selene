@@ -1,6 +1,13 @@
 "use client";
 
-import { createContext, useContext, type FC, type ReactNode, type HTMLAttributes } from "react";
+import {
+  createContext,
+  useContext,
+  type ComponentProps,
+  type FC,
+  type ReactNode,
+  type HTMLAttributes,
+} from "react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
 import { SyntaxHighlighter, UserSyntaxHighlighter } from "./shiki-highlighter";
@@ -111,107 +118,211 @@ const SmartImage: FC<{
   );
 };
 
+// Module-level so MarkdownTextPrimitive sees stable identities. Inline objects
+// gave every render new component types, which remounted every paragraph,
+// list, link and table of every message on each re-render.
+type MarkdownComponents = ComponentProps<typeof MarkdownTextPrimitive>["components"];
+
+const REMARK_PLUGINS = [remarkGfm];
+
+const ASSISTANT_MARKDOWN_COMPONENTS: MarkdownComponents = {
+  // Syntax highlighting for code blocks
+  SyntaxHighlighter,
+  // Override link to open in new tab (with context to prevent nested anchors)
+  a: ({ href, children, ...props }) => (
+    <ImageLinkPreview
+      href={href}
+      fallback={AnchorWithContext}
+      className="text-terminal-green underline underline-offset-4 hover:text-terminal-green/80"
+      {...props}
+    >
+      {children}
+    </ImageLinkPreview>
+  ),
+  // Convert embedded images to clickable links (only if not already inside an anchor)
+  img: ({ src, alt }) => (
+    <SmartImage
+      src={typeof src === 'string' ? src : undefined}
+      alt={alt}
+      linkClassName="inline-flex items-center gap-1.5 text-terminal-green underline underline-offset-4 hover:text-terminal-green/80"
+    />
+  ),
+  // Inline code (not code blocks - those use SyntaxHighlighter)
+  code: ({ children, ...props }) => (
+    <SmartInlineCode
+      children={children}
+      codeClassName="rounded bg-terminal-dark/10 px-1.5 py-0.5 text-sm font-mono text-terminal-dark"
+      linkClassName="inline-flex items-center text-terminal-green underline underline-offset-4 hover:text-terminal-green/80"
+      codeProps={props as HTMLAttributes<HTMLElement>}
+    />
+  ),
+  // Lists
+  ul: ({ children, ...props }) => (
+    <ul className="list-disc pl-6 space-y-1" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="list-decimal pl-6 space-y-1" {...props}>
+      {children}
+    </ol>
+  ),
+  // Headings
+  h1: ({ children, ...props }) => (
+    <h1 className="text-2xl font-bold font-mono mt-4 mb-2 text-terminal-dark" {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }) => (
+    <h2 className="text-xl font-bold font-mono mt-3 mb-2 text-terminal-dark" {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }) => (
+    <h3 className="text-lg font-semibold font-mono mt-2 mb-1 text-terminal-dark" {...props}>
+      {children}
+    </h3>
+  ),
+  // Paragraphs
+  p: ({ children, ...props }) => (
+    <p className="mb-2 last:mb-0" {...props}>
+      {children}
+    </p>
+  ),
+  // Blockquotes
+  blockquote: ({ children, ...props }) => (
+    <blockquote
+      className="border-l-4 border-terminal-dark/30 pl-4 italic text-terminal-dark/80"
+      {...props}
+    >
+      {children}
+    </blockquote>
+  ),
+  // Tables
+  table: ({ children, ...props }) => (
+    <div className="overflow-x-auto">
+      <table
+        className="min-w-full border-collapse border border-terminal-border"
+        {...props}
+      >
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ children, ...props }) => (
+    <th className="border border-terminal-border bg-terminal-dark/5 px-4 py-2 text-left font-mono text-terminal-dark" {...props}>
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td className="border border-terminal-border px-4 py-2" {...props}>
+      {children}
+    </td>
+  ),
+};
+
+const USER_MARKDOWN_COMPONENTS: MarkdownComponents = {
+  // Syntax highlighting for code blocks (uses light theme for dark bg)
+  SyntaxHighlighter: UserSyntaxHighlighter,
+  // Override link to open in new tab (with context to prevent nested anchors)
+  a: ({ href, children, ...props }) => (
+    <AnchorWithContext
+      href={href}
+      className="text-terminal-amber underline underline-offset-4 hover:text-terminal-amber/80"
+      {...props}
+    >
+      {children}
+    </AnchorWithContext>
+  ),
+  // Convert embedded images to clickable links (only if not already inside an anchor)
+  img: ({ src, alt }) => (
+    <SmartImage
+      src={typeof src === 'string' ? src : undefined}
+      alt={alt}
+      linkClassName="inline-flex items-center gap-1.5 text-terminal-amber underline underline-offset-4 hover:text-terminal-amber/80"
+    />
+  ),
+  // Inline code - light text on slightly lighter dark background
+  code: ({ children, ...props }) => (
+    <SmartInlineCode
+      children={children}
+      codeClassName="rounded bg-terminal-cream/10 px-1.5 py-0.5 text-sm font-mono text-terminal-cream"
+      linkClassName="inline-flex items-center text-terminal-amber underline underline-offset-4 hover:text-terminal-amber/80"
+      codeProps={props as HTMLAttributes<HTMLElement>}
+    />
+  ),
+  // Lists - inherit text color (terminal-cream from parent)
+  ul: ({ children, ...props }) => (
+    <ul className="list-disc pl-6 space-y-1 text-terminal-cream" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="list-decimal pl-6 space-y-1 text-terminal-cream" {...props}>
+      {children}
+    </ol>
+  ),
+  // Headings - light text
+  h1: ({ children, ...props }) => (
+    <h1 className="text-2xl font-bold font-mono mt-4 mb-2 text-terminal-cream" {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }) => (
+    <h2 className="text-xl font-bold font-mono mt-3 mb-2 text-terminal-cream" {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }) => (
+    <h3 className="text-lg font-semibold font-mono mt-2 mb-1 text-terminal-cream" {...props}>
+      {children}
+    </h3>
+  ),
+  // Paragraphs
+  p: ({ children, ...props }) => (
+    <p className="mb-2 last:mb-0 text-terminal-cream" {...props}>
+      {children}
+    </p>
+  ),
+  // Blockquotes
+  blockquote: ({ children, ...props }) => (
+    <blockquote
+      className="border-l-4 border-terminal-cream/30 pl-4 italic text-terminal-cream/80"
+      {...props}
+    >
+      {children}
+    </blockquote>
+  ),
+  // Tables
+  table: ({ children, ...props }) => (
+    <div className="overflow-x-auto">
+      <table
+        className="min-w-full border-collapse border border-terminal-cream/30"
+        {...props}
+      >
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ children, ...props }) => (
+    <th className="border border-terminal-cream/30 bg-terminal-cream/10 px-4 py-2 text-left font-mono text-terminal-cream" {...props}>
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td className="border border-terminal-cream/30 px-4 py-2 text-terminal-cream" {...props}>
+      {children}
+    </td>
+  ),
+};
+
 // The text prop comes from MessagePrimitive.Content, but MarkdownTextPrimitive
 // reads from context - it doesn't need to be passed as children
 export const MarkdownText: FC<{ text: string }> = () => {
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
-      components={{
-        // Syntax highlighting for code blocks
-        SyntaxHighlighter,
-        // Override link to open in new tab (with context to prevent nested anchors)
-        a: ({ href, children, ...props }) => (
-          <ImageLinkPreview
-            href={href}
-            fallback={AnchorWithContext}
-            className="text-terminal-green underline underline-offset-4 hover:text-terminal-green/80"
-            {...props}
-          >
-            {children}
-          </ImageLinkPreview>
-        ),
-        // Convert embedded images to clickable links (only if not already inside an anchor)
-        img: ({ src, alt }) => (
-          <SmartImage
-            src={typeof src === 'string' ? src : undefined}
-            alt={alt}
-            linkClassName="inline-flex items-center gap-1.5 text-terminal-green underline underline-offset-4 hover:text-terminal-green/80"
-          />
-        ),
-        // Inline code (not code blocks - those use SyntaxHighlighter)
-        code: ({ children, ...props }) => (
-          <SmartInlineCode
-            children={children}
-            codeClassName="rounded bg-terminal-dark/10 px-1.5 py-0.5 text-sm font-mono text-terminal-dark"
-            linkClassName="inline-flex items-center text-terminal-green underline underline-offset-4 hover:text-terminal-green/80"
-            codeProps={props as HTMLAttributes<HTMLElement>}
-          />
-        ),
-        // Lists
-        ul: ({ children, ...props }) => (
-          <ul className="list-disc pl-6 space-y-1" {...props}>
-            {children}
-          </ul>
-        ),
-        ol: ({ children, ...props }) => (
-          <ol className="list-decimal pl-6 space-y-1" {...props}>
-            {children}
-          </ol>
-        ),
-        // Headings
-        h1: ({ children, ...props }) => (
-          <h1 className="text-2xl font-bold font-mono mt-4 mb-2 text-terminal-dark" {...props}>
-            {children}
-          </h1>
-        ),
-        h2: ({ children, ...props }) => (
-          <h2 className="text-xl font-bold font-mono mt-3 mb-2 text-terminal-dark" {...props}>
-            {children}
-          </h2>
-        ),
-        h3: ({ children, ...props }) => (
-          <h3 className="text-lg font-semibold font-mono mt-2 mb-1 text-terminal-dark" {...props}>
-            {children}
-          </h3>
-        ),
-        // Paragraphs
-        p: ({ children, ...props }) => (
-          <p className="mb-2 last:mb-0" {...props}>
-            {children}
-          </p>
-        ),
-        // Blockquotes
-        blockquote: ({ children, ...props }) => (
-          <blockquote
-            className="border-l-4 border-terminal-dark/30 pl-4 italic text-terminal-dark/80"
-            {...props}
-          >
-            {children}
-          </blockquote>
-        ),
-        // Tables
-        table: ({ children, ...props }) => (
-          <div className="overflow-x-auto">
-            <table
-              className="min-w-full border-collapse border border-terminal-border"
-              {...props}
-            >
-              {children}
-            </table>
-          </div>
-        ),
-        th: ({ children, ...props }) => (
-          <th className="border border-terminal-border bg-terminal-dark/5 px-4 py-2 text-left font-mono text-terminal-dark" {...props}>
-            {children}
-          </th>
-        ),
-        td: ({ children, ...props }) => (
-          <td className="border border-terminal-border px-4 py-2" {...props}>
-            {children}
-          </td>
-        ),
-      }}
+      remarkPlugins={REMARK_PLUGINS}
+      components={ASSISTANT_MARKDOWN_COMPONENTS}
     />
   );
 };
@@ -223,101 +334,8 @@ export const MarkdownText: FC<{ text: string }> = () => {
 export const UserMarkdownText: FC<{ text: string }> = () => {
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
-      components={{
-        // Syntax highlighting for code blocks (uses light theme for dark bg)
-        SyntaxHighlighter: UserSyntaxHighlighter,
-        // Override link to open in new tab (with context to prevent nested anchors)
-        a: ({ href, children, ...props }) => (
-          <AnchorWithContext
-            href={href}
-            className="text-terminal-amber underline underline-offset-4 hover:text-terminal-amber/80"
-            {...props}
-          >
-            {children}
-          </AnchorWithContext>
-        ),
-        // Convert embedded images to clickable links (only if not already inside an anchor)
-        img: ({ src, alt }) => (
-          <SmartImage
-            src={typeof src === 'string' ? src : undefined}
-            alt={alt}
-            linkClassName="inline-flex items-center gap-1.5 text-terminal-amber underline underline-offset-4 hover:text-terminal-amber/80"
-          />
-        ),
-        // Inline code - light text on slightly lighter dark background
-        code: ({ children, ...props }) => (
-          <SmartInlineCode
-            children={children}
-            codeClassName="rounded bg-terminal-cream/10 px-1.5 py-0.5 text-sm font-mono text-terminal-cream"
-            linkClassName="inline-flex items-center text-terminal-amber underline underline-offset-4 hover:text-terminal-amber/80"
-            codeProps={props as HTMLAttributes<HTMLElement>}
-          />
-        ),
-        // Lists - inherit text color (terminal-cream from parent)
-        ul: ({ children, ...props }) => (
-          <ul className="list-disc pl-6 space-y-1 text-terminal-cream" {...props}>
-            {children}
-          </ul>
-        ),
-        ol: ({ children, ...props }) => (
-          <ol className="list-decimal pl-6 space-y-1 text-terminal-cream" {...props}>
-            {children}
-          </ol>
-        ),
-        // Headings - light text
-        h1: ({ children, ...props }) => (
-          <h1 className="text-2xl font-bold font-mono mt-4 mb-2 text-terminal-cream" {...props}>
-            {children}
-          </h1>
-        ),
-        h2: ({ children, ...props }) => (
-          <h2 className="text-xl font-bold font-mono mt-3 mb-2 text-terminal-cream" {...props}>
-            {children}
-          </h2>
-        ),
-        h3: ({ children, ...props }) => (
-          <h3 className="text-lg font-semibold font-mono mt-2 mb-1 text-terminal-cream" {...props}>
-            {children}
-          </h3>
-        ),
-        // Paragraphs
-        p: ({ children, ...props }) => (
-          <p className="mb-2 last:mb-0 text-terminal-cream" {...props}>
-            {children}
-          </p>
-        ),
-        // Blockquotes
-        blockquote: ({ children, ...props }) => (
-          <blockquote
-            className="border-l-4 border-terminal-cream/30 pl-4 italic text-terminal-cream/80"
-            {...props}
-          >
-            {children}
-          </blockquote>
-        ),
-        // Tables
-        table: ({ children, ...props }) => (
-          <div className="overflow-x-auto">
-            <table
-              className="min-w-full border-collapse border border-terminal-cream/30"
-              {...props}
-            >
-              {children}
-            </table>
-          </div>
-        ),
-        th: ({ children, ...props }) => (
-          <th className="border border-terminal-cream/30 bg-terminal-cream/10 px-4 py-2 text-left font-mono text-terminal-cream" {...props}>
-            {children}
-          </th>
-        ),
-        td: ({ children, ...props }) => (
-          <td className="border border-terminal-cream/30 px-4 py-2 text-terminal-cream" {...props}>
-            {children}
-          </td>
-        ),
-      }}
+      remarkPlugins={REMARK_PLUGINS}
+      components={USER_MARKDOWN_COMPONENTS}
     />
   );
 };

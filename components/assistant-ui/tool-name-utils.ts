@@ -41,26 +41,26 @@ export async function loadToolNameCache(): Promise<Record<string, string>> {
   if (_toolNameCache) return _toolNameCache;
   if (_toolNameCachePromise) return _toolNameCachePromise;
 
-  // Dynamic import to avoid pulling resilientFetch into test bundles
-  const { resilientFetch } = await import("@/lib/utils/resilient-fetch");
-
-  _toolNameCachePromise = resilientFetch<{
-    tools?: Array<{ id: string; displayName: string }>;
-  }>("/api/tools?includeDisabled=true&includeAlwaysLoad=true")
-    .then(({ data }) => {
-      const map: Record<string, string> = {};
-      (data?.tools || []).forEach((tool) => {
-        if (tool.id && tool.displayName) {
-          map[tool.id] = tool.displayName;
-        }
-      });
-      _toolNameCache = map;
-      return map;
-    })
-    .catch(() => {
-      _toolNameCache = {};
-      return _toolNameCache;
+  // Assign the promise before the first await: every ToolCallGroup calls this
+  // on mount, and a late assignment let each of them start its own fetch.
+  _toolNameCachePromise = (async () => {
+    // Dynamic import to avoid pulling resilientFetch into test bundles
+    const { resilientFetch } = await import("@/lib/utils/resilient-fetch");
+    const { data } = await resilientFetch<{
+      tools?: Array<{ id: string; displayName: string }>;
+    }>("/api/tools?includeDisabled=true&includeAlwaysLoad=true");
+    const map: Record<string, string> = {};
+    (data?.tools || []).forEach((tool) => {
+      if (tool.id && tool.displayName) {
+        map[tool.id] = tool.displayName;
+      }
     });
+    _toolNameCache = map;
+    return map;
+  })().catch(() => {
+    _toolNameCache = {};
+    return _toolNameCache;
+  });
 
   return _toolNameCachePromise;
 }

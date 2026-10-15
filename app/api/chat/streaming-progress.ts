@@ -14,6 +14,7 @@ import { nowISO } from "@/lib/utils/timestamp";
 import type { DBContentPart, DBToolCallPart } from "@/lib/messages/converter";
 import { toDisplayToolName } from "@/lib/messages/tool-name-placeholder";
 import { sanitizeAssistantOutputText } from "./content-sanitizer";
+import { stripRedundantArgsText } from "./canonical-content";
 import {
   type StreamingMessageState,
   cloneContentParts,
@@ -321,7 +322,7 @@ export function createSyncStreamingMessage(
     }
 
     streamingState.pendingBroadcast = false;
-    const partsSnapshot = cloneContentParts(filteredParts);
+    const partsSnapshot = stripRedundantArgsText(cloneContentParts(filteredParts));
 
     if (!streamingState.messageId) {
       if (streamingState.isCreating) return;

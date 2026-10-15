@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { isAppHidden } from "@/lib/utils/app-visibility";
 import { resilientFetch } from "@/lib/utils/resilient-fetch";
 
 /**
@@ -106,6 +107,17 @@ export function useContextStatus({
   const [error, setError] = useState<string | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const statusRef = useRef<ContextStatusInfo | null>(null);
+
+  // Polls usually return the same numbers; keep the previous object so
+  // consumers (the whole thread) don't re-render for an identical status.
+  const applyStatus = useCallback((next: ContextStatusInfo): boolean => {
+    const current = statusRef.current;
+    if (current && JSON.stringify(current) === JSON.stringify(next)) return false;
+    statusRef.current = next;
+    setStatus(next);
+    return true;
+  }, []);
 
   const fetchStatus = useCallback(async (force = false) => {
     if (!sessionId) return;
@@ -114,7 +126,7 @@ export function useContextStatus({
     // active-run polls must hit the API so live delegated-session progress is visible.
     const cached = statusCache.get(sessionId);
     if (!force && cached && Date.now() - cached.timestamp < STALE_TIME_MS) {
-      setStatus(cached.data);
+      applyStatus(cached.data);
       return;
     }
 
@@ -123,7 +135,8 @@ export function useContextStatus({
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setIsLoading(true);
+    // Background refreshes keep showing the current status.
+    if (!statusRef.current) setIsLoading(true);
     setError(null);
 
     // NOTE: Do NOT wrap this in `deduplicate()`. The abort controller already
@@ -143,13 +156,14 @@ export function useContextStatus({
       setError(fetchError);
     } else if (data) {
       const normalized = normalizeStatus(data);
-      setStatus(normalized);
       statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
-      dispatchContextStatusChanged(sessionId, normalized);
+      if (applyStatus(normalized)) {
+        dispatchContextStatusChanged(sessionId, normalized);
+      }
     }
 
     setIsLoading(false);
-  }, [sessionId]);
+  }, [sessionId, applyStatus]);
 
   const refresh = useCallback(() => fetchStatus(true), [fetchStatus]);
 
@@ -180,14 +194,15 @@ export function useContextStatus({
     // Update status from the response
     if (data?.status) {
       const normalized = normalizeStatus(data.status, status?.thresholds);
-      setStatus(normalized);
       statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
-      dispatchContextStatusChanged(sessionId, normalized);
+      if (applyStatus(normalized)) {
+        dispatchContextStatusChanged(sessionId, normalized);
+      }
     }
 
     setIsCompacting(false);
     return { success: data?.success ?? true, compacted: data?.compacted ?? false };
-  }, [sessionId, status?.thresholds]);
+  }, [sessionId, status?.thresholds, applyStatus]);
 
   // Auto-fetch on mount / sessionId change
   useEffect(() => {
@@ -231,7 +246,7 @@ export function useContextStatus({
       const detail = (event as CustomEvent).detail as { sessionId?: unknown; status?: ContextStatusInfo } | undefined;
       if (detail?.sessionId !== sessionId || !detail.status) return;
       const normalized = normalizeStatus(detail.status, status?.thresholds);
-      setStatus(normalized);
+      applyStatus(normalized);
       statusCache.set(sessionId, { data: normalized, timestamp: Date.now() });
     };
 
@@ -241,7 +256,7 @@ export function useContextStatus({
       window.removeEventListener("seline:compact-session-completed", handleToolResult);
       window.removeEventListener("seline:context-status-changed", handleStatusChanged);
     };
-  }, [fetchStatus, sessionId, status?.thresholds]);
+  }, [fetchStatus, sessionId, status?.thresholds, applyStatus]);
 
   // Refresh once when tab becomes visible again after being hidden.
   useEffect(() => {
@@ -262,7 +277,7 @@ export function useContextStatus({
     if (!pollIntervalMs || pollIntervalMs <= 0 || !sessionId) return;
 
     const interval = setInterval(() => {
-      if (pauseWhenHidden && typeof document !== "undefined" && document.hidden) {
+      if (pauseWhenHidden && isAppHidden()) {
         return;
       }
       void fetchStatus(true);
@@ -274,6 +289,7 @@ export function useContextStatus({
   // Reset when sessionId changes
   useEffect(() => {
     if (!sessionId) {
+      statusRef.current = null;
       setStatus(null);
       setError(null);
       setIsLoading(false);

@@ -10,6 +10,8 @@ import {
     countVisibleConversationMessages,
     hasLivePromptInjectedMessages,
 } from "@/lib/messages/converter";
+import { mergeIncrementalMessages, reuseUnchangedUIMessages } from "@/lib/messages/incremental-merge";
+import { isAppHidden, onAppHiddenChange } from "@/lib/utils/app-visibility";
 import { useUnifiedTasksStore } from "@/lib/stores/unified-tasks-store";
 import type { TaskEvent } from "@/lib/background-tasks/types";
 import { useSessionSync } from "@/lib/hooks/use-session-sync";
@@ -85,6 +87,71 @@ export function shouldReloadSessionFromTaskProgress(input: {
     });
 }
 
+interface SessionMessageCache {
+    sessionId: string;
+    cursor: string;
+    /** Latest DB rows by id; unchanged rows keep their object identity across polls. */
+    rowsById: Map<string, DBMessage>;
+    /** Rows and UI messages last pushed to the thread, for identity reuse. */
+    appliedRows: Map<string, DBMessage>;
+    appliedUI: Map<string, UIMessage>;
+}
+
+/**
+ * Fetch the session's messages, incrementally when a cursor is cached.
+ * A long thread is many megabytes, so polls ask only for rows changed since
+ * the last response and merge them into the cached copy. Falls back to a
+ * full fetch when there is no cache or the delta leaves a gap.
+ */
+async function fetchSessionMessages(
+    sessionId: string,
+    cacheRef: { current: SessionMessageCache | null }
+): Promise<{ rows: DBMessage[] } | null> {
+    const cache = cacheRef.current?.sessionId === sessionId ? cacheRef.current : null;
+
+    if (cache) {
+        const { data, error, status } = await resilientFetch<{
+            messages: DBMessage[];
+            ids?: string[];
+            cursor?: string;
+        }>(
+            `/api/sessions/${sessionId}/messages?since=${encodeURIComponent(cache.cursor)}`,
+            { retries: 0 }
+        );
+        if (error || !data) {
+            console.error("[Background Processing] Failed to fetch messages:", status, error);
+            return null;
+        }
+        const merged = Array.isArray(data.ids)
+            ? mergeIncrementalMessages(cache.rowsById, data.ids, data.messages)
+            : null;
+        if (merged && data.cursor) {
+            cache.cursor = data.cursor;
+            cache.rowsById = new Map(merged.map((row) => [row.id, row]));
+            return { rows: merged };
+        }
+    }
+
+    const { data, error, status } = await resilientFetch<{ messages: DBMessage[]; cursor?: string }>(
+        `/api/sessions/${sessionId}/messages`,
+        { retries: 0 }
+    );
+    if (error || !data) {
+        console.error("[Background Processing] Failed to fetch messages:", status, error);
+        return null;
+    }
+    cacheRef.current = data.cursor
+        ? {
+            sessionId,
+            cursor: data.cursor,
+            rowsById: new Map(data.messages.map((row) => [row.id, row])),
+            appliedRows: new Map(),
+            appliedUI: new Map(),
+        }
+        : null;
+    return { rows: data.messages };
+}
+
 export function useBackgroundProcessing({
     sessionId,
     notifySessionUpdate,
@@ -101,6 +168,7 @@ export function useBackgroundProcessing({
     const [isZombieRun, setIsZombieRun] = useState(false);
     const [isCancellingBackgroundRun, setIsCancellingBackgroundRun] = useState(false);
     const lastMessageSigRef = useRef<string>("");
+    const messageCacheRef = useRef<SessionMessageCache | null>(null);
     const isRunActiveRef = useRef(false);
     const activePollingRunIdRef = useRef<string | null>(null);
     const removeTask = useUnifiedTasksStore((state) => state.removeTask);
@@ -116,18 +184,14 @@ export function useBackgroundProcessing({
             return;
         }
 
-        const { data, error, status } = await resilientFetch<{ messages: DBMessage[] }>(
-            `/api/sessions/${sessionId}/messages`,
-            { retries: 0 }
-        );
-        if (error || !data) {
-            console.error("[Background Processing] Failed to fetch messages:", status, error);
-            return;
-        }
+        const fetched = await fetchSessionMessages(sessionId, messageCacheRef);
+        if (!fetched) return;
 
         if (activeSessionIdRef.current !== sessionId) {
             return;
         }
+
+        const data = { messages: fetched.rows };
 
         // Skip update if messages haven't changed (avoids unnecessary re-render).
         // DB messages use `content` (JSON array of parts), not `parts`.
@@ -168,7 +232,15 @@ export function useBackgroundProcessing({
 
         lastMessageSigRef.current = sig;
 
-        const uiMessages = convertDBMessagesToUIMessages(data.messages);
+        const cache = messageCacheRef.current;
+        const convertedMessages = convertDBMessagesToUIMessages(data.messages);
+        const uiMessages = cache
+            ? reuseUnchangedUIMessages(convertedMessages, data.messages, cache.appliedRows, cache.appliedUI)
+            : convertedMessages;
+        if (cache) {
+            cache.appliedRows = new Map(data.messages.map((row) => [row.id, row]));
+            cache.appliedUI = new Map(uiMessages.map((message) => [message.id, message]));
+        }
 
         notifySessionUpdate(sessionId, {
             messageCount: conversationalMessageCount,
@@ -264,7 +336,22 @@ export function useBackgroundProcessing({
         const pollIntervalMs = 2000;
         const MAX_CONSECUTIVE_ERRORS = 10;
 
+        // A refresh of a large thread can outlast the interval; without this
+        // guard the ticks stack up concurrent full-thread downloads.
+        let pollInFlight = false;
         const pollOnce = async () => {
+            // Nothing to refresh while the window is minimized; un-hiding
+            // triggers an immediate poll (see the effect below).
+            if (pollInFlight || isAppHidden()) return;
+            pollInFlight = true;
+            try {
+                await pollOnceUnguarded();
+            } finally {
+                pollInFlight = false;
+            }
+        };
+
+        const pollOnceUnguarded = async () => {
             try {
                 const { data, error, status } = await resilientFetch<{
                     status: string;
@@ -382,7 +469,13 @@ export function useBackgroundProcessing({
         };
 
         document.addEventListener("visibilitychange", handleVisibilityChange);
-        return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+        const stopWatchingHidden = onAppHiddenChange((hidden) => {
+            if (!hidden) handleVisibilityChange();
+        });
+        return () => {
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+            stopWatchingHidden();
+        };
     }, [isProcessingInBackground, processingRunId, startPollingForCompletion]);
 
     // Clear polling interval on unmount to prevent stale updates after navigation

@@ -10,6 +10,7 @@ const settingsMocks = vi.hoisted(() => ({
 
 const dbMocks = vi.hoisted(() => ({
   getSessionWithMessages: vi.fn(),
+  getSessionMessagesSince: vi.fn(),
   updateMessage: vi.fn(async () => undefined),
   getOrCreateLocalUser: vi.fn(async () => ({ id: "db-user-1" })),
 }));
@@ -210,5 +211,58 @@ describe("GET /api/sessions/[id]/messages", () => {
       state: "output-error",
     });
     expect(dbMocks.updateMessage).toHaveBeenCalledOnce();
+  });
+});
+
+describe("GET /api/sessions/[id]/messages?since=", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delegationMocks.activeDelegations.clear();
+  });
+
+  it("returns only changed rows plus ordered ids and a trailing cursor", async () => {
+    dbMocks.getSessionMessagesSince.mockResolvedValue({
+      session: { id: "session-1", userId: "db-user-1" },
+      ids: ["user-1", "assistant-1"],
+      messages: [
+        { id: "assistant-1", role: "assistant", metadata: {}, content: [{ type: "text", text: "hi" }] },
+      ],
+    });
+
+    const before = Date.now();
+    const response = await GET(
+      new Request(
+        "http://localhost/api/sessions/session-1/messages?since=2026-01-01T00%3A00%3A00.000Z"
+      ) as any,
+      { params: Promise.resolve({ id: "session-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(dbMocks.getSessionMessagesSince).toHaveBeenCalledWith(
+      "session-1",
+      "2026-01-01T00:00:00.000Z"
+    );
+    expect(dbMocks.getSessionWithMessages).not.toHaveBeenCalled();
+
+    const body = await response.json();
+    expect(body.incremental).toBe(true);
+    expect(body.ids).toEqual(["user-1", "assistant-1"]);
+    expect(body.messages.map((m: { id: string }) => m.id)).toEqual(["assistant-1"]);
+    expect(Date.parse(body.cursor)).toBeLessThan(before);
+  });
+
+  it("returns 404 for another user's session", async () => {
+    dbMocks.getSessionMessagesSince.mockResolvedValue({
+      session: { id: "session-1", userId: "someone-else" },
+      ids: [],
+      messages: [],
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/sessions/session-1/messages?since=x") as any,
+      { params: Promise.resolve({ id: "session-1" }) }
+    );
+
+    expect(response.status).toBe(404);
   });
 });

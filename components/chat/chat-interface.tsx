@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useMemo, type CSSProperties, type MutableRefObject, type FC } from "react";
+import { isAppHidden } from "@/lib/utils/app-visibility";
 import { useRouter, usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useThread } from "@assistant-ui/react";
@@ -1463,7 +1464,7 @@ export default function ChatInterface({
         }
         if (isChannelSession || bg.isProcessingInBackground) {
             const interval = setInterval(() => {
-                if (document.visibilityState !== "visible") return;
+                if (isAppHidden()) return;
                 void sm.loadSessions({ silent: true, overrideCursor: null, preserveExtra: sm.userLoadedMoreRef.current });
                 // Skip message reload here — the 2s background polling in
                 // useBackgroundProcessing already handles message refresh.
@@ -1481,7 +1482,7 @@ export default function ChatInterface({
             const delay = adaptivePollBackoffRef.current;
             adaptivePollTimeoutRef.current = setTimeout(async () => {
                 if (cancelled || isPollingRef.current) return;
-                if (document.visibilityState !== "visible") { schedulePoll(); return; }
+                if (isAppHidden()) { schedulePoll(); return; }
                 const previousSignature = sessionListSignatureRef.current;
                 isPollingRef.current = true;
                 try {

@@ -31,7 +31,7 @@ export function AgentAvatarFallback({ characterId }: AgentAvatarFallbackProps) {
         noiseIntensity={0.9}
         noisePatternAlpha={45}
         noisePatternSize={60}
-        noisePatternRefreshInterval={7}
+        noisePatternRefreshInterval={0}
         className="rounded-full"
       />
     </AvatarFallback>

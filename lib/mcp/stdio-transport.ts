@@ -554,6 +554,27 @@ function isElectronEnvironment(): boolean {
     );
 }
 
+/**
+ * Signal a spawned child and, on POSIX, its whole process group (the child is
+ * spawned detached, so its pid is the group id). Errors are ignored: the
+ * group may already be gone.
+ */
+function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+    if (process.platform !== "win32" && child.pid) {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        } catch {
+            // Fall back to the direct child below.
+        }
+    }
+    try {
+        child.kill(signal);
+    } catch {
+        // ignore
+    }
+}
+
 export class StdioClientTransport implements Transport {
     private _process?: ChildProcess;
     private _readBuffer = new ReadBuffer();
@@ -649,9 +670,12 @@ export class StdioClientTransport implements Transport {
                 cwd: this._serverParams.cwd,
                 // CRITICAL: These options prevent terminal windows on ALL platforms
                 // windowsHide: true - Hides console window on Windows (no-op on other platforms)
-                // detached: false - Keeps process attached to parent, required for windowsHide
+                // detached: false on Windows - required for windowsHide.
+                // On POSIX the child leads its own process group so close() can
+                // signal the whole tree: `npx` runs the real server as a
+                // grandchild, which a plain kill of the npm process can orphan.
                 windowsHide: true,
-                detached: false,
+                detached: process.platform !== "win32",
             };
 
             console.log(`[MCP] Spawning: ${resolvedSpawn.command} ${(resolvedSpawn.args ?? []).join(" ")}`);
@@ -824,19 +848,15 @@ export class StdioClientTransport implements Transport {
             }
             await Promise.race([closePromise, new Promise(resolve => setTimeout(resolve, 2000).unref())]);
             if (processToClose.exitCode === null) {
-                try {
-                    processToClose.kill("SIGTERM");
-                } catch {
-                    // ignore
-                }
+                killProcessTree(processToClose, "SIGTERM");
                 await Promise.race([closePromise, new Promise(resolve => setTimeout(resolve, 2000).unref())]);
             }
             if (processToClose.exitCode === null) {
-                try {
-                    processToClose.kill("SIGKILL");
-                } catch {
-                    // ignore
-                }
+                killProcessTree(processToClose, "SIGKILL");
+            } else if (process.platform !== "win32") {
+                // The group leader exited on stdin EOF; make sure no grandchild
+                // (e.g. the node server under `npm exec`) outlives it.
+                killProcessTree(processToClose, "SIGTERM");
             }
         }
         this._readBuffer.clear();

@@ -40,6 +40,13 @@ const electronAPI = {
         ipcRenderer.removeListener("window:fullscreen-changed", handler);
       };
     },
+    onHiddenChanged: (callback: (isHidden: boolean) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, isHidden: boolean) => callback(isHidden);
+      ipcRenderer.on("window:hidden-changed", handler);
+      return () => {
+        ipcRenderer.removeListener("window:hidden-changed", handler);
+      };
+    },
   },
 
   // App info

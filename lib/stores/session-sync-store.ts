@@ -187,6 +187,36 @@ function getSessionSortTimestamp(session: Pick<SessionSyncData, "lastMessageAt" 
   return session.lastMessageAt ?? session.updatedAt;
 }
 
+function shallowEqualRecords(a: object, b: object): boolean {
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  if (aKeys.length !== Object.keys(bRecord).length) return false;
+  return aKeys.every((key) => Object.is(aRecord[key], bRecord[key]));
+}
+
+/** True when setSessions(sessions, characterId) would not change the store. */
+function isSameSessionSnapshot(
+  state: Pick<SessionSyncState, "sessionsById" | "sessionsByCharacter" | "activeRuns">,
+  sessions: SessionSyncData[],
+  characterId?: string
+): boolean {
+  if (characterId) {
+    const existingIds = state.sessionsByCharacter.get(characterId);
+    if (!existingIds || existingIds.size !== sessions.length) return false;
+    if (sessions.some((session) => !existingIds.has(session.id))) return false;
+  }
+  return sessions.every((session) => {
+    const existing = state.sessionsById.get(session.id);
+    if (!existing) return false;
+    const merged = {
+      ...session,
+      hasActiveRun: state.activeRuns.has(session.id) || session.hasActiveRun,
+    };
+    return shallowEqualRecords(existing, merged);
+  });
+}
+
 export const useSessionSyncStore = create<SessionSyncState>((set, get) => ({
   sessionsById: new Map(),
   sessionsByCharacter: new Map(),
@@ -219,6 +249,10 @@ export const useSessionSyncStore = create<SessionSyncState>((set, get) => ({
   },
 
   setSessions: (sessions, characterId) => {
+    // Pollers call this every few seconds with the same data; bumping
+    // lastRefreshAt then re-renders every subscriber for nothing.
+    if (isSameSessionSnapshot(get(), sessions, characterId)) return;
+
     set((state) => {
       const newSessionsById = new Map(state.sessionsById);
       const newSessionsByCharacter = new Map(state.sessionsByCharacter);
