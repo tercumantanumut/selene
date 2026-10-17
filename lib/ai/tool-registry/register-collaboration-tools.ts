@@ -647,9 +647,14 @@ ${getSceneGuideSummary()}
         "evaluate",
         "javascript",
         "automation",
+        "viewport",
+        "responsive",
+        "mobile",
+        "tablet",
+        "orientation",
       ],
       shortDescription:
-        "Embedded Chromium browser for web automation — navigate, click, type, extract, evaluate",
+        "Embedded Chromium browser for web automation — navigate, click, type, extract, evaluate, and test responsive viewports",
       fullInstructions: `## Chromium Workspace
 
 Isolated, embedded browser for web automation. One tool, multiple actions.
@@ -662,11 +667,15 @@ Isolated, embedded browser for web automation. One tool, multiple actions.
 - \`snapshot\`: Get accessibility tree of the page (structured, token-efficient observation).
 - \`extract\`: Get text content from an element. \`{ action: "extract", selector: ".content" }\`
 - \`evaluate\`: Run JavaScript in page context. \`{ action: "evaluate", expression: "document.title" }\`
+- \`setViewport\`: Set responsive viewport. \`{ action: "setViewport", viewportPreset: "mobile", orientation: "portrait" }\`
+- \`resetViewport\`: Reset to default desktop viewport. \`{ action: "resetViewport" }\`
 - \`close\`: End session, return execution history summary.
 
-**Workflow:** open → (navigate/click/type/snapshot/extract/evaluate)* → close
+**Responsive viewport controls:** pass \`viewportPreset\`, \`viewportWidth\`, \`viewportHeight\`, \`orientation\`, or \`resetViewport\` directly on \`open\`, \`navigate\`, \`snapshot\`, \`extract\`, \`evaluate\`, \`click\`, or \`type\`; the viewport is applied before the action. Common presets include \`mobile\`, \`iphone-se\`, \`iphone-14\`, \`pixel-7\`, \`tablet\`, \`ipad\`, \`ipad-pro\`, \`desktop\`, and \`desktop-wide\`.
+
+**Workflow:** open → (setViewport/navigate/click/type/snapshot/extract/evaluate)* → close
 **Isolation:** Each agent gets its own sandboxed browser context.
-**Observation:** Prefer \`snapshot\` over screenshots — structured data, no vision model needed.`,
+**Observation:** Prefer \`snapshot\` over screenshots — structured data, no vision model needed. Tool results include current viewport metadata.`,
       loading: { deferLoading: true },
       requiresSession: true,
     } satisfies ToolMetadata,

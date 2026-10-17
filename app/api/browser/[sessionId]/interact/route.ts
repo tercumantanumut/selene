@@ -211,6 +211,7 @@ export async function POST(
       success: true,
       durationMs,
       output: actionDescription,
+      viewport: activeSession.viewport,
       pageUrl,
       pageTitle,
       source: "user",
@@ -231,6 +232,7 @@ export async function POST(
     recordAction(sessionId, payload.type, payload as unknown as Record<string, unknown>, {
       success: false,
       durationMs,
+      viewport: activeSession.viewport,
       error: errorMsg,
       source: "user",
     });

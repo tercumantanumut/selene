@@ -64,7 +64,7 @@ export async function GET(
       // Send initial frame immediately if available
       const latest = getLatestFrame(sessionId);
       if (latest) {
-        const event = `data: ${JSON.stringify({ data: latest.data, ts: latest.receivedAt })}\n\n`;
+        const event = `data: ${JSON.stringify({ data: latest.data, ts: latest.receivedAt, metadata: latest.metadata })}\n\n`;
         controller.enqueue(encoder.encode(event));
       }
 
@@ -72,7 +72,7 @@ export async function GET(
       const unsubscribeFrames = subscribeToFrames(sessionId, (frame) => {
         if (closed) return;
         try {
-          const event = `data: ${JSON.stringify({ data: frame.data, ts: frame.receivedAt })}\n\n`;
+          const event = `data: ${JSON.stringify({ data: frame.data, ts: frame.receivedAt, metadata: frame.metadata })}\n\n`;
           controller.enqueue(encoder.encode(event));
         } catch {
           cleanup();
@@ -87,6 +87,7 @@ export async function GET(
             seq: record.seq,
             action: record.action,
             input: record.input,
+            viewport: record.viewport,
             source: record.source,
             timestamp: record.timestamp,
             success: record.success,

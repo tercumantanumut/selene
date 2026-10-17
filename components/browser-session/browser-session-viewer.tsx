@@ -34,7 +34,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useTranslations } from "next-intl";
 import { useScreencastRecorder } from "./use-screencast-recorder";
-import { useBrowserInteraction } from "./use-browser-interaction";
+import { useBrowserInteraction, type BrowserViewportSize } from "./use-browser-interaction";
 import { useActionIndicators, type ActionSSEData } from "./use-action-indicators";
 import { ActionIndicators } from "./action-indicators";
 
@@ -64,6 +64,29 @@ interface SessionHistory {
   actions: ActionRecord[];
 }
 
+interface ScreencastFrameMetadata {
+  deviceWidth?: number;
+  deviceHeight?: number;
+}
+
+interface ScreencastFrameEvent {
+  data?: string;
+  ts?: number;
+  metadata?: ScreencastFrameMetadata;
+}
+
+function viewportSizeFromMetadata(
+  metadata?: ScreencastFrameMetadata
+): BrowserViewportSize | null {
+  if (!metadata) return null;
+  const width = Math.round(Number(metadata.deviceWidth));
+  const height = Math.round(Number(metadata.deviceHeight));
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return { width, height };
+}
+
 // ─── Action helpers ───────────────────────────────────────────────────────────
 
 const ACTION_ICONS: Record<string, typeof Globe> = {
@@ -75,6 +98,8 @@ const ACTION_ICONS: Record<string, typeof Globe> = {
   extract: Eye,
   replay: Play,
   evaluate: Code,
+  setViewport: Eye,
+  resetViewport: ArrowClockwise,
   close: X,
 };
 
@@ -91,6 +116,8 @@ function getActionLabel(action: string): string {
     snapshot: "Snapshot",
     extract: "Extract",
     evaluate: "Evaluate",
+    setViewport: "Set Viewport",
+    resetViewport: "Reset Viewport",
     close: "Close",
     replay: "Replay",
   };
@@ -126,6 +153,7 @@ export const BrowserSessionViewer: FC<{ sessionId: string }> = ({ sessionId }) =
   // activeSessionId drives SSE + history polling.
   // Starts as the prop sessionId, switches when replay starts.
   const [activeSessionId, setActiveSessionId] = useState(sessionId);
+  const [viewportSize, setViewportSize] = useState<BrowserViewportSize | null>(null);
 
   // Store the original session history for the replay button
   const originalHistoryRef = useRef<SessionHistory | null>(null);
@@ -150,6 +178,7 @@ export const BrowserSessionViewer: FC<{ sessionId: string }> = ({ sessionId }) =
   } = useBrowserInteraction({
     sessionId: activeSessionId,
     imgRef,
+    viewportSize,
     enabled: isInteractive,
     containerRef: interactionContainerRef,
   });
@@ -160,6 +189,7 @@ export const BrowserSessionViewer: FC<{ sessionId: string }> = ({ sessionId }) =
     sessionId: activeSessionId,
     imgRef,
     containerRef: interactionContainerRef,
+    viewportSize,
     enabled: showIndicators,
   });
 
@@ -231,6 +261,7 @@ export const BrowserSessionViewer: FC<{ sessionId: string }> = ({ sessionId }) =
     hasFrameRef.current = false;
     setHasFrame(false);
     setIsConnected(false);
+    setViewportSize(null);
 
     const connect = () => {
       const es = new EventSource(`/api/browser/${activeSessionId}/stream`);
@@ -242,7 +273,16 @@ export const BrowserSessionViewer: FC<{ sessionId: string }> = ({ sessionId }) =
 
       es.onmessage = (event) => {
         try {
-          const { data } = JSON.parse(event.data) as { data: string; ts: number };
+          const { data, metadata } = JSON.parse(event.data) as ScreencastFrameEvent;
+          const nextViewportSize = viewportSizeFromMetadata(metadata);
+          if (mounted && nextViewportSize) {
+            setViewportSize((prev) => {
+              if (prev?.width === nextViewportSize.width && prev.height === nextViewportSize.height) {
+                return prev;
+              }
+              return nextViewportSize;
+            });
+          }
           if (data) {
             const src = `data:image/jpeg;base64,${data}`;
             if (imgRef.current) {

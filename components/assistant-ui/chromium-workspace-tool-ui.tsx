@@ -37,6 +37,11 @@ interface ChromiumWorkspaceArgs {
   text?: string;
   expression?: string;
   timeout?: number;
+  viewportPreset?: string;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  orientation?: "portrait" | "landscape";
+  resetViewport?: boolean;
 }
 
 interface HistorySummary {
@@ -58,6 +63,7 @@ interface ChromiumWorkspaceResult {
   data?: unknown;
   pageUrl?: string;
   pageTitle?: string;
+  viewport?: { width: number; height: number; orientation?: string; label?: string; preset?: string };
   error?: string;
 }
 
@@ -119,6 +125,21 @@ function humanizeSelector(selector: string): string {
   return selector.slice(0, 22) + "...";
 }
 
+function getViewportSummary(args?: ChromiumWorkspaceArgs): string {
+  if (!args) return "viewport";
+  if (args.resetViewport) return "default desktop viewport";
+  const preset = args.viewportPreset ? `${args.viewportPreset}` : "custom";
+  const size = args.viewportWidth && args.viewportHeight
+    ? `${args.viewportWidth}×${args.viewportHeight}`
+    : args.viewportWidth
+      ? `${args.viewportWidth}px wide`
+      : args.viewportHeight
+        ? `${args.viewportHeight}px tall`
+        : "";
+  const orientation = args.orientation ? ` ${args.orientation}` : "";
+  return `${preset}${size ? ` ${size}` : ""}${orientation}`.trim();
+}
+
 function getHumanSummary(args?: ChromiumWorkspaceArgs): string {
   if (!args?.action) return "Browser action";
 
@@ -148,6 +169,10 @@ function getHumanSummary(args?: ChromiumWorkspaceArgs): string {
       return args.expression
         ? `Running: ${args.expression.slice(0, 30)}${args.expression.length > 30 ? "..." : ""}`
         : "Running JS";
+    case "setViewport":
+      return `Setting ${getViewportSummary(args)}`;
+    case "resetViewport":
+      return "Resetting to desktop viewport";
     case "close":
       return "Closing session";
     default:
@@ -179,6 +204,10 @@ function getActionSummary(args?: ChromiumWorkspaceArgs): string {
       return args.expression
         ? `${args.expression.slice(0, 40)}${args.expression.length > 40 ? "..." : ""}`
         : "Running JS...";
+    case "setViewport":
+      return getViewportSummary(args);
+    case "resetViewport":
+      return "Default desktop viewport";
     case "close":
       return "Closing session";
     default:
