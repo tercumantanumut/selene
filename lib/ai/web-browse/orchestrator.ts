@@ -26,7 +26,7 @@ import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 // Firecrawl Configuration
 // ============================================================================
 
-const FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape";
+const FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape";
 const FIRECRAWL_TIMEOUT_MS = 120000;
 
 function getFirecrawlApiKey(): string | undefined {

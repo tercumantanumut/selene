@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Test the API key with a simple scrape request
-        const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
+        const response = await fetch("https://api.firecrawl.dev/v2/scrape", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
