@@ -16,8 +16,8 @@ import { localScrapePage, localCrawlSite } from "@/lib/ai/web-scraper/local";
 // Firecrawl API Configuration
 // ============================================================================
 
-const FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape";
-const FIRECRAWL_CRAWL_URL = "https://api.firecrawl.dev/v1/crawl";
+const FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape";
+const FIRECRAWL_CRAWL_URL = "https://api.firecrawl.dev/v2/crawl";
 
 function getFirecrawlApiKey(): string | undefined {
   // Ensure settings are loaded so process.env is updated (Electron standalone).
